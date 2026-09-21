@@ -1,0 +1,8 @@
+# Upstream sync lock file.
+# Updated by `bash scripts/sync-upstream.sh`.
+repo=/Users/linh.doan/work/opensources/deepseek-harness
+commit=c291e7961a515f6d7af9304e7fd1d257929aef26
+tag=none
+
+# Upstream package.json version:
+version=0.1.5-rc.2

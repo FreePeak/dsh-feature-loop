@@ -1,0 +1,72 @@
+{
+  "name": "@freepeak/dsh-feature-loop",
+  "version": "0.1.0",
+  "description": "A book-shaped loop for bug-fixing and small features: budget ceilings, cheap-first routing, step-level review gate, and the Laya local judge",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/types/**/*.d.ts",
+    "cordis.patch.yml"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsdown",
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "sync": "bash scripts/sync-upstream.sh"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "0.1.5"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=0.4.0",
+    "@deepseek-ai/dsh-agent": ">=0.1.5",
+    "@deepseek-ai/dsh-llm": ">=0.1.5",
+    "@deepseek-ai/dsh-session": ">=0.1.5",
+    "@deepseek-ai/dsh-session-persistence": ">=0.1.5",
+    "@deepseek-ai/dsh-session-projection": ">=0.1.5",
+    "@deepseek-ai/dsh-settings": ">=0.1.5",
+    "@deepseek-ai/dsh-system-prompt": ">=0.1.5",
+    "@deepseek-ai/dsh-tools": ">=0.1.5",
+    "@deepseek-ai/dsh-scope": ">=0.1.5",
+    "@deepseek-ai/dsh-brand": ">=0.1.5",
+    "@deepseek-ai/dsh-invariants": ">=0.1.5",
+    "@deepseek-ai/dsh-util-values": ">=0.1.5",
+    "@deepseek-ai/dsh-agent-loop": ">=0.1.5"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "0.4.0",
+    "@deepseek-ai/dsh-agent": "0.1.5",
+    "@deepseek-ai/dsh-agent-loop": "0.1.5",
+    "@deepseek-ai/dsh-brand": "0.1.5",
+    "@deepseek-ai/dsh-invariants": "0.1.5",
+    "@deepseek-ai/dsh-llm": "0.1.5",
+    "@deepseek-ai/dsh-scope": "0.1.5",
+    "@deepseek-ai/dsh-session": "0.1.5",
+    "@deepseek-ai/dsh-session-persistence": "0.1.5",
+    "@deepseek-ai/dsh-session-projection": "0.1.5",
+    "@deepseek-ai/dsh-settings": "0.1.5",
+    "@deepseek-ai/dsh-system-prompt": "0.1.5",
+    "@deepseek-ai/dsh-tools": "0.1.5",
+    "@deepseek-ai/dsh-util-values": "0.1.5",
+    "@deepseek-ai/schemastery": "0.1.5",
+    "tsdown": "^0.5.0",
+    "typescript": "^5.8.0",
+    "zod": "^3.24.0"
+  }
+}
