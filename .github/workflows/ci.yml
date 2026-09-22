@@ -1,0 +1,110 @@
+# CI for @freepeak/dsh-feature-loop.
+#
+# Two jobs, both on Node 22 — `node --experimental-strip-types` is a Node 22
+# feature, so neither the suite nor the sources can run on anything older.
+#
+#   test      — the repository's own test command, unmodified.
+#   typecheck — `tsc --noEmit` over the harness-free subset of `src/`.
+#
+# One verified fact about this repository shapes the typecheck job.
+#
+# 1. `npm install` and `npm ci` do not work here. There is no lockfile, and the
+#    devDependency `@deepseek-ai/cordis@0.4.0` has no published version, so a
+#    bare install dies with ETARGET before it installs anything (verified on a
+#    clean checkout). The typecheck job therefore installs only its own tooling
+#    into a scratch prefix under $RUNNER_TEMP.
+#
+# `test` needs none of that: the suite is dependency-free, and this job runs it
+# on a checkout with no node_modules at all. That is deliberate and worth
+# keeping. `src/messages.ts` holds the notice *text* and imports nothing;
+# `src/notices.ts` wraps that text for the harness. While both lived in one file,
+# `src/runner.ts` inherited `@deepseek-ai/dsh-llm` through it, and the suite
+# needed a harness package installed before it would run — the purity claim was
+# false and CI had to work around it. Keep the split.
+#
+# `typecheck` deliberately does not run `tsc -p tsconfig.json`. `tsconfig.json`
+# includes all of `src`, and eight of those files import `@deepseek-ai/dsh-*` or
+# `@deepseek-ai/cordis` at versions CI cannot resolve, so a project-wide run dies
+# with TS2307 on those imports (and TS2318 on the global `Disposable` type)
+# before any real type checking happens — verified. The job instead typechecks
+# the thirteen files whose import closure is harness-free, using the same
+# compiler options as `tsconfig.json`. `src/agent.ts`, `src/index.ts` and
+# `src/notices.ts` — the plugin path — are therefore NOT typechecked here; they
+# are covered locally, against the prebuilt harness packages in the maintainer's
+# node_modules. See the README's "Known limits".
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (Node 22)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The command from package.json's `test` script, unchanged. Deliberately
+      # no install step: the suite is dependency-free, and a checkout with no
+      # node_modules is what proves it.
+      - name: Run the test suite
+        run: node --experimental-strip-types --test test/*.test.ts
+
+  typecheck:
+    name: typecheck (harness-free src/ modules)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # TypeScript and @types/node are installed into a scratch prefix rather
+      # than the repository, because installing in the repository fails (fact 1).
+      - name: Install TypeScript and Node types into a scratch prefix
+        run: |
+          npm install --prefix "$RUNNER_TEMP/ts" --no-save --no-package-lock \
+            --no-audit --no-fund typescript@5 @types/node@22
+
+      # Files are listed explicitly, so tsconfig.json is ignored entirely and
+      # every option below mirrors it: target ES2024, NodeNext module and
+      # resolution, strict, esModuleInterop, skipLibCheck, isolatedModules,
+      # allowImportingTsExtensions, noEmit. `rootDir`/`outDir`/`declaration`/
+      # `composite` are moot under --noEmit and are left out.
+      #
+      # --typeRoots points into the scratch prefix: @types/node is not, and must
+      # not be, a dependency of this repository.
+      #
+      # The list is the import closure with no `@deepseek-ai/*` in it. The eight
+      # files left out — agent.ts, assistant-stream.ts, inbox.ts, index.ts,
+      # invariant.ts, notices.ts, runtime-context.ts, tool-calls.ts — cannot be
+      # checked until the harness packages are resolvable in CI. Add a new pure
+      # module to this list; a module that gains a harness import must leave it.
+      - name: tsc --noEmit
+        run: |
+          "$RUNNER_TEMP/ts/node_modules/.bin/tsc" --noEmit \
+            --target ES2024 --module NodeNext --moduleResolution NodeNext \
+            --strict --esModuleInterop --skipLibCheck --isolatedModules \
+            --allowImportingTsExtensions \
+            --typeRoots "$RUNNER_TEMP/ts/node_modules/@types" \
+            src/agent-policy.ts src/budget.ts src/cli.ts src/constants.ts \
+            src/judge.ts src/laya.ts src/llm.ts src/messages.ts src/prompts.ts \
+            src/review.ts src/routing.ts src/runner.ts src/signals.ts src/spec.ts \
+            src/tools.ts
