@@ -346,6 +346,12 @@ Two genuine bugs were found in the fork while it existed, both now moot:
   at versions CI cannot resolve (there is no lockfile, and
   `@deepseek-ai/cordis@0.4.0` has no published version). It is typechecked
   locally against the prebuilt packages.
+- **`test/plugin-approval.test.ts` is not run in CI.** It imports
+  `src/plugin.ts`, whose `@deepseek-ai/dsh-*` imports the no-install `test` job
+  cannot resolve. Like `src/plugin.ts` it is run locally against the prebuilt
+  packages; the same handshake is covered by the integration suite
+  (`test/integration/plugin-in-dsh.spec.ts`), which is where the plugin's
+  behaviour is exercised against the real harness.
 - **Spend is observed, not metered by the plugin.** `LoopBudget.spend()` must be
   called with real usage for the cost ceiling to mean anything; the plugin
   currently reads spend from the budget snapshot rather than pricing each settled

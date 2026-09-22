@@ -3,7 +3,7 @@
 # Two jobs, both on Node 22 — `node --experimental-strip-types` is a Node 22
 # feature, so neither the suite nor the sources can run on anything older.
 #
-#   test      — the repository's own test command, unmodified.
+#   test      — the dependency-free subset of the suite, listed explicitly.
 #   typecheck — `tsc --noEmit` over the harness-free subset of `src/`.
 #
 # One verified fact about this repository shapes the typecheck job.
@@ -14,12 +14,14 @@
 #    install died with ERR_PNPM_NO_MATCHING_VERSION. Fixed — the harness packages
 #    are now optional peers, and the typecheck job installs normally.
 #
-# `test` needs none of that: the suite is dependency-free, and this job runs it
-# on a checkout with no node_modules at all. That is deliberate and worth
-# keeping. `src/messages.ts` holds the notice *text* and imports nothing, which
-# is what keeps the suite runnable with nothing installed. `src/runner.ts` must
-# never import a harness package directly or through a helper — that is what
-# would break this job, not the plugin's own imports.
+# `test` needs none of that: it runs on a checkout with no node_modules at all,
+# which is deliberate and worth keeping. The job lists the test files whose
+# import closure is dependency-free, exactly as the typecheck job lists the
+# `src/` modules it covers. `test/plugin-approval.test.ts` is the one file left
+# out: it imports `src/plugin.ts`, and the plugin's `@deepseek-ai/dsh-*` imports
+# are unpublished peers that no install can fetch — so, like `src/plugin.ts`,
+# that test is covered locally against the prebuilt packages, and the real
+# handshake is covered by the integration suite.
 #
 # `typecheck` deliberately does not run `tsc -p tsconfig.json`. `tsconfig.json`
 # includes all of `src`, and `src/plugin.ts` imports `@deepseek-ai/dsh-*` and
@@ -95,11 +97,17 @@ jobs:
         with:
           node-version: 22
 
-      # The command from package.json's `test` script, unchanged. Deliberately
-      # no install step: the suite is dependency-free, and a checkout with no
-      # node_modules is what proves it.
+      # Deliberately no install step: a checkout with no node_modules is what
+      # proves these files are dependency-free. They are listed explicitly, the
+      # same way the typecheck job lists its `src/` inputs — and a test that
+      # gains a harness import (`test/plugin-approval.test.ts` already has one,
+      # through `src/plugin.ts`) must leave this list, exactly as `src/plugin.ts`
+      # leaves the typecheck list. It runs locally against the prebuilt harness
+      # packages.
       - name: Run the test suite
-        run: node --experimental-strip-types --test test/*.test.ts
+        run: node --experimental-strip-types --test \
+          test/agent-policy.test.ts test/budget.test.ts test/judge.test.ts \
+          test/policy.test.ts test/runner.test.ts test/tools.test.ts
 
   typecheck:
     name: typecheck (self-hosted, harness-free src/ modules)
