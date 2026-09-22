@@ -33,6 +33,7 @@ docker compose -f docker/docker-compose.yml logs -f   # the URL + token
 | `make restart` | Restart, then re-print the URL (the token rotates on every boot) |
 | `make logs` | Follow the log — the `dsh web:` line carries the token |
 | `make url` | Print the URL + token for the running container |
+| `make dashboard` | Print the approval dashboard's URL + token (loopback, port 3092) |
 | `make health` | Container status, the HTTP probe, and the published binding |
 | `make shell` | Shell inside the container |
 | `make clean` | **Destructive**: removes the container **and** the volume (asks to confirm) |
@@ -52,6 +53,13 @@ container's relay port **8099**, which forwards to the UI on `127.0.0.1:3099`
 inside the container (see the port-binding section for why the relay exists).
 The `dsh web:` line reports the *internal* address, so its port is 3099 while the
 URL you open is 3090 — that difference is expected.
+
+The **approval dashboard** (the HITL web page for answering gated steps and
+watching the run) prints its own line — `feature-loop dashboard: …/?token=…` —
+and `make dashboard` turns it into the host URL: `http://127.0.0.1:3092/?token=…`
+(host port **3092** → container **8100**, loopback-published like the UI). A
+volume seeded before the dashboard existed needs `FORCE_REINIT=1 make up` to
+pick up the `dashboard:` config row.
 
 ---
 
@@ -91,8 +99,9 @@ packages are now optional peers, and `.npmrc` disables peer auto-installation
 | `ONEGW_API_KEY` | yes | Gateway key. Referenced from `settings.yaml` by name (`apiKeyEnv`), never written into a file. |
 | `ONEGW_BASE_URL` | no | The gateway **as seen from inside the container**. Defaults to `http://host.docker.internal:8080/v1`, which works on macOS/Windows and on Linux via the compose `extra_hosts` entry. |
 | `DSH_HOST_PORT` | no | Host port. Defaults to `3090`. |
+| `DSH_DASHBOARD_PORT` | no | Host port for the approval dashboard. Defaults to `3092` (container-internal 8100). |
 | `DSH_PROFILE` | no | Profile name. Defaults to `dsh-fl`. |
-| `FORCE_REINIT` | no | `1` re-seeds the profile and activation patch from the image. |
+| `FORCE_REINIT` | no | `1` re-seeds the profile and activation patch from the image — **required once** if the volume predates the dashboard. |
 
 ### The gateway address is the one thing that usually needs changing
 
@@ -279,6 +288,7 @@ Recorded because each one costs an hour if you hit it cold:
 | No approval panel, tool calls show `Error: the user rejected tool` | The session preset is not `workspace-write` | It is pinned in `settings.template.yaml`; if you changed it, restore it and restart. **Deleting `/data/settings.yaml` does nothing** — the harness renames an imported settings file to `settings.yaml.imported`, so the live file is that one; edit it, or reset the volume with `down -v` |
 | `dsh: failed to parse overlay ... cordis.patch.yml` | The activation patch left the template's `[]` document in place | The entrypoint strips it; re-seed with `FORCE_REINIT=1` |
 | Port 3090 already in use | Something else on the host | `DSH_HOST_PORT=3101 docker compose ... up` |
+| `make dashboard` prints "no dashboard line yet" | The volume was seeded before the dashboard existed, or the row is disabled | `FORCE_REINIT=1 make up` re-seeds the activation patch from the image |
 | Changes to plugin source not visible | The image baked the old `lib/` | `docker compose ... build --no-cache` |
 
 ---

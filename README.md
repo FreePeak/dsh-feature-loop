@@ -5,7 +5,7 @@
 [![CI](https://github.com/FreePeak/dsh-feature-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/FreePeak/dsh-feature-loop/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](.nvmrc)
-[![Tests](https://img.shields.io/badge/tests-133%20passing-brightgreen.svg)](#quick-start)
+[![Tests](https://img.shields.io/badge/tests-151%20passing-brightgreen.svg)](#quick-start)
 
 A **book-shaped policy layer** for bug-fixing and small features: budget
 ceilings, cheap-first routing, a step-level review gate, and a local judge that
@@ -80,7 +80,7 @@ and that is the intended behaviour, not a miss.
 ## Quick start
 
 ```bash
-# 133 tests, no network, no model call — the policy layer is pure
+# 151 tests, no network, no model call — the policy layer is pure
 node --experimental-strip-types --test test/*.test.ts
 
 # the end-to-end demo (needs onegw on :8080 and xiaomi/mimo-v2.5)
@@ -148,6 +148,10 @@ gets reached.
 - **[`docs/VERIFY-INTEGRATION.md`](docs/VERIFY-INTEGRATION.md)** — the same
   five outcomes executed in a **real** DSH context (5/5 pass), plus the exact
   string the approval panel renders.
+- **[`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md)** — the approval
+  dashboard: 151 unit + 9 integration green, a live HTTP transcript (page 200,
+  token 401, approve → `allowed-once`, 409, 403), and the one browser click
+  still unverified.
 - **[`docs/VERIFY-E2E-APPROVAL.md`](docs/VERIFY-E2E-APPROVAL.md)** — a real
   browser on the containerised deployment: the panel appears with this plugin's
   reason, **Allow once** writes the file, **Reject** blocks it.
@@ -191,6 +195,7 @@ The policies are shared. Only transport and session state differ.
 | Signals | ✅ wired | ✅ wired (`agent/pre-step`) |
 | Review gate | ✅ wired (blocks) | ✅ wired (`tools/pre-execute`, **asks**) |
 | Human approval in the browser | ➖ console prompt | ✅ Web UI composer prompt |
+| HITL approval dashboard | ➖ | ✅ optional loopback web page: pending cards, live run state, Allow/Reject (`dashboard:` config) |
 | Judge | ✅ wired | ✅ wired (`agent/pre-step`, awaited) |
 | Operator review | ✅ wired (blocks) | ✅ prompts, then blocks |
 
@@ -238,6 +243,41 @@ approval channel — it is strictly more capable without being less safe. Set
   config:
     gateMode: ask          # or: deny (CI / unattended)
 ```
+
+### The approval dashboard
+
+Besides the composer prompt, the plugin can host its own **loopback web page**
+(`src/dashboard.ts` + `src/dashboard-page.ts`, zero dependencies — Node builtins
+only): pending approval cards carrying the gate's `REVIEW REQUESTED` reason with
+**Allow once** / **Reject**, the live run state (step vs ceiling, spend, ladder
+route, judge score, signals) over SSE, and an activity feed of gate decisions
+and approval outcomes.
+
+```yaml
+- id: feature-loop
+  config:
+    dashboard:
+      enabled: true            # start the server; omitted = composer only
+      # host: 127.0.0.1        # 127.0.0.1 | 0.0.0.0 — the closed set
+      # port: 8100             # Docker: 0.0.0.0:8100 in-container,
+      #                        # published as 127.0.0.1:3092 (loopback only)
+      # answers: true          # false = observe only, composer keeps answering
+      # answerTimeoutMs: 600000   # a pending ask fails closed after this
+```
+
+`make up` prints the URL + token (`make dashboard` reprints it): the token is
+generated per boot and required on every request. An existing Docker volume
+seeded before this feature needs `FORCE_REINIT=1 make up` to pick the row up.
+
+**The guard is the safety property.** The dashboard's answerer is registered
+ahead of every other `approval/request` listener — required, because the
+harness's remote forwarder holds the request without calling `next()` while a
+Web UI tab is attached — but it *claims* a request only while a dashboard tab
+is actually connected. No tab → it delegates, and the composer answers exactly
+as before this feature existed. Every failure path (last tab closed, ask
+withdrawn, timeout, shutdown) settles the pending ask `unavailable`, which the
+harness maps to a refusal. Verified at every level except the browser click:
+[`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md).
 
 ---
 
@@ -393,12 +433,20 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 - **The price table is an estimate.** `mimo-v2.5` runs on a subscription plan,
   so marginal cost is near zero; the rates in `cli.ts` are illustrative and
   exist so the ceiling has something to measure against.
+- **The dashboard's rendered page has not been clicked in a real browser.**
+  The server, guard, auth, fail-closed paths and the exact endpoint the
+  buttons call are verified over real HTTP, and both integration surfaces are
+  green (9/9) — but no human has pressed **Allow once** on the page itself.
+  [`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md) records the evidence
+  and the two-minute steps to close it. Related: spend shown on the dashboard
+  inherits the metering gap above, and a Docker volume seeded before the
+  dashboard existed needs `FORCE_REINIT=1` to re-seed its profile.
 
 ---
 
 ## Phase status
 
-- **Phase 0 — policy layer** ✅ 133 tests, pure, no harness dependency
+- **Phase 0 — policy layer** ✅ 151 tests, pure, no harness dependency
 - **Phase 1 — loop integration** ✅ runner + CLI + tools + demo, working end to end
 - **Phase 1b — plugin compiles** ✅ `tsc --noEmit` clean against prebuilt `@deepseek-ai/dsh-*`
 - **Phase 2 — plugin review gate** ✅ all six detectors, the judge, the router and
@@ -410,6 +458,12 @@ Two genuine bugs were found in the fork while it existed, both now moot:
   it to `@deepseek-ai/dsh-client-ui-approval`, and a human approves or rejects in
   the composer. `gateMode: ask | deny`. Verified live on a scratch profile with
   Agent Teams.
+- **Phase 1e — HITL approval dashboard** ✅ optional loopback web surface
+  (`src/dashboard.ts` + `src/dashboard-page.ts`): pending cards, live run state
+  over SSE, Allow/Reject over HTTP — guarded so a tab-less deployment behaves
+  byte-identically to the composer-only path. 151 unit + 9 integration tests;
+  the one browser click is UNVERIFIED
+  ([`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md)).
 - **Phase 2b — real spend accounting** ⬜ price each settled attempt into
   `LoopBudget` so the cost ceiling is load-bearing (the largest open gap).
 - **Phase 3 — Laya** ⬜ deploy the `systemone` provider in onegw, switch `--judge laya`
@@ -417,8 +471,8 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 ### Verifying the whole thing
 
 ```bash
-node --experimental-strip-types --test test/*.test.ts   # 133 pass
-pnpm test:integration                                   # 5 pass, in the real harness
+node --experimental-strip-types --test test/*.test.ts   # 151 pass
+pnpm test:integration                                   # 9 pass, in the real harness
 tsc --noEmit                                            # clean
 bash demo/run.sh                                        # goal-met
 grep -rn "FORK-DELTA" src/ | wc -l                      # 0 — the fork is gone

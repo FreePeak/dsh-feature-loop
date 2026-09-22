@@ -10,20 +10,31 @@ repo" before you do anything.
 
 ## 1. State of the repo — the single most important fact
 
-**None of the work from that session is merged.** `origin/main` is at `ea48b03`
-(PR #8, the de-fork). Everything after it is **uncommitted in the working tree**:
+**Two sessions of work sit on an open PR; the newest session's work sits
+uncommitted in the working tree.**
+
+- `origin/main` is at `ea48b03` (PR #8, the de-fork) — **nothing after it is
+  merged**.
+- Branch `feat/human-approval-and-docker` holds the approval + Docker session's
+  work, committed and pushed (`04326cd`, `2f93906`) as **PR #9 (open)**.
+- **The approval dashboard work is UNCOMMITTED**: 13 paths (9 modified + 4 new)
+  — `src/dashboard.ts`, `src/dashboard-page.ts`, `test/dashboard.test.ts`,
+  `docs/VERIFY-DASHBOARD.md`, plus wiring in `src/plugin.ts` / `src/index.ts`,
+  deployment config (compose, profile patch, cordis patch, Makefile, ci.yml)
+  and doc updates. If this machine is lost, so is the dashboard.
 
 ```bash
 cd dsh-feature-loop
 git log --oneline origin/main -1     # ea48b03
-git status --short | wc -l           # 27
+git status --short | wc -l           # 13
 ```
 
-9 modified files, 18 new paths. On a fresh clone of `origin/main` you would get
-**none** of it: no approval panel, no Docker path, no runbook, and `pnpm install`
-would still fail on the unpublished `@deepseek-ai/cordis@0.4.0`.
+On a fresh clone of `origin/main` you would get **none** of it: no approval
+panel, no Docker path, no dashboard, no runbook, and `pnpm install` would still
+fail on the unpublished `@deepseek-ai/cordis@0.4.0`.
 
-Full list and the commit/PR plan: [`todo.md`](todo.md) §"Not yet committed".
+Commit/PR plan for the uncommitted dashboard set: [`todo.md`](todo.md) §"Not yet
+committed".
 
 ---
 
@@ -46,6 +57,7 @@ Start with whichever question you have; every file below is in this repo.
 | Doc | Proves |
 |---|---|
 | [`VERIFY-E2E-APPROVAL.md`](docs/VERIFY-E2E-APPROVAL.md) | **A real browser**: the panel renders this plugin's reason; **Allow once** writes the file; **Reject** writes nothing |
+| [`VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md) | The approval dashboard: 151 unit + 9/9 integration green, live HTTP transcript (page 200 / no-token 401 / approve → `allowed-once` / 409 / 403); the one browser click is recorded UNVERIFIED |
 | [`VERIFY-INTEGRATION.md`](docs/VERIFY-INTEGRATION.md) | 5/5 in a real cordis context — approve, reject, fail-closed, `deny` mode, auto |
 | [`VERIFY-SDK-RUN.md`](docs/VERIFY-SDK-RUN.md) | A real model-driven run via the **SDK** reached the gate; session log quoted |
 | [`VERIFY-HEADLESS-RUN.md`](docs/VERIFY-HEADLESS-RUN.md) | A real model-driven run via the **CLI** reached the gate |
@@ -63,15 +75,15 @@ Start with whichever question you have; every file below is in this repo.
 
 ```bash
 cd dsh-feature-loop
-make verify        # compose-check + 133 tests + typecheck + the 5/5 integration spec
+make verify        # compose-check + 151 tests + typecheck + the 9/9 integration spec
 ```
 
 Or individually:
 
 ```bash
-make test          # 133 pass, 0 fail
-make typecheck     # mirrors the CI file list
-make integration   # 5 pass (needs a harness checkout; set DSH_HARNESS to move it)
+make test          # 151 pass, 0 fail
+make typecheck     # mirrors the CI file list (now incl. src/dashboard*.ts)
+make integration   # 9 pass (needs a harness checkout; set DSH_HARNESS to move it)
 make compose-check # the compose file is valid
 ```
 
@@ -89,10 +101,11 @@ make help      # every target
 ```
 
 `make up` reads the gateway key from `~/.dsh/.credentials.yaml` when it is not in
-the environment, so it usually needs no arguments. `make url`, `make health`,
-`make logs`, `make down` (keeps the volume) and `make clean` (removes it, asks
-first) cover the rest. `make ports` shows which of 3081/3097/3099/3090 are in
-use without touching them.
+the environment, so it usually needs no arguments. `make url`, `make dashboard`
+(the approval dashboard's URL + token), `make health`, `make logs`, `make down`
+(keeps the volume) and `make clean` (removes it, asks first) cover the rest.
+`make ports` shows which of 3081/3097/3099/3090/3092 are in use without
+touching them.
 
 There is **one** service and **one** compose file: `docker/docker-compose.yml`,
 service `dsh-feature-loop`, volume `dsh-fl-data` (pinned — compose would
@@ -219,7 +232,12 @@ The board does not persist across sessions; this table is the record.
 
 If you have 5 minutes: run the four verification commands in §3.
 
-If you have an hour: commit and PR the work (§1 of `todo.md` has the plan) —
-leaving it uncommitted is the biggest risk to it.
+If you have half an hour: commit and push the dashboard work so PR #9 carries
+it (§1 of `todo.md` has the plan) — leaving it uncommitted is the biggest risk
+to it.
+
+If you have a browser: click the dashboard's **Allow once** by hand — the
+single UNVERIFIED item, and `docs/VERIFY-DASHBOARD.md` §"NOT verified" has the
+two-minute script.
 
 If you want to improve the product: fix the cost ceiling (§5, first bullet).

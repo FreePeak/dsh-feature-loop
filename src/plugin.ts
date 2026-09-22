@@ -31,17 +31,52 @@ import { MessageId } from '@deepseek-ai/dsh-llm'
 import type { LlmCallConfig, UserMessage } from '@deepseek-ai/dsh-llm'
 import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
 import { LoopBudget } from './budget.ts'
+import type { BudgetSnapshot } from './budget.ts'
 import { ModelLadder, routeLabel } from './routing.ts'
 import { AttentionRouter, ReviewGate, judgeQuestion } from './review.ts'
 import type { GatePolicy } from './review.ts'
 import { detectSignals } from './signals.ts'
-import type { StepObservation } from './signals.ts'
+import type { ReviewSignal, StepObservation } from './signals.ts'
+import { parseDashboardConfig, startDashboard, DashboardState } from './dashboard.ts'
+import type { ApprovalOutcome, ApprovalQuestion, DashboardConfig, DashboardHandle, DashboardSnapshot } from './dashboard.ts'
 import { prepareReview, resolveReversibility } from './agent-policy.ts'
 import { validateSpec } from './spec.ts'
 import type { LoopSpec } from './spec.ts'
 import { NO_JUDGE } from './laya.ts'
 import type { Judge } from './laya.ts'
 import { budgetStopText, budgetWarnText, escalationText, reviewText } from './messages.ts'
+
+/**
+ * The approval seam's waterfall, declared locally.
+ *
+ * `@deepseek-ai/dsh-user-approval` — the package that owns this event in the
+ * harness — is not among this repo's installed peers (see package.json), so
+ * its `Events` augmentation is absent and `ctx.on('approval/request', …)`
+ * would not typecheck at all. The signature below mirrors the harness's own
+ * declaration (`packages/interaction/user-approval/src/types.ts`) field for
+ * field, including the waterfall's `next`.
+ *
+ * If that package is ever added as a devDependency, DELETE this block: two
+ * non-identical declarations of the same event are a TS2717 error, and its
+ * is the one that should win.
+ */
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    /**
+     * Ask composed answerers for one decision. Return an outcome to claim the
+     * request or call `next()` to delegate.
+     *
+     * @param question - the pending approval request.
+     * @param next - the rest of the answerer waterfall.
+     * @returns the outcome the ask is resolved with.
+     */
+    'approval/request'(
+      this: unknown,
+      question: ApprovalQuestion,
+      next: () => Promise<ApprovalOutcome>,
+    ): Promise<ApprovalOutcome>
+  }
+}
 
 /**
  * Wrap notice text as a plugin-sourced user message.
@@ -130,6 +165,21 @@ function argsKey(args: unknown): string {
 }
 
 /**
+ * The feed's key for one agent.
+ *
+ * A structural read, not `agent.id` typed: `Agent` always *claims* an `id`,
+ * but fake agents in tests may not carry one, and `String(undefined)` as a
+ * run label would be worse than the honest `agentless`.
+ *
+ * @param agent - the agent a hook was invoked for, when there is one.
+ * @returns the agent id, or `agentless`.
+ */
+function runIdOf(agent: Agent | undefined): string {
+  const id = agent === undefined ? undefined : (agent as { readonly id?: unknown }).id
+  return typeof id === 'string' && id !== '' ? id : 'agentless'
+}
+
+/**
  * How a gate-raised review is expressed at the tool boundary.
  *
  * - `ask`  — hand the decision to the approval channel (Web UI prompt). Fails
@@ -210,12 +260,21 @@ export function createPolicy(options: CreatePolicyOptions): FeatureLoopPolicy {
  *
  * @param policy - the agent's policies.
  * @param step - the 1-based step about to be proposed.
- * @returns the decision, and the notices to deliver with it.
+ * @returns the decision, the notices to deliver with it, and — surfaced for
+ * `apply`'s dashboard feed — the signals, the judge score and the budget
+ * snapshot this call already computed. The dashboard must not re-run the
+ * detectors for them, and must certainly not re-ask the judge.
  */
 export async function reviewStep(
   policy: FeatureLoopPolicy,
   step: number,
-): Promise<{ decision: PreStepDecision, notices: string[] }> {
+): Promise<{
+  decision: PreStepDecision
+  notices: string[]
+  signals: ReviewSignal[]
+  judgeScore: number | undefined
+  budget: BudgetSnapshot | undefined
+}> {
   const notices: string[] = []
 
   // Commit the previous step's observed tool call before the detectors run, so
@@ -235,6 +294,10 @@ export async function reviewStep(
     policy.router.observeStep()
   }
 
+  // The snapshot is taken before the stop check so a ceiling stop still
+  // reports where the run stood when it was cut — the dashboard's most
+  // interesting frame is the one at the moment of stopping.
+  const snapshot = policy.budget?.snapshot()
   const verdict = policy.budget?.verdict(step)
 
   // A ceiling is the one thing that stops the run rather than annotating it:
@@ -243,11 +306,13 @@ export async function reviewStep(
     return {
       decision: { kind: 'reject', reason: verdict.reason } as PreStepDecision,
       notices: [budgetStopText(verdict.reason)],
+      signals: [],
+      judgeScore: undefined,
+      budget: snapshot,
     }
   }
   if (verdict?.kind === 'warn') notices.push(budgetWarnText(verdict.reason))
 
-  const snapshot = policy.budget?.snapshot()
   const preparation = prepareReview({
     history: policy.history,
     maxSteps: policy.spec?.maxSteps ?? Number.MAX_SAFE_INTEGER,
@@ -272,6 +337,9 @@ export async function reviewStep(
   return {
     decision: { kind: 'enter', messages: notices.map(notice) },
     notices,
+    signals: preparation.signals,
+    judgeScore: policy.lastConfidence,
+    budget: snapshot,
   }
 }
 
@@ -354,6 +422,33 @@ export type GateVerdict =
   | { kind: 'deny', reason: string }
 
 /**
+ * Register the dashboard's answerer ahead of every other `approval/request`
+ * listener.
+ *
+ * Prepend is required here, not a preference. The Host's remote forwarder
+ * (`packages/api/remotes` in the harness) holds the request awaiting the
+ * browser while a Web UI tab is attached and does **not** call `next()` — so a
+ * listener registered after it would be unreachable exactly when the UI is
+ * open, which is the moment the dashboard matters most. Precedence itself is
+ * then decided inside `answer`, never by order: claim only while a dashboard
+ * tab is connected, otherwise `next()` reaches the composer panel exactly as
+ * it does today. The harness documents that sibling listener order is not a
+ * priority mechanism; the guard is what makes that safe.
+ *
+ * @param ctx - the cordis context to install into.
+ * @param dashboard - the started dashboard whose `answer` drives the claim.
+ * @returns a disposer removing the listener.
+ */
+export function attachApprovalAnswerer(ctx: Context, dashboard: DashboardHandle): () => void {
+  return ctx.on(
+    'approval/request',
+    (question: ApprovalQuestion, next: () => Promise<ApprovalOutcome>) =>
+      dashboard.answer(question, next),
+    { prepend: true },
+  )
+}
+
+/**
  * Name of this plugin, as the harness addresses it.
  */
 export const name = 'feature-loop'
@@ -368,12 +463,13 @@ export const inject = ['agents']
  * listeners and returns their disposers, which is the cordis contract.
  *
  * @param ctx - the cordis context to install into.
- * @param options - the deployment's spec, judge and gate overrides.
- * @returns a disposer removing every listener this call registered.
+ * @param options - the deployment's spec, judge, gate and dashboard overrides.
+ * @returns a disposer removing every listener this call registered and, when
+ * one was started, stopping the dashboard server.
  */
 export function apply(
   ctx: Context,
-  options: Parameters<typeof createPolicy>[0] = {},
+  options: Parameters<typeof createPolicy>[0] & { dashboard?: DashboardConfig } = {},
 ): () => void {
   const policies = new WeakMap<Agent, FeatureLoopPolicy>()
   const fresh = (): FeatureLoopPolicy => createPolicy(options)
@@ -409,11 +505,59 @@ export function apply(
     return policy
   }
 
+  // The dashboard is process-wide (one server, one feed), not per agent — it
+  // lives here rather than in `createPolicy`, whose policies are per-run.
+  const state = new DashboardState()
+  if (options.dashboard !== undefined) {
+    // Validate even when the dashboard is off: a bad field is a typo someone
+    // will flip `enabled: true` on later, and it must fail at load, then —
+    // not silently refuse to bind. `startDashboard` re-parses below; the
+    // duplicate parse is one-time at load and keeps the fail-loud check
+    // unconditional.
+    parseDashboardConfig(options.dashboard)
+  }
+  const dashboard = options.dashboard?.enabled === true
+    ? startDashboard(options.dashboard, state)
+    : undefined
+  const disposeApproval = dashboard === undefined
+    ? undefined
+    : attachApprovalAnswerer(ctx, dashboard)
+  if (dashboard !== undefined) {
+    // Both cleanup paths are kept deliberately: cordis collects `effect`
+    // disposers on unload, while SDK/standalone callers that ignore the
+    // returned disposer still get one. Each is idempotent, so running both
+    // is harmless — running neither would leak a listening socket.
+    ctx.effect?.(
+      () => () => {
+        disposeApproval?.()
+        void dashboard.stop()
+      },
+      'feature-loop: dashboard',
+    )
+  }
+
   const disposeStep = ctx.on('agent/pre-step', async ({ agent, turn, step }, next) => {
     const policy = policyFor(agent)
     const base = await next()
     if (base.kind === 'reject') return base
-    const { decision, notices } = await reviewStep(policy, step)
+    const { decision, notices, signals, judgeScore, budget } = await reviewStep(policy, step)
+    const runId = runIdOf(agent)
+    state.recordStep(runId, {
+      step,
+      ...policy.spec === undefined ? {} : { maxSteps: policy.spec.maxSteps },
+      ...budget === undefined
+        ? {}
+        : {
+            spentUSD: budget.spentUSD,
+            budgetUSD: budget.budgetUSD,
+            unpricedSteps: budget.unpricedSteps,
+          },
+    })
+    state.recordSignals(runId, signals)
+    if (judgeScore !== undefined) state.recordJudge(runId, judgeScore)
+    // The notices ARE the run's story — budget stops, escalations, review
+    // requests — in the harness's own words. One feed line each.
+    for (const text of notices) state.note('note', text, runId)
     if (decision.kind === 'reject') return decision
     return notices.length === 0
       ? base
@@ -424,6 +568,15 @@ export function apply(
     const resolved = await next()
     const policy = policyFor(agent)
     const routed = routeForStep(policy, step, undefined)
+    if (routed?.model !== undefined) {
+      state.recordRoute(
+        runIdOf(agent),
+        routeLabel({
+          ...routed.provider === undefined ? {} : { provider: routed.provider },
+          model: routed.model,
+        }),
+      )
+    }
     return routed === undefined ? resolved : { ...resolved, ...routed }
   })
 
@@ -447,6 +600,14 @@ export function apply(
       // counts it. Treating a block as success would let a repeatedly-blocked
       // loop read as a healthy one.
       policy.pending.error = true
+      // Only blocks hit the feed: logging every `auto` call would bury the
+      // decisions a human opened this page to see.
+      state.recordGate(
+        runIdOf(agent),
+        toolName,
+        gate.kind === 'deny' ? 'deny' : 'ask',
+        gate.reason,
+      )
       return gate.kind === 'deny'
         ? { kind: 'deny', reason: gate.reason }
         : { kind: 'ask', reason: gate.reason }
@@ -457,8 +618,11 @@ export function apply(
     disposeStep()
     disposeRequest()
     disposeTools()
+    disposeApproval?.()
+    if (dashboard !== undefined) void dashboard.stop()
   }
 }
 
-export { detectSignals }
+export { detectSignals, parseDashboardConfig, startDashboard, DashboardState }
 export type { StepObservation }
+export type { ApprovalOutcome, ApprovalQuestion, DashboardConfig, DashboardHandle, DashboardSnapshot }
