@@ -68,3 +68,9 @@
           inputPerMTok: 0.14
           outputPerMTok: 0.28
           cacheReadPerMTok: 0.014
+    # Run history + Metrics, on by default. Every closed turn appends one
+    # JSONL line; the dashboard's Metrics panel rolls the file up. Records
+    # are evidence, never control — a failed append is a feed line, not a
+    # failed turn. Loopback-only end to end (the file lives in the volume).
+    optimize:
+      history: .feature-loop/runs.jsonl

@@ -93,6 +93,14 @@ const SPEC: NonNullable<CreatePolicyOptions['spec']> = {
 /** The agent identity the gate needs; only its identity matters to the plugin. */
 const AGENT = {}
 
+/**
+ * Every `apply` below starts the dashboard by default (port 8100), so the
+ * fake context's disposer must actually dispose: without it the tenth test
+ * binds the tenth socket on the same port and the suite hangs on EADDRINUSE.
+ * The helper returns the disposer's promise rather than awaiting it — the
+ * harness's own contract treats unload as fire-and-forget.
+ */
+
 /** What the harness's own waterfall terminus returns when nothing objects. */
 const ALLOW: Decision = { kind: 'allow' }
 
@@ -108,12 +116,16 @@ async function call(
   exec: { agent?: unknown, name: string, arguments?: unknown } = { agent: AGENT, name: 'write_file' },
 ): Promise<{ decision: Decision, delegated: boolean }> {
   const { ctx, handler } = fakeCtx()
-  apply(ctx as never, options)
+  // The dashboard is on by default and binds 127.0.0.1:8100 — one live server
+  // per `apply`. The gate tests never read the page, so disable it here and
+  // keep the one shared port for the tests that actually need a socket.
+  const dispose = apply(ctx as never, { ...options, dashboard: { enabled: false } })
   let delegated = false
   const decision = await handler('tools/pre-execute')(
     { ...exec, arguments: exec.arguments ?? {} },
     async () => { delegated = true; return ALLOW },
   )
+  dispose()
   return { decision, delegated }
 }
 
@@ -169,20 +181,45 @@ test('a call with no agent is still gated, not silently delegated', async () => 
 
 test('the handler is registered on the harness tool-boundary event', async () => {
   const { ctx, registered } = fakeCtx()
-  apply(ctx as never, { spec: SPEC })
-  assert.deepEqual(registered(), ['agent/pre-step', 'agent/request', 'tools/pre-execute'])
+  const dispose = apply(ctx as never, { spec: SPEC, dashboard: { enabled: false } })
+  // Registration order follows apply(): the session/event recorder is
+  // registered before the step/request/tool hooks.
+  assert.deepEqual(registered(), ['session/event', 'agent/pre-step', 'agent/request', 'tools/pre-execute'])
+  dispose()
 })
 
-test('with no optimize.history there is no session/event listener', async () => {
-  const { ctx, registered } = fakeCtx()
-  apply(ctx as never, { spec: SPEC })
-  assert.ok(!registered().includes('session/event'), `registered: ${registered().join(', ')}`)
+test('the dashboard starts by default; enabled:false opts out', async () => {
+  {
+    const { ctx, registered } = fakeCtx()
+    const dispose = apply(ctx as never, { spec: SPEC })
+    assert.ok(registered().includes('session/event'), `registered: ${registered().join(', ')}`)
+    dispose()
+  }
+  {
+    const { ctx, handler } = fakeCtx()
+    void handler
+    const dispose = apply(ctx as never, { spec: SPEC, dashboard: { enabled: false } })
+    dispose()
+  }
 })
 
-test('with optimize.history the turn-end listener is registered', async () => {
-  const { ctx, registered } = fakeCtx()
-  apply(ctx as never, { spec: SPEC, optimize: { history: join(tmpdir(), 'dsh-unused.jsonl') } })
-  assert.ok(registered().includes('session/event'), `registered: ${registered().join(', ')}`)
+test('history records by default; history:"" disables it', async () => {
+  {
+    const { ctx, registered } = fakeCtx()
+    const dispose = apply(ctx as never, { spec: SPEC, dashboard: { enabled: false } })
+    assert.ok(registered().includes('session/event'), `registered: ${registered().join(', ')}`)
+    dispose()
+  }
+  {
+    const { ctx, registered } = fakeCtx()
+    const dispose = apply(ctx as never, {
+      spec: SPEC,
+      dashboard: { enabled: false },
+      optimize: { history: '' },
+    })
+    assert.ok(!registered().includes('session/event'), `registered: ${registered().join(', ')}`)
+    dispose()
+  }
 })
 
 test('isTurnEnd narrows only real turn closers', () => {
@@ -215,7 +252,13 @@ async function emitSessionEvent(
   session: unknown = { id: 'sess-1' },
 ): Promise<void> {
   const { ctx, handler } = fakeCtx()
-  apply(ctx as never, { ...options, optimize: { history: historyPath } })
+  // Dashboard off here: each `apply` would otherwise bind :8100, and these
+  // tests never read the page — one shared port cannot serve a suite.
+  const dispose = apply(ctx as never, {
+    ...options,
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+  })
   const fn = handler('session/event') as unknown as (s: unknown, e: unknown) => unknown
   fn(session, event)
   // The append is one microtask chain (dynamic import + sync write + sync
@@ -224,11 +267,17 @@ async function emitSessionEvent(
   const deadline = Date.now() + 5000
   for (;;) {
     try {
-      if (readFileSync(historyPath, 'utf8').trim() !== '') return
+      if (readFileSync(historyPath, 'utf8').trim() !== '') {
+        dispose()
+        return
+      }
     } catch {
       // Not written yet — keep polling.
     }
-    if (Date.now() > deadline) throw new Error('timed out waiting for the run record to land')
+    if (Date.now() > deadline) {
+      dispose()
+      throw new Error('timed out waiting for the run record to land')
+    }
     await new Promise(resolve => setTimeout(resolve, 10))
   }
 }
@@ -263,7 +312,11 @@ test('a re-delivered turn closer never double-records', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-hist-'))
   const historyPath = join(dir, 'runs.jsonl')
   const { ctx, handler } = fakeCtx()
-  apply(ctx as never, { spec: SPEC, optimize: { history: historyPath } })
+  const dispose = apply(ctx as never, {
+    spec: SPEC,
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+  })
   const fn = handler('session/event') as unknown as (s: unknown, e: unknown) => unknown
   const event = { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } }
   fn({ id: 'sess-2' }, event)
@@ -278,12 +331,16 @@ test('a re-delivered turn closer never double-records', async () => {
         // record landing later would be the dedup failing slowly, not passing.
         await new Promise(resolve => setTimeout(resolve, 100))
         assert.equal(readFileSync(historyPath, 'utf8').trim().split('\n').length, 1)
+        dispose()
         return
       }
     } catch {
       // Not written yet — keep polling.
     }
-    if (Date.now() > deadline) throw new Error('timed out waiting for the run record to land')
+    if (Date.now() > deadline) {
+      dispose()
+      throw new Error('timed out waiting for the run record to land')
+    }
     await new Promise(resolve => setTimeout(resolve, 10))
   }
 })
@@ -292,7 +349,11 @@ test('a non-turn event records nothing', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-hist-'))
   const historyPath = join(dir, 'runs.jsonl')
   const { ctx, handler } = fakeCtx()
-  apply(ctx as never, { spec: SPEC, optimize: { history: historyPath } })
+  const dispose = apply(ctx as never, {
+    spec: SPEC,
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+  })
   const fn = handler('session/event') as unknown as (s: unknown, e: unknown) => unknown
   fn({ id: 'sess-3' }, { type: 'user/message', data: {} })
   // The listener is synchronous up to the `asTurnEnd` narrow: a non-turn
@@ -305,6 +366,7 @@ test('a non-turn event records nothing', async () => {
   } catch {
     exists = false
   }
+  dispose()
   assert.equal(exists, false)
 })
 

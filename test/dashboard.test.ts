@@ -376,10 +376,18 @@ test('stop() settles pending asks unavailable and closes the socket', async (t) 
 
 // ── the plugin's wiring ────────────────────────────────────────────────────
 
-test('without a dashboard config, no approval listener is registered', () => {
+test('without a dashboard config, the dashboard still starts (on by default)', () => {
   const { ctx, registered } = fakeCtx()
-  const dispose = apply(ctx as never, { spec: SPEC })
-  assert.deepEqual(registered(), ['agent/pre-step', 'agent/request', 'tools/pre-execute'])
+  const dispose = apply(ctx as never, { spec: SPEC, dashboard: { enabled: false, port: 0 } })
+  assert.deepEqual(registered(), ['session/event', 'agent/pre-step', 'agent/request', 'tools/pre-execute'])
+  assert.ok(!registered().includes('approval/request'), 'disabled dashboard answers nothing')
+  dispose()
+})
+
+test('with enabled:false, no approval listener is registered', () => {
+  const { ctx, registered } = fakeCtx()
+  const dispose = apply(ctx as never, { spec: SPEC, dashboard: { enabled: false } })
+  assert.ok(!registered().includes('approval/request'))
   dispose()
 })
 

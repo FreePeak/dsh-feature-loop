@@ -74,9 +74,10 @@ export interface Config {
   gateMode?: 'ask' | 'deny'
   /**
    * The HITL approval dashboard: a loopback web page for answering this loop's
-   * approval requests and watching the run. Omitted (or `enabled` not `true`)
-   * means no server starts — the composer panel remains the only channel,
-   * exactly as before this feature existed.
+   * approval requests and watching the run. On by default — omitting the block
+   * starts the page on 127.0.0.1:8100 with a per-start token. Set
+   * `enabled: false` for no server (the composer panel remains the only
+   * channel), or `answers: false` to watch without answering.
    *
    * Validated field-by-field by `parseDashboardConfig` even when disabled, so
    * a typo fails at load rather than when someone flips `enabled` on. Set

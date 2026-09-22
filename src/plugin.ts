@@ -983,17 +983,22 @@ export function apply(
 
   // The dashboard is process-wide (one server, one feed), not per agent — it
   // lives here rather than in `createPolicy`, whose policies are per-run.
+  // Enabled by default: omitting the block starts the page on 127.0.0.1:8100
+  // with a per-start token. The posture stays loopback-only (the only hosts
+  // the config accepts are 127.0.0.1 and the container-internal 0.0.0.0), and
+  // `answers: false` (observe-only) or `enabled: false` (no server at all)
+  // are one field away for deployments that want less. The composer panel
+  // keeps working either way — the answerer claims a request only while a
+  // dashboard tab is actually connected.
   const state = new DashboardState()
-  if (options.dashboard !== undefined) {
-    // Validate even when the dashboard is off: a bad field is a typo someone
-    // will flip `enabled: true` on later, and it must fail at load, then —
-    // not silently refuse to bind. `startDashboard` re-parses below; the
-    // duplicate parse is one-time at load and keeps the fail-loud check
-    // unconditional.
-    parseDashboardConfig(options.dashboard)
-  }
-  const dashboard = options.dashboard?.enabled === true
-    ? startDashboard(options.dashboard, state)
+  // Validate even when the dashboard is off: a bad field is a typo someone
+  // will flip `enabled: true` on later, and it must fail at load, then —
+  // not silently refuse to bind. `startDashboard` re-parses below; the
+  // duplicate parse is one-time at load and keeps the fail-loud check
+  // unconditional.
+  parseDashboardConfig(options.dashboard ?? {})
+  const dashboard = (options.dashboard?.enabled ?? true)
+    ? startDashboard(options.dashboard ?? {}, state)
     : undefined
   // The brief's explainer: explicit injection wins (tests, custom transports);
   // otherwise the dashboard's `brief:` row builds one from the deployment's
@@ -1067,13 +1072,19 @@ export function apply(
   // (zeros/empties), never invented — the same honesty rule `refine.ts`
   // follows when it writes records from `LoopRunResult`.
   const optimize: OptimizeConfig | undefined = options.optimize
-  const historyPath = optimize?.history
-  const historyEnabled = historyPath !== undefined && historyPath.trim() !== ''
+  // On by default: omitting `optimize` records to `.feature-loop/runs.jsonl`
+  // under the process working directory. An explicit `history` overrides the
+  // path; an explicit `history: ''` disables recording. The default keeps the
+  // loopback posture (a file next to the process, not a service), and records
+  // are evidence, never control — a failed append is a feed line, not a
+  // failed turn.
+  const historyPath = optimize?.history ?? '.feature-loop/runs.jsonl'
+  const historyEnabled = historyPath.trim() !== ''
   if (historyEnabled) {
     // The records are written even when the dashboard is off: they are the
     // only thing that makes the next `--derive` possible, so a headless
-    // deployment that enables history but not the page still learns. The
-    // feed line says so once, at load — not per turn.
+    // deployment still learns. The feed line says so once, at load — not
+    // per turn.
     state.note('note', `run history recording to ${historyPath}`)
   }
   // Keyed by (session, turn) so a resumed or repaired session that re-delivers
@@ -1081,14 +1092,19 @@ export function apply(
   // exactly-once delivery is a property of the loop's append, not of this
   // listener.
   const recordedTurns = new Set<string>()
-  const disposeSession = historyEnabled
-    ? ctx.on('session/event', (session: unknown, event: unknown) => {
+  // `historyEnabled` narrows `historyPath` to non-empty, but the closure
+  // below cannot see that — so the path is captured once, inside the branch,
+  // rather than asserted at the call site. A `!` here would trade a load-time
+  // guarantee for a reader's trust exercise.
+  const disposeSession = !historyEnabled ? undefined : (() => {
+    const path: string = historyPath
+    return ctx.on('session/event', (session: unknown, event: unknown) => {
       const end = asTurnEnd(event)
       if (end === undefined) return
       const key = `${sessionIdOf(session)}#${String(end.turn)}`
       if (recordedTurns.has(key)) return
       recordedTurns.add(key)
-      void recordTurn({ session, event: end, options, policyFor, state, historyPath: historyPath! })
+      void recordTurn({ session, event: end, options, policyFor, state, historyPath: path })
         .catch((error: unknown) => {
           // A failed append must never fail the turn: the record is
           // evidence, not control. The feed line says so in the harness's
@@ -1096,7 +1112,7 @@ export function apply(
           state.note('note', `run history append failed: ${error instanceof Error ? error.message : String(error)}`)
         })
     })
-    : undefined
+  })()
 
   const disposeStep = ctx.on('agent/pre-step', async ({ agent, turn, step }, next) => {
     const policy = policyFor(agent)

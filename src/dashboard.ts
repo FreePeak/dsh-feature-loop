@@ -179,7 +179,10 @@ export interface DashboardSnapshot {
 
 /** Configured under the patch row's `dashboard:` key. All fields optional. */
 export interface DashboardConfig {
-  /** Must be `true` to start the server at all. */
+  /**
+   * Set `false` to start no server. Defaults to on: omitting the block starts
+   * the page on 127.0.0.1:8100 with a per-start token.
+   */
   enabled?: boolean
   /** Bind address. Only `127.0.0.1` (default) or `0.0.0.0` (in-container). */
   host?: string
