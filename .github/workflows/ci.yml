@@ -8,11 +8,11 @@
 #
 # One verified fact about this repository shapes the typecheck job.
 #
-# 1. `npm install` and `npm ci` do not work here. There is no lockfile, and the
-#    devDependency `@deepseek-ai/cordis@0.4.0` has no published version, so a
-#    bare install dies with ETARGET before it installs anything (verified on a
-#    clean checkout). The typecheck job therefore installs only its own tooling
-#    into a scratch prefix under $RUNNER_TEMP.
+# 1. An install used to be impossible: the manifest pinned harness-monorepo
+#    workspace versions (`@deepseek-ai/cordis@0.4.0`,
+#    `@deepseek-ai/schemastery@0.1.5`) that were never published, so a bare
+#    install died with ERR_PNPM_NO_MATCHING_VERSION. Fixed — the harness packages
+#    are now optional peers, and the typecheck job installs normally.
 #
 # `test` needs none of that: the suite is dependency-free, and this job runs it
 # on a checkout with no node_modules at all. That is deliberate and worth
@@ -112,39 +112,36 @@ jobs:
         with:
           node-version: 22
 
-      # TypeScript and @types/node are installed into a scratch prefix rather
-      # than the repository, because installing in the repository fails: there
-      # is no lockfile and `@deepseek-ai/cordis@0.4.0` has no published version.
-      # See the header.
-      - name: Install TypeScript and Node types into a scratch prefix
-        run: |
-          npm install --prefix "$RUNNER_TEMP/ts" --no-save --no-package-lock \
-            --no-audit --no-fund typescript@5 @types/node@22
+      # A normal install now works. It used to be impossible: the manifest
+      # pinned `@deepseek-ai/cordis@0.4.0` and `@deepseek-ai/schemastery@0.1.5`,
+      # which are harness-MONOREPO workspace versions that were never published,
+      # so `npm install` aborted with ERR_PNPM_NO_MATCHING_VERSION. Those are no
+      # longer devDependencies, the harness packages are optional peers supplied
+      # by the deployment, and `.npmrc` disables peer auto-installation (some
+      # transitive peers, like `@deepseek-ai/dsh-type-meta`, are unpublished).
+      # So the install is three packages: typescript, @types/node, tsdown.
+      - name: Install dev tooling
+        run: npm install --no-audit --no-fund
 
-      # Files are listed explicitly, so tsconfig.json is ignored entirely and
-      # every option below mirrors it: target ES2024, NodeNext module and
-      # resolution, strict, esModuleInterop, skipLibCheck, isolatedModules,
+      # Files are listed explicitly rather than using tsconfig.json, and every
+      # option below mirrors it: target ES2024, NodeNext module and resolution,
+      # strict, esModuleInterop, skipLibCheck, isolatedModules,
       # allowImportingTsExtensions, noEmit. `rootDir`/`outDir`/`declaration`/
       # `composite` are moot under --noEmit and are left out.
       #
-      # --typeRoots points into the scratch prefix: @types/node is not, and must
-      # not be, a dependency of this repository.
-      #
-      # The list is the import closure with no `@deepseek-ai/*` in it, plus
-      # src/plugin.ts, which does import the harness — see the note below.
-      #
-      # Since the fork was removed, src/ holds exactly one harness-coupled
-      # module (`plugin.ts`) instead of eight. It is still excluded here for the
-      # same reason as before: the harness packages are not resolvable in CI.
-      # It is covered locally against the prebuilt packages. Add a new pure
-      # module to this list; a module that gains a harness import must leave it.
+      # The list is the import closure with no `@deepseek-ai/*` in it.
+      # src/plugin.ts and src/index.ts import the harness, and those packages are
+      # peers this job deliberately does not install — they are supplied by the
+      # deployment, and their published types differ from a local checkout's. So
+      # the two harness-coupled modules are typechecked locally instead, against
+      # the prebuilt packages from a harness checkout. Add a new pure module to
+      # this list; a module that gains a harness import must leave it.
       - name: tsc --noEmit
         run: |
-          "$RUNNER_TEMP/ts/node_modules/.bin/tsc" --noEmit \
+          npx tsc --noEmit \
             --target ES2024 --module NodeNext --moduleResolution NodeNext \
             --strict --esModuleInterop --skipLibCheck --isolatedModules \
             --allowImportingTsExtensions \
-            --typeRoots "$RUNNER_TEMP/ts/node_modules/@types" \
             src/agent-policy.ts src/budget.ts src/cli.ts \
             src/judge.ts src/laya.ts src/llm.ts src/messages.ts src/prompts.ts \
             src/review.ts src/routing.ts src/runner.ts src/signals.ts src/spec.ts \

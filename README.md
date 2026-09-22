@@ -5,7 +5,7 @@
 [![CI](https://github.com/FreePeak/dsh-feature-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/FreePeak/dsh-feature-loop/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](.nvmrc)
-[![Tests](https://img.shields.io/badge/tests-126%20passing-brightgreen.svg)](#quick-start)
+[![Tests](https://img.shields.io/badge/tests-133%20passing-brightgreen.svg)](#quick-start)
 
 A **book-shaped policy layer** for bug-fixing and small features: budget
 ceilings, cheap-first routing, a step-level review gate, and a local judge that
@@ -80,7 +80,7 @@ and that is the intended behaviour, not a miss.
 ## Quick start
 
 ```bash
-# 126 tests, no network, no model call — the policy layer is pure
+# 133 tests, no network, no model call — the policy layer is pure
 node --experimental-strip-types --test test/*.test.ts
 
 # the end-to-end demo (needs onegw on :8080 and xiaomi/mimo-v2.5)
@@ -94,9 +94,31 @@ bash demo/run.sh --judge none         # detectors only, no judge
 
 `demo/run.sh` resets the planted bug first, so every run has real work to do.
 
-### Installing it into DSH
+### Running it
 
-To run the plugin inside a real harness profile — including alongside Agent
+**Docker (recommended)** — one command, no toolchain, approval panel working:
+
+```bash
+make up          # build, start, and print the URL + token
+make help        # all targets
+```
+
+`make up` picks the gateway key up from `~/.dsh/.credentials.yaml` when it is not
+in the environment. Without make:
+
+```bash
+ONEGW_API_KEY=sk-... docker compose -f docker/docker-compose.yml up -d --build
+docker compose -f docker/docker-compose.yml logs -f   # the URL + token
+```
+
+It installs the harness CLI and its bundles from npm (no monorepo build), builds
+only this plugin, and pins the permission preset that makes the approval panel
+appear. See **[`docker/README.md`](docker/README.md)** — including the two hosts
+DSH refuses to bind, and the small relay that resolves it.
+
+### Installing it into DSH by hand
+
+To run the plugin inside a local harness profile — including alongside Agent
 Teams — follow **[`docs/SETUP.md`](docs/SETUP.md)**. It covers the build, a
 scratch profile, the cordis patch, and a small task that makes the ceilings and
 the review gate visibly fire, plus the failure modes people actually hit.
@@ -107,7 +129,29 @@ dsh plugin --profile <name> add -w file:$PWD     # `-w` is required for a profil
 dsh --profile <name> --dump-config | grep -A8 feature-loop   # verify composition
 ```
 
-The audit behind the current design is in **[`docs/PRD.md`](docs/PRD.md)**.
+Once it is running, a gated step **prompts you in the browser**: the composer
+shows the reason with **Reject** / **Allow once**, and your answer decides
+whether the tool runs. **This has been observed end to end** — a real browser
+rendered this plugin's own `REVIEW REQUESTED` reason, **Allow once** wrote the
+file, and **Reject** on the same prompt wrote nothing:
+[`docs/VERIFY-E2E-APPROVAL.md`](docs/VERIFY-E2E-APPROVAL.md). You are not writing that UI — it ships with DSH as
+`@deepseek-ai/dsh-client-ui-approval`; the plugin's job is to emit `ask` so it
+gets reached.
+
+- **[`docs/SETUP.md`](docs/SETUP.md)** — install and drive it end to end.
+- **[`docs/RUNBOOK-SERVER.md`](docs/RUNBOOK-SERVER.md)** — the verified live
+  server: an acceptance checklist, the boot command, the URL, and the
+  permission-preset trap that silently disables the approval prompt.
+- **[`docs/PRD.md`](docs/PRD.md)** — the audit behind the current design.
+- **[`docs/VERIFY-APPROVAL.md`](docs/VERIFY-APPROVAL.md)** — independent
+  verification of all five approval outcomes, with file:line evidence.
+- **[`docs/VERIFY-INTEGRATION.md`](docs/VERIFY-INTEGRATION.md)** — the same
+  five outcomes executed in a **real** DSH context (5/5 pass), plus the exact
+  string the approval panel renders.
+- **[`docs/VERIFY-E2E-APPROVAL.md`](docs/VERIFY-E2E-APPROVAL.md)** — a real
+  browser on the containerised deployment: the panel appears with this plugin's
+  reason, **Allow once** writes the file, **Reject** blocks it.
+- **[`docker/README.md`](docker/README.md)** — the one-command container run.
 
 ---
 
@@ -145,31 +189,55 @@ The policies are shared. Only transport and session state differ.
 | Cheap-first ladder | ✅ wired | ✅ wired (`agent/request`) |
 | Metering | ✅ wired | ⚠️ see "Known limits" |
 | Signals | ✅ wired | ✅ wired (`agent/pre-step`) |
-| Review gate | ✅ wired (blocks) | ✅ wired (`tools/pre-execute`, **denies**) |
+| Review gate | ✅ wired (blocks) | ✅ wired (`tools/pre-execute`, **asks**) |
+| Human approval in the browser | ➖ console prompt | ✅ Web UI composer prompt |
 | Judge | ✅ wired | ✅ wired (`agent/pre-step`, awaited) |
-| Operator review | ✅ wired (blocks) | ✅ surfaces as a notice |
+| Operator review | ✅ wired (blocks) | ✅ prompts, then blocks |
 
-**The gate now denies before dispatch.** This used to be the one honest
-difference between the two paths, and it was a defect: the old fork consulted the
-gate from its own copy of `executeToolCalls`, so a gate-raised review arrived
-*one step late* — after the tool had already run. The fork's README filed
-blocking approval as an unfinished refinement.
+**The gate is decided before dispatch, and a human answers it in the browser.**
+This used to be the one honest difference between the two paths, and it was a
+defect: the old fork consulted the gate from its own copy of
+`executeToolCalls`, so a gate-raised review arrived *one step late* — after the
+tool had already run. The fork's README filed blocking approval as an unfinished
+refinement.
 
 Hosting on the harness closed it. `tools/pre-execute` is a first-class
-pre-dispatch hook returning `PreToolDecision` (`allow` / `deny` / `ask`), so the
-plugin can deny the call *before* it is dispatched:
+pre-dispatch hook returning `PreToolDecision` (`allow` / `deny` / `ask`):
 
 ```ts
 ctx.on('tools/pre-execute', async ({ agent, name }, next) => {
   const gate = gateForTool(policyFor(agent), name)
-  if (gate.allowed) return next()
-  return { kind: 'deny', reason: gate.notice }   // answered, not dropped
+  if (gate.kind === 'proceed') return next()
+  return { kind: 'ask', reason: gate.reason }   // answered, not dropped
 })
 ```
 
-A denied call is **answered**, not dropped: the assistant's tool-call block must
+`ask` routes to the deployment's approval channel — in the Web UI, the
+conversation composer prompt from `@deepseek-ai/dsh-client-ui-approval`. You
+approve and the tool dispatches; you reject and the model is told a human said
+no. The plugin's job ends at emitting the decision; the harness
+(`serviceAsk` in `@deepseek-ai/dsh-tools`) maps the outcome to allow or deny.
+
+A blocked call is **answered**, not dropped: the assistant's tool-call block must
 receive a result or session replay is invalidated. `deny` materializes a tool
 error the model can read and react to.
+
+### `gateMode` — how the human is asked
+
+| Mode | Behaviour | Use it for |
+|---|---|---|
+| `ask` *(default)* | Prompts the approval channel. Fails closed to a refusal when none is mounted, or the outcome is `unavailable`. | Interactive Web UI sessions |
+| `deny` | Refuses outright, never prompts. | Unattended runs and CI |
+
+`ask` is the default because it **degrades to exactly `deny`** when there is no
+approval channel — it is strictly more capable without being less safe. Set
+`deny` when no human is watching.
+
+```yaml
+- id: feature-loop
+  config:
+    gateMode: ask          # or: deny (CI / unattended)
+```
 
 ---
 
@@ -281,7 +349,33 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 - **Spend is observed, not metered by the plugin.** `LoopBudget.spend()` must be
   called with real usage for the cost ceiling to mean anything; the plugin
   currently reads spend from the budget snapshot rather than pricing each settled
-  attempt. **This is the largest correctness gap** and is Phase 2 work.
+  attempt. **This is the largest correctness gap** and is Phase 2b work.
+  `maxSteps` is the only ceiling that is trustworthy today.
+- **The approval prompt depends on the session's permission preset, and the
+  user's settings win.** A fresh session's approval policy comes from
+  `permission.defaultPreset` in `~/.dsh/settings.yaml`, which
+  `permission-presets` applies *after* any config default. On this machine it is
+  `danger-full-access`, whose preset is `approval: never` — so an `ask` is
+  refused with `Error: the user rejected tool "X"` **before any UI is
+  consulted**, and no panel can appear. Three fixes: switch the preset in the
+  session's UI selector, set that key in `settings.yaml` (global, and relaxes the
+  sandbox), or run a server under a private `DSH_HOME` whose settings pin
+  `workspace-write` — the last changes nothing globally. Details in
+  [`docs/RUNBOOK-SERVER.md`](docs/RUNBOOK-SERVER.md) §2.5-2.6.
+
+  This is proven, not assumed: the same headless task returns `rejected` under
+  the default home and `unavailable` ("no approval channel is available") under a
+  `workspace-write` home. The second is the gate's `ask` **reaching the approval
+  seam**; the first is `never` refusing before any UI is consulted.
+- **`gatePolicies` / `actuator` keys must be the harness's real tool names**
+  (`read`, `write`, `edit`, `bash`, `glob`, `grep`). The `read_file` / `edit_file`
+  / `run_tests` names belong to this repo's standalone runner and match nothing
+  in a DSH session. A non-matching name is not an error — the tool falls through
+  to the unclassified `irreversible` default, so the gate still fires but with
+  `always-approve` rather than the policy you configured.
+- **An agent-less tool call cannot prompt.** It is still gated (it no longer
+  bypasses the gate), but with no agent there is no session to audit to and no UI
+  to reach, so the harness resolves the `ask` to a refusal.
 - **The plugin path needs a build.** It imports `@deepseek-ai/dsh-*`; the
   standalone runner does not.
 - **Review rate is 20% in the demo, not the book's <10%.** Critical signals are
@@ -298,14 +392,18 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 
 ## Phase status
 
-- **Phase 0 — policy layer** ✅ 126 tests, pure, no harness dependency
+- **Phase 0 — policy layer** ✅ 133 tests, pure, no harness dependency
 - **Phase 1 — loop integration** ✅ runner + CLI + tools + demo, working end to end
 - **Phase 1b — plugin compiles** ✅ `tsc --noEmit` clean against prebuilt `@deepseek-ai/dsh-*`
 - **Phase 2 — plugin review gate** ✅ all six detectors, the judge, the router and
-  the gate are read by `src/plugin.ts`; the gate **denies before dispatch**.
+  the gate are read by `src/plugin.ts`; the gate **asks before dispatch**.
 - **Phase 1c — de-fork** ✅ the vendored loop is gone; the policies are hosted on
   `agent/pre-step` / `agent/request` / `tools/pre-execute`. See
   [`docs/PRD.md`](docs/PRD.md).
+- **Phase 1d — human approval in the Web UI** ✅ the gate emits `ask`, DSH routes
+  it to `@deepseek-ai/dsh-client-ui-approval`, and a human approves or rejects in
+  the composer. `gateMode: ask | deny`. Verified live on a scratch profile with
+  Agent Teams.
 - **Phase 2b — real spend accounting** ⬜ price each settled attempt into
   `LoopBudget` so the cost ceiling is load-bearing (the largest open gap).
 - **Phase 3 — Laya** ⬜ deploy the `systemone` provider in onegw, switch `--judge laya`
@@ -313,17 +411,24 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 ### Verifying the whole thing
 
 ```bash
-node --experimental-strip-types --test test/*.test.ts   # 126 pass
-node /Users/linh.doan/.npm/_npx/a322a253dbd59f36/node_modules/typescript/lib/tsc.js --noEmit   # clean
+node --experimental-strip-types --test test/*.test.ts   # 133 pass
+pnpm test:integration                                   # 5 pass, in the real harness
+tsc --noEmit                                            # clean
 bash demo/run.sh                                        # goal-met
 grep -rn "FORK-DELTA" src/ | wc -l                      # 0 — the fork is gone
 ```
 
-### Three gaps closed along the way
+`pnpm test:integration` is the one that matters for human approval: it mounts
+this plugin into a **real** cordis context — real tool runtime, real approval
+service, real session — and drives the actual dispatch path, asserting that
+approving runs the write and rejecting stops it. See
+[`docs/VERIFY-INTEGRATION.md`](docs/VERIFY-INTEGRATION.md).
+
+### Four gaps closed along the way
 
 - **The gate was one step late.** The fork consulted its gate from its own copy of
   `executeToolCalls`, so a gate-raised review arrived after the tool had already
-  run. Hosting the gate on `tools/pre-execute` denies the call before dispatch —
+  run. Hosting the gate on `tools/pre-execute` decides the call before dispatch —
   the fix the fork could not reach without forking.
 - **`error-cascade` could not fire in the plugin path.** `StepObservation.error`
   was never populated: per-call `isError` was internal to `tool-calls.ts` and
@@ -335,3 +440,8 @@ grep -rn "FORK-DELTA" src/ | wc -l                      # 0 — the fork is gone
   trivially 100% of all steps, so the detector fired on the first step of every
   run — a signal that always fires is noise that trains its reader to ignore the
   real ones. It now needs a five-step floor before it is allowed to speak.
+- **The gate failed open for an agent-less call.** `policyFor` returned
+  `undefined` for `agent === undefined`, so the handler delegated and the call
+  dispatched **ungated**. An agent-less call now gets a shared policy and is
+  gated like any other; the refusal happens downstream, where the harness denies
+  an agent-less `ask`. Caught by independent verification, not by CI.

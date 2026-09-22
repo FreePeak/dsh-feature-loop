@@ -93,6 +93,20 @@ export interface FeatureLoopPolicy {
   pending: { tool: string, argsKey: string, error: boolean } | undefined
   /** The last step's judgement, reused by the gate. */
   lastConfidence: number | undefined
+  /**
+   * How a gate-raised review is expressed at the tool boundary.
+   *
+   * `ask` hands the decision to the deployment's approval channel — in the Web
+   * UI, the conversation composer prompt from
+   * `@deepseek-ai/dsh-client-ui-approval`. `deny` refuses outright and never
+   * prompts, which is the right stance for an unattended or CI run.
+   *
+   * `ask` is the default because it *degrades to exactly `deny`* when no
+   * approval service is mounted and when the outcome is `unavailable`, so it is
+   * strictly more capable without being less safe. See `serviceAsk` in
+   * `@deepseek-ai/dsh-tools`.
+   */
+  gateMode: GateMode
 }
 
 /**
@@ -116,6 +130,15 @@ function argsKey(args: unknown): string {
 }
 
 /**
+ * How a gate-raised review is expressed at the tool boundary.
+ *
+ * - `ask`  — hand the decision to the approval channel (Web UI prompt). Fails
+ *            closed to a refusal when no channel is mounted.
+ * - `deny` — refuse outright, never prompting. For unattended and CI runs.
+ */
+export type GateMode = 'ask' | 'deny'
+
+/**
  * What a deployment may configure when building its policies.
  *
  * Every field is optional: omitting all of them yields a policy set with no
@@ -132,6 +155,11 @@ export interface CreatePolicyOptions {
   gatePolicies?: Record<string, GatePolicy>
   /** Attention-router overrides: review budget and judge threshold. */
   router?: ConstructorParameters<typeof AttentionRouter>[0]
+  /**
+   * How a review is expressed at the tool boundary. Defaults to `ask` so a
+   * human can approve it in the Web UI; set `deny` for unattended runs.
+   */
+  gateMode?: GateMode
 }
 
 /**
@@ -169,6 +197,7 @@ export function createPolicy(options: CreatePolicyOptions): FeatureLoopPolicy {
     ladder,
     router,
     gate,
+    gateMode: options.gateMode ?? 'ask',
     judge: options.judge ?? NO_JUDGE,
     history: [],
     pending: undefined,
@@ -290,22 +319,39 @@ export function escalationForStep(
  * Ask the gate about one tool call at the tool boundary.
  *
  * This is where the tool name is finally known, so a gate-raised review can be
- * delivered *before* the call is dispatched rather than one step after it.
+ * decided *before* the call is dispatched rather than one step after it.
  *
  * @param policy - the agent's policies.
  * @param toolName - the tool about to run.
- * @returns the decision, or `undefined` when nothing gates it.
+ * @returns the review decision: proceed, prompt a human, or refuse.
  */
 export function gateForTool(
   policy: FeatureLoopPolicy,
   toolName: string,
-): { allowed: boolean, notice?: string } {
-  if (policy.gate === undefined) return { allowed: true }
+): GateVerdict {
+  if (policy.gate === undefined) return { kind: 'proceed' }
   const reversibility = resolveReversibility(toolName, policy.spec?.actuator)
   const decision = policy.gate.check(toolName, reversibility, policy.lastConfidence)
-  if (!decision.review) return { allowed: true }
-  return { allowed: false, notice: reviewText(decision.reason, decision.source) }
+  if (!decision.review) return { kind: 'proceed' }
+  const reason = reviewText(decision.reason, decision.source)
+  // The mode decides *how* the human is asked, never *whether* the call is
+  // questioned: both branches stop the call, and `ask` still fails closed if no
+  // approval channel answers.
+  return policy.gateMode === 'deny'
+    ? { kind: 'deny', reason }
+    : { kind: 'ask', reason }
 }
+
+/**
+ * The gate's verdict for one tool call.
+ *
+ * `proceed` dispatches, `ask` routes to the deployment's approval channel, and
+ * `deny` refuses without prompting.
+ */
+export type GateVerdict =
+  | { kind: 'proceed' }
+  | { kind: 'ask', reason: string }
+  | { kind: 'deny', reason: string }
 
 /**
  * Name of this plugin, as the harness addresses it.
@@ -340,9 +386,21 @@ export function apply(
    * nothing and let the call through ungated. Building on demand means the gate
    * fails closed: an unseen agent gets the deployment's real policies, not a
    * pass.
+   *
+   * An **agent-less** call cannot be keyed by agent, and it cannot route a
+   * review anywhere either: `serviceAsk` in `@deepseek-ai/dsh-tools` refuses an
+   * `ask` with no agent, because there is no session to audit to and no UI to
+   * reach. So it gets one shared policy, and the gate is consulted normally —
+   * the decision then fails closed downstream. Returning `undefined` here
+   * instead would skip the gate entirely and dispatch the call, which is the
+   * opposite of the guarantee this function exists to provide.
    */
-  const policyFor = (agent: Agent | undefined): FeatureLoopPolicy | undefined => {
-    if (agent === undefined) return undefined
+  let agentless: FeatureLoopPolicy | undefined
+  const policyFor = (agent: Agent | undefined): FeatureLoopPolicy => {
+    if (agent === undefined) {
+      agentless ??= fresh()
+      return agentless
+    }
     let policy = policies.get(agent)
     if (policy === undefined) {
       policy = fresh()
@@ -352,7 +410,7 @@ export function apply(
   }
 
   const disposeStep = ctx.on('agent/pre-step', async ({ agent, turn, step }, next) => {
-    const policy = policyFor(agent)!
+    const policy = policyFor(agent)
     const base = await next()
     if (base.kind === 'reject') return base
     const { decision, notices } = await reviewStep(policy, step)
@@ -365,7 +423,6 @@ export function apply(
   const disposeRequest = ctx.on('agent/request', async ({ agent, step }, next) => {
     const resolved = await next()
     const policy = policyFor(agent)
-    if (policy === undefined) return resolved
     const routed = routeForStep(policy, step, undefined)
     return routed === undefined ? resolved : { ...resolved, ...routed }
   })
@@ -374,21 +431,25 @@ export function apply(
     'tools/pre-execute',
     async ({ agent, name: toolName, arguments: rawArgs }: ToolExecution, next: () => Promise<PreToolDecision>) => {
       const policy = policyFor(agent)
-      if (policy === undefined) return next()
 
       // Record the call here: this is the only point where the tool name and its
       // parsed arguments are both known. The step's outcome is filled in below.
       policy.pending = { tool: toolName, argsKey: argsKey(rawArgs), error: false }
 
       const gate = gateForTool(policy, toolName)
-      // `deny` materializes a tool error the model can read and react to. The
-      // call is answered rather than dropped, so session replay stays valid.
-      if (gate.allowed) return next()
-      // A denied call is a step that made no progress, so `error-cascade` counts
-      // it. Treating a block as success would let a repeatedly-blocked loop read
-      // as a healthy one.
+      if (gate.kind === 'proceed') return next()
+
+      // The call is blocked either way, and the call is *answered* rather than
+      // dropped so the assistant's tool-call block still gets a result and
+      // session replay stays valid.
+      //
+      // A blocked call is a step that made no progress, so `error-cascade`
+      // counts it. Treating a block as success would let a repeatedly-blocked
+      // loop read as a healthy one.
       policy.pending.error = true
-      return { kind: 'deny', reason: gate.notice ?? `blocked by review gate: ${toolName}` }
+      return gate.kind === 'deny'
+        ? { kind: 'deny', reason: gate.reason }
+        : { kind: 'ask', reason: gate.reason }
     },
   )
 
