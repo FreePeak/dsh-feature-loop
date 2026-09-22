@@ -38,13 +38,29 @@ import { RuntimeContextProjection } from './runtime-context.ts'
 import { AssistantStreamAttempt } from './assistant-stream.ts'
 import { SystemPromptProjection } from './runtime-context.ts'
 import { executeToolCalls } from './tool-calls.ts'
+import type { ToolCallOutcome } from './tool-calls.ts'
 import type { LoopBudget } from './budget.ts'
 import type { ModelLadder, Route } from './routing.ts'
 import { routeLabel } from './routing.ts'
+import { judgeQuestion } from './review.ts'
 import type { AttentionRouter, ReviewGate } from './review.ts'
 import type { Judge } from './laya.ts'
 import type { LoopSpec } from './spec.ts'
-import { budgetStopMessage, budgetWarnMessage, escalationMessage } from './messages.ts'
+import type { StepObservation } from './signals.ts'
+/* FORK-DELTA(6): the shared policy decisions. These live in their own module
+ * rather than in `runner.ts` because importing them from there dragged
+ * `node:child_process`, `node:fs` and `node:path` into the plugin's module graph
+ * for the sake of pure functions — and because a test cannot import this file at
+ * all (upstream's parameter properties are rejected by `--experimental-strip-types`),
+ * so logic left inside it is logic nothing checks. */
+import {
+  argsKeyOf,
+  gateDecisionFor,
+  noteToolOutcomes,
+  prepareReview,
+  resolveReversibility,
+} from './agent-policy.ts'
+import { FEATURE_LOOP_SOURCE, budgetStopMessage, budgetWarnMessage, escalationMessage } from './messages.ts'
 
 /** FORK-DELTA: the policies this fork adds to the vendored loop. */
 export interface FeatureLoopPolicy {
@@ -92,6 +108,33 @@ function requestProposal(header: EpochHeader): LlmCallConfig {
   return proposal
 }
 
+/**
+ * FORK-DELTA(5): the review notice, as a DSH user message.
+ *
+ * Built here rather than in `messages.ts` so the review path stays inside the
+ * one file this fork edits. The wording follows the budget notices — labelled,
+ * and explicit about who decides — and deliberately reads correctly both when
+ * the review is raised *before* a step and when it is raised at the gate, after
+ * a tool has already run.
+ *
+ * @param reason - the router's or the gate's own words for the decision.
+ * @param source - what produced it (`signal`, `judge`, `policy`, `operator`, …).
+ * @returns the user-role notice the loop appends.
+ */
+function reviewNotice(reason: string, source: string): UserMessage {
+  return createUserMessage({
+    content: [{
+      type: 'text',
+      text: [
+        `REVIEW REQUESTED (${source}): ${reason}.`,
+        'A human should review this before the loop goes further. Do not start work that depends on it; '
+        + 'if the step was not consistent with the goal, stop and report what you have instead.',
+      ].join('\n'),
+    }],
+    source: { ...FEATURE_LOOP_SOURCE, form: 'notice', summary: `review requested (${source})` },
+  })
+}
+
 /** Drives one session through turn and step boundaries. */
 export class ReactLoopAgent implements Agent {
   readonly inbox: ReactLoopInbox
@@ -134,6 +177,25 @@ export class ReactLoopAgent implements Agent {
   /** The route decided for the current step, consumed by `prepareRequest`. */
   private stepRoute: Route | undefined
 
+  /* FORK-DELTA(5): the review policy and the state it needs to run.
+   *
+   * Upstream has no equivalent of any of these. Each is read in exactly one
+   * place — the router and judge in `preStep`, the gate at the tool-dispatch
+   * seam — and all of them are optional: a deployment that configures none of
+   * them runs the upstream loop unchanged, down to the allocations it skips. */
+  /** Attention router: which steps are worth a human's eyes, under a budget. */
+  private readonly router: AttentionRouter | undefined
+  /** The local judge that ranks review-worthiness. Absent means detection-only. */
+  private readonly judge: Judge | undefined
+  /** The reversibility-tiered safety gate, consulted before a tool runs. */
+  private readonly gate: ReviewGate | undefined
+  /** The validated spec, which owns each tool's reversibility class. */
+  private readonly spec: LoopSpec | undefined
+  /** Completed steps as the detectors see them. Written only when a router reads it. */
+  private readonly history: StepObservation[] = []
+  /** The judge's score for the current step; also the gate's confidence. */
+  private stepJudgeScore: number | undefined
+
   constructor(
     private loopCtx: Context,
     public readonly id: SessionId,
@@ -143,6 +205,10 @@ export class ReactLoopAgent implements Agent {
   ) {
     this.budget = policy.budget
     this.ladder = policy.ladder
+    this.router = policy.router
+    this.judge = policy.judge
+    this.gate = policy.gate
+    this.spec = policy.spec
     this.requestSurfaceGeneration = session.surface.replaceGeneration
     this.dispatch = agentEvents(loopCtx, this)
     this.scope = createScope(loopCtx, this)
@@ -166,21 +232,86 @@ export class ReactLoopAgent implements Agent {
    * @param provider - the route that served the attempt.
    * @param model - the model that served the attempt.
    * @param usage - adapter-reported token counts, when the adapter reported any.
+   * @param outcome - the tool call this step asked for, when it asked for one.
+   *   Absent for a step that never reached a tool call, which is what
+   *   {@link StepObservation}'s optional fields are for.
    */
-  private meterAttempt(provider: string, model: string, usage: TokenUsage | undefined): void {
+  private meterAttempt(
+    provider: string,
+    model: string,
+    usage: TokenUsage | undefined,
+    outcome?: { tool?: string, argsKey?: string },
+  ): void {
     if (this.budget === undefined) {
       this.lastAttemptUSD = undefined
-      return
+    } else {
+      try {
+        this.lastAttemptUSD = this.budget.spend(provider, model, usage)
+      } catch (error: unknown) {
+        this.lastAttemptUSD = undefined
+        this.loopCtx.logger.warn(
+          `feature-loop: could not price ${provider}/${model}: `
+          + `${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
     }
-    try {
-      this.lastAttemptUSD = this.budget.spend(provider, model, usage)
-    } catch (error: unknown) {
-      this.lastAttemptUSD = undefined
-      this.loopCtx.logger.warn(
-        `feature-loop: could not price ${provider}/${model}: `
-        + `${error instanceof Error ? error.message : String(error)}`,
-      )
+    /* FORK-DELTA(5): the step history the detectors read.
+     *
+     * This is the loop's only once-per-settled-step hook, so it is where the
+     * observation is appended — and it is appended *outside* the budget guard
+     * above, because the detectors must see every step even in a deployment
+     * that configured no ceiling.
+     *
+     * It is recorded only when a router will read it. With no router the array
+     * would grow for the lifetime of an unbounded session and nothing would
+     * ever look at it, which would make the all-optional policy no longer
+     * cost-free relative to upstream.
+     *
+     * ponytail: one observation per step, carrying the step's *first* tool
+     * call. A step that fans out to several calls therefore shows only the
+     * first to `trailingRepeat`/tool-dominance. Upgrade path: push one
+     * observation per call (as `runner.ts` does) once `history.length` is no
+     * longer read as a step count by the excessive-steps detector.
+     */
+    if (this.router === undefined) return
+    this.history.push({
+      index: this.phase.kind === 'running' ? this.phase.step : 0,
+      ...outcome?.tool === undefined ? {} : { tool: outcome.tool },
+      ...outcome?.argsKey === undefined ? {} : { argsKey: outcome.argsKey },
+      costUSD: this.lastAttemptUSD ?? 0,
+    })
+  }
+
+  /**
+   * FORK-DELTA(5): the tool call a settled assistant message asked for, as the
+   * detectors want to see it.
+   *
+   * @param message - the assistant message whose step just settled.
+   * @returns the first tool call's name and canonical argument key, or `{}`.
+   */
+  private observedOutcome(message: Message): { tool?: string, argsKey?: string } {
+    for (const block of message.content) {
+      if (block.type === 'tool-call') return { tool: block.name, argsKey: argsKeyOf(block.arguments) }
     }
+    return {}
+  }
+
+  /**
+   * FORK-DELTA(6): record whether this step's tools failed.
+   *
+   * The observation is appended when the attempt settles — before the tools have
+   * run — because that is the only once-per-settled-step hook in this file. So
+   * the error flag can only be filled in here, afterwards.
+   *
+   * Without this, `error-cascade` — three consecutive failing steps, one of the
+   * two *critical* signals — could never fire in the plugin path. The gate would
+   * then be silently running on four detectors instead of six, and the two it
+   * lost are exactly the ones that catch a loop that is failing repeatedly.
+   *
+   * @param outcomes - each dispatched call's outcome, in model order.
+   */
+  private noteToolOutcomes(outcomes: readonly ToolCallOutcome[]): void {
+    noteToolOutcomes(this.history, outcomes)
   }
 
   get status(): AgentStatus {
@@ -348,6 +479,59 @@ export class ReactLoopAgent implements Agent {
         this.warnNoticeIssued = true
         messages = [...messages, budgetWarnMessage(verdict.reason)]
       }
+    }
+    /* FORK-DELTA(5): the detectors, the local judge and the attention router.
+     *
+     * Ordered cheapest-first, exactly as the standalone runner orders it, so a
+     * step does not spend a judge call discovering something arithmetic already
+     * knows:
+     *
+     *   1. `detectSignals` — arithmetic over the step history, no model call.
+     *      Detection is deterministic on purpose: a detector that runs in
+     *      arithmetic cannot miss, and a model asked "is this worth a human?"
+     *      cannot be trusted to notice a cycle it was not shown.
+     *   2. the judge — one cheap local call, and only when there is a reason to
+     *      ask. It is fail-soft by contract: `score` never rejects, and an
+     *      absent score means "the judge did not answer", not "the step is
+     *      fine". That distinction is why `undefined` reaches the router rather
+     *      than a substituted zero.
+     *   3. `route` — the `<10%` attention budget, which is what stops a chatty
+     *      judge from turning the loop into a chat app.
+     *
+     * A review is *surfaced*, not enforced: it arrives as a labelled notice in
+     * this step's message batch, which is the only channel that reaches both the
+     * model and the human reading the transcript. `{kind:'reject'}` stays
+     * reserved for a ceiling, where continuing would spend money the deployment
+     * already said it would not.
+     */
+    if (this.router !== undefined) {
+      const snapshot = this.budget?.snapshot()
+      // The detector and judge-eligibility rules live in `agent-policy.ts` so a
+      // test can hold the plugin to the same behaviour as the standalone runner.
+      const { signals, askJudge, judgeState } = prepareReview({
+        history: this.history,
+        // `maxSteps` belongs to the spec, which owns the envelope the detectors
+        // were designed around.
+        maxSteps: this.spec?.maxSteps ?? this.history.length,
+        costBudgetUSD: snapshot?.budgetUSD ?? 0,
+        spentUSD: snapshot?.spentUSD ?? 0,
+        budgetRemaining: this.router.budgetRemaining(),
+      })
+      let judgeScore: number | undefined
+      if (askJudge && this.judge !== undefined) {
+        const question = judgeQuestion(judgeState, signals)
+        judgeScore = (await this.judge.score(question.state, question.questions)).score
+        signal.throwIfAborted()
+      }
+      // Kept for the gate, which is consulted later in this step and would
+      // otherwise have to guess a confidence. `undefined` is the honest value
+      // and the gate's fail-closed direction: `auto-if-confident` asks.
+      this.stepJudgeScore = judgeScore
+      const routing = this.router.route(signals, undefined, judgeScore)
+      if (routing.review) messages = [...messages, reviewNotice(routing.reason, routing.source)]
+      // The denominator of the attention budget: this step was seen, whether or
+      // not it was surfaced.
+      this.router.observeStep()
     }
     /* FORK-DELTA(2): cheap-first routing, decided here and consumed in
      * `prepareRequest`.
@@ -602,15 +786,65 @@ export class ReactLoopAgent implements Agent {
           }, { surfaceOp: 'append' }).seq,
         )
         // FORK-DELTA(4): price this settled attempt into the run's budget.
-        this.meterAttempt(request.provider, request.model, live.usage)
+        // FORK-DELTA(5): the same settled attempt is the once-per-step hook
+        // that appends the observation, so it is handed the step's tool call.
+        this.meterAttempt(request.provider, request.model, live.usage, this.observedOutcome(message))
         if (finish.kind === 'max-tokens') return { kind: 'max-tokens' }
 
         const toolCalls = message.content.filter(block => block.type === 'tool-call')
         if (toolCalls.length === 0) return { kind: 'completed' }
-        const { concluded } = await executeToolCalls(
+        /* FORK-DELTA(5): the reversibility gate.
+         *
+         * This is the only seam in this file where a tool is about to run and
+         * its name is known: `preStep` runs before the model has chosen a tool,
+         * so the gate cannot live there. `tools/execute` — the waterfall the
+         * gate conceptually belongs to — is dispatched inside
+         * `@deepseek-ai/dsh-tools`, one layer below `executeToolCalls`, and this
+         * file has no view of it.
+         *
+         * Reversibility comes from the spec's `actuator`; an unclassified tool
+         * is `irreversible`, which is the fail-closed direction. Forgetting to
+         * classify a tool must not be how it gets to run unsupervised.
+         *
+         * The confidence is the judge's score for this step, or `undefined`
+         * when no judge ran — and `undefined` is again the fail-closed
+         * direction, because `auto-if-confident` then asks instead of guessing.
+         *
+         * The gate *surfaces* rather than blocks. `executeToolCalls` owns
+         * dispatch, and dropping a call here would leave the assistant's
+         * tool-call block with no `tool/result` behind it, which invalidates
+         * session replay — `tool-calls.ts` records synthetic results for the
+         * calls *it* skips precisely to avoid that. So the notice goes to the
+         * next step boundary through the same inbox channel the tool scheduler
+         * already uses for result context.
+         *
+         * ponytail: a review raised here is delivered one step late, because
+         * the tool has already run by the time the gate sees it. Upgrade path:
+         * consult the gate from a `tools/pre-execute` listener registered where
+         * the loop context is built, which can deny the call before dispatch.
+         */
+        if (this.gate !== undefined) {
+          for (const call of toolCalls) {
+            const gateDecision = gateDecisionFor(
+              this.gate,
+              call.name,
+              resolveReversibility(call.name, this.spec?.actuator),
+              this.stepJudgeScore,
+            )
+            if (gateDecision?.review === true) {
+              this.inbox.splice('next-step', this.inbox.nextStep.length, 0, [
+                reviewNotice(gateDecision.reason, gateDecision.source),
+              ])
+            }
+          }
+        }
+        const { concluded, outcomes } = await executeToolCalls(
           this.loopCtx, turn, step, toolCalls, signal,
           context => this.inbox.splice('next-step', this.inbox.nextStep.length, 0, [context]),
         )
+        // FORK-DELTA(6): the tools have run, so this step's observation can now
+        // learn whether they failed.
+        this.noteToolOutcomes(outcomes)
         return concluded ? { kind: 'completed' } : null
       } catch (error: unknown) {
         if (!live.ended) live.abandon()

@@ -57,6 +57,36 @@ interface GroupOutcome {
  * @param signal - abort signal shared by the step.
  * @param acceptContext - accepts committed result context for the next step boundary.
  */
+/**
+ * FORK-DELTA(6): one tool call's outcome, reported to the caller.
+ *
+ * Upstream returns only `{concluded}`. The review gate's detectors need to know
+ * whether a call *failed*: `error-cascade` — three consecutive failing steps —
+ * is one of the two critical signals, and without this it cannot fire at all in
+ * the plugin path, silently reducing the gate to the four non-error detectors.
+ *
+ * The per-call `isError` already existed here (it is what `appendToolResult`
+ * records); this only stops throwing it away at the boundary.
+ */
+export interface ToolCallOutcome {
+  /** The tool that ran, as the model named it. */
+  name: string
+  /** Whether the tool reported an error. */
+  isError: boolean
+}
+
+/**
+ * Dispatch the step's tool calls.
+ *
+ * @param ctx - loop context.
+ * @param turn - current turn number.
+ * @param step - current step number.
+ * @param toolCalls - assistant calls in model order.
+ * @param signal - abort signal shared by the step.
+ * @param acceptContext - accepts committed result context for the next step boundary.
+ * @returns whether the turn concluded, and each dispatched call's outcome in
+ *   model order (FORK-DELTA(6)).
+ */
 export async function executeToolCalls(
   ctx: Context,
   turn: number,
@@ -64,9 +94,11 @@ export async function executeToolCalls(
   toolCalls: ToolCallBlock[],
   signal: AbortSignal,
   acceptContext: (context: UserMessage) => void,
-): Promise<{ concluded: boolean }> {
+): Promise<{ concluded: boolean, outcomes: ToolCallOutcome[] }> {
   const agent = ctx.agents.requireInitiator()
   const { session } = agent
+  /** FORK-DELTA(6): filled by `runGroup` as results commit. */
+  const outcomes: ToolCallOutcome[] = []
 
   // Inputs are distinct because tools/execute wrappers may replace `exec.signal`.
   const planned: PlannedCall[] = toolCalls.map(block => ({
@@ -89,16 +121,16 @@ export async function executeToolCalls(
     const mode = ctx.tools.executionMode(first.exec).kind
     const group = mode === 'parallel' ? planned.slice(next) : [first]
     const outcome = await runGroup(
-      ctx, turn, step, group, mode, signal, acceptContext,
+      ctx, turn, step, group, mode, signal, acceptContext, outcomes,
     )
     next += outcome.consumed
     concluded ||= outcome.concluded
     if (outcome.aborted) {
       for (const call of planned.slice(next)) appendSkippedToolCall(session, turn, step, call.block)
-      return { concluded }
+      return { concluded, outcomes }
     }
   }
-  return { concluded }
+  return { concluded, outcomes }
 }
 
 /** Parse model arguments, preserving invalid JSON as text and mapping empty input to `{}`. */
@@ -127,6 +159,8 @@ async function runGroup(
   mode: ToolExecutionMode['kind'],
   signal: AbortSignal,
   acceptContext: (context: UserMessage) => void,
+  /** FORK-DELTA(6): receives one entry per committed call, in model order. */
+  outcomes: ToolCallOutcome[],
 ): Promise<GroupOutcome> {
   const { session } = ctx.agents.requireInitiator()
   const { maxParallelToolCalls } = ctx.agentLoop.config
@@ -154,6 +188,10 @@ async function runGroup(
         : ctx.tools[TOOL_RUNTIME_SCHEDULER].finish(slot.exec, slot.result)
       // oxlint-disable-next-line typescript/no-non-null-assertion -- bounded index
       appendToolResult(session, turn, step, call!.block, result, callSeqs[committed]!)
+      // FORK-DELTA(6): record the outcome the detectors need. Pushed here, at
+      // the single point where a result is committed, so the collector cannot
+      // disagree with what the session actually recorded.
+      outcomes.push({ name: call!.block.name, isError: result.isError })
       for (const context of result.additionalContexts ?? []) acceptContext(context)
       concluded ||= result.concludesTurn === true
       committed++
