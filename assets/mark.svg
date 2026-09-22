@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="dsh-feature-loop">
+  <title>dsh-feature-loop</title>
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#152341"/><stop offset="1" stop-color="#070D18"/>
+  </linearGradient></defs>
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+  <path d="M 47.90 39.08 A 17.4 17.4 0 1 1 47.90 24.92 L 42.60 27.28 A 11.6 11.6 0 1 0 42.60 36.72 Z" fill="#2DD4BF"/>
+  <path d="M 47.90 24.92 A 17.4 17.4 0 0 1 47.90 39.08 L 42.60 36.72 A 11.6 11.6 0 0 0 42.60 27.28 Z" fill="#FCD34D"/>
+  <polygon points="42.40 19.11 33.68 22.45 35.35 12.99" fill="#2DD4BF"/>
+</svg>

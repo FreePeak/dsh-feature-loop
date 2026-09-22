@@ -1,0 +1,17 @@
+# Matches this repository as it actually is: LF, UTF-8, final newline, no tabs,
+# 2-space indent, no trailing whitespace. Verified against the existing sources
+# (src/*.ts, package.json, tsconfig.json, cordis.patch.yml, README.md,
+# demo/*.sh, scripts/*.sh): all LF, all end with a newline, none use tabs.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# demo/run.sh, demo/reset.sh, demo/verify.sh and scripts/sync-upstream.sh are
+# shell scripts and are covered by the LF rule above — a CRLF shell script does
+# not run. Nothing here overrides it, and no section below should.

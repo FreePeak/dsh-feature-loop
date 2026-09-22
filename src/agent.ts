@@ -20,7 +20,6 @@ import type { GenerateOptions, LlmCallConfig, Message, MessageSource, PreparedLl
 import {
   LlmError,
   createAssistantMessage,
-  createUserMessage,
   errorChain,
   markAgentLoopRequest,
 } from '@deepseek-ai/dsh-llm'
@@ -60,7 +59,10 @@ import {
   prepareReview,
   resolveReversibility,
 } from './agent-policy.ts'
-import { FEATURE_LOOP_SOURCE, budgetStopMessage, budgetWarnMessage, escalationMessage } from './messages.ts'
+/* FORK-DELTA(6): the harness-transport wrappers. The notice *text* lives in
+ * `messages.ts`, which imports nothing, so the policy layer and the standalone
+ * runner stay dependency-free; this module wraps that text for the session. */
+import { budgetStopMessage, budgetWarnMessage, escalationMessage, reviewNotice } from './notices.ts'
 
 /** FORK-DELTA: the policies this fork adds to the vendored loop. */
 export interface FeatureLoopPolicy {
@@ -106,33 +108,6 @@ function requestProposal(header: EpochHeader): LlmCallConfig {
   if (header.adapterDefaults.reasoningEffort === true) delete proposal.reasoningEffort
   if (header.adapterDefaults.maxTokens === true) delete proposal.maxTokens
   return proposal
-}
-
-/**
- * FORK-DELTA(5): the review notice, as a DSH user message.
- *
- * Built here rather than in `messages.ts` so the review path stays inside the
- * one file this fork edits. The wording follows the budget notices — labelled,
- * and explicit about who decides — and deliberately reads correctly both when
- * the review is raised *before* a step and when it is raised at the gate, after
- * a tool has already run.
- *
- * @param reason - the router's or the gate's own words for the decision.
- * @param source - what produced it (`signal`, `judge`, `policy`, `operator`, …).
- * @returns the user-role notice the loop appends.
- */
-function reviewNotice(reason: string, source: string): UserMessage {
-  return createUserMessage({
-    content: [{
-      type: 'text',
-      text: [
-        `REVIEW REQUESTED (${source}): ${reason}.`,
-        'A human should review this before the loop goes further. Do not start work that depends on it; '
-        + 'if the step was not consistent with the goal, stop and report what you have instead.',
-      ].join('\n'),
-    }],
-    source: { ...FEATURE_LOOP_SOURCE, form: 'notice', summary: `review requested (${source})` },
-  })
 }
 
 /** Drives one session through turn and step boundaries. */

@@ -1,4 +1,11 @@
+<img src="assets/logo.svg" alt="dsh-feature-loop" width="344" height="80">
+
 # @freepeak/dsh-feature-loop
+
+[![CI](https://github.com/FreePeak/dsh-feature-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/FreePeak/dsh-feature-loop/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](.nvmrc)
+[![Tests](https://img.shields.io/badge/tests-126%20passing-brightgreen.svg)](#quick-start)
 
 A **book-shaped loop** for bug-fixing and small features: budget ceilings,
 cheap-first routing, a step-level review gate, and a local judge that decides
@@ -203,7 +210,7 @@ To use Laya once deployed: `--judge laya`.
 Every customisation in vendored code is marked `FORK-DELTA`:
 
 ```bash
-grep -rn "FORK-DELTA" src/          # 18 markers
+grep -rn "FORK-DELTA" src/          # 35 markers: 18 in agent.ts, 12 in index.ts, 5 in tool-calls.ts
 bash scripts/sync-upstream.sh       # diff against the pinned upstream commit
 ```
 

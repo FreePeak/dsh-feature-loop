@@ -1,0 +1,40 @@
+# Dependabot for @freepeak/dsh-feature-loop.
+#
+# Caveat worth knowing before you wait for a pull request: Dependabot resolves a
+# dependency graph, and this repository has no lockfile plus `@deepseek-ai/*`
+# versions that are not on the public registry (`@deepseek-ai/cordis@0.4.0` does
+# not exist; `@deepseek-ai/schemastery@0.1.5` is not the published 3.x line). npm
+# version updates will likely error until those packages are published — the
+# github-actions updates are the ones that will actually fire today. The npm
+# entry stays so it starts working the day the graph resolves.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+    open-pull-requests-limit: 3
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: deps
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: ci
