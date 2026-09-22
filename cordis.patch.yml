@@ -25,12 +25,29 @@
         # Per-tool gate overrides, by tool name. A tool absent here falls back to
         # its reversibility class from the spec's `actuator`, and an
         # UNCLASSIFIED tool is `irreversible` — the fail-closed direction.
+        #
+        # THESE ARE THE HARNESS'S REAL TOOL NAMES. Use the names the model
+        # actually calls (`read`, `write`, `edit`, `bash`, `glob`, `grep`), not
+        # the standalone runner's demo names (`read_file`, `edit_file`, ...) —
+        # those exist only in `src/tools.ts` and never appear in a DSH session.
+        # A name that matches nothing is not an error: the tool falls through to
+        # the unclassified `irreversible` default, so the gate still fires, but
+        # with `always-approve` instead of the policy you meant to set.
         gatePolicies:
-          read_file: auto
-          list_files: auto
-          run_tests: auto
-          edit_file: auto-if-confident
-          write_file: auto-if-confident
+          read: auto
+          glob: auto
+          grep: auto
+          edit: auto-if-confident
+          write: auto-if-confident
+
+        # How a review reaches a human. `ask` (the default) prompts in the Web
+        # UI's conversation composer, so you can approve or reject the step.
+        # Fails closed to a refusal when no approval channel is mounted, so it is
+        # never less safe than `deny`.
+        #
+        # Set to `deny` for unattended runs and CI, where no human is watching:
+        # the call is refused outright and nothing ever prompts.
+        gateMode: ask
 
         # ────────────────────────────────────────────────────────────────────
         # The 8-dimension spec. Uncomment to switch the policies ON.
@@ -47,18 +64,19 @@
         #   controller:
         #     ladder:
         #       - provider: deepseek-official
-        #         model: deepseek-v4-flash    # cheap — most steps live here
+        #         model: deepseek-flash       # cheap — most steps live here
         #       - provider: deepseek-official
         #         model: deepseek-v4-pro      # strong — only on evidence
         #     stepsPerRung: 5
         #     escalateAfterFailures: 2
         #
         #   actuator:
-        #     read_file: read
-        #     list_files: read
-        #     run_tests: read
-        #     edit_file: reversible-write
-        #     write_file: irreversible
+        #     read: read
+        #     glob: read
+        #     grep: read
+        #     bash: irreversible        # arbitrary command execution
+        #     edit: reversible-write
+        #     write: irreversible
         #
         #   feedback: "all tests pass, and the diff is the smallest that achieves it"
         #
@@ -70,7 +88,7 @@
         #   costBudgetUSD: 1.00
         #
         #   prices:
-        #     deepseek-official/deepseek-v4-flash:
+        #     deepseek-official/deepseek-flash:
         #       inputPerMTok: 0.14
         #       outputPerMTok: 0.28
         #       cacheReadPerMTok: 0.014

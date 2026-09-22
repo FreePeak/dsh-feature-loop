@@ -61,7 +61,8 @@
     "demo:steps": "bash demo/run.sh --max-steps 6",
     "demo:cost": "bash demo/run.sh --budget 0.000001",
     "demo:nojudge": "bash demo/run.sh --judge none",
-    "lint:workflows": "actionlint .github/workflows/*.yml"
+    "lint:workflows": "actionlint .github/workflows/*.yml",
+    "test:integration": "bash test/integration/run.sh"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.2"
@@ -73,14 +74,9 @@
     "@deepseek-ai/dsh-tools": ">=0.0.1-rc.1"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "0.4.0",
-    "@deepseek-ai/dsh-agent": "0.1.5",
-    "@deepseek-ai/dsh-llm": "0.1.5",
-    "@deepseek-ai/dsh-tools": "0.1.5",
-    "@deepseek-ai/schemastery": "0.1.5",
-    "tsdown": "^0.5.0",
+    "tsdown": "^0.23.0",
     "typescript": "^5.8.0",
-    "zod": "^3.24.0"
+    "@types/node": "^22.0.0"
   },
   "dsh": {
     "bundle": {

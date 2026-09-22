@@ -87,7 +87,7 @@ Grepping the entire harness checkout for `LoopBudget`, `ReviewGate`,
 | Phase prompts | `prompts.ts` |
 | Standalone loop, sandboxed tools, CLI, demo | `runner.ts`, `tools.ts`, `cli.ts`, `llm.ts` |
 
-These ≈3,556 lines, with 126 tests, are the product. **The fork was never the
+These ≈3,556 lines, with 133 tests, are the product. **The fork was never the
 product; it was the scaffolding that hosted the product.**
 
 ---
@@ -173,7 +173,7 @@ Phase 1 is complete when **all** hold:
 
 | # | Criterion | Result |
 |---|---|---|
-| 1 | The 126-test suite passes unchanged | ✅ 126 pass, 0 fail |
+| 1 | The test suite passes unchanged | ✅ 133 pass, 0 fail (126 at the time of the de-fork; the plugin tests were added later) |
 | 2 | `tsc --noEmit` is clean against the real harness packages | ✅ exit 0 |
 | 3 | `bash demo/run.sh` still reaches `goal-met` | ✅ (see §7) |
 | 4 | No file in `src/` imports a deleted module | ✅ verified |
@@ -187,12 +187,12 @@ Phase 1 is complete when **all** hold:
 
 Baseline captured **before** any deletion:
 
-- tests **126/126 pass**, `tsc --noEmit` exit 0
+- tests **126/126 pass** (the count at that time), `tsc --noEmit` exit 0
 - `bash demo/run.sh` → `goal-met`, 8 steps, $0.0053, 1 review (13%)
 
 After removal and the plugin rewrite:
 
-- tests **126/126 pass** — the suite never touched the vendored files
+- tests **126/126 pass** (then) — the suite never touched the vendored files
 - `tsc --noEmit` exit 0 — including `src/plugin.ts`
 - demo → `goal-met` (re-run recorded in the Phase 1 commit)
 
@@ -224,8 +224,10 @@ arguments are both known. Two details are deliberate:
 
 Verified by a throwaway smoke script (since deleted): after three consecutive
 recorded failures, step 4 raises a critical `REVIEW REQUESTED (signal)` with the
-message *"3× identical edit_file call with the same arguments — the loop is not
-making progress."* Detectors now fire.
+message *"3× identical edit call with the same arguments — the loop is not
+making progress."* (The smoke script drove the handler with a synthetic tool
+named `edit_file` and a hand-written `pending` record; a real DSH session calls
+`edit`. See `docs/SETUP.md` on the two name spaces.) Detectors now fire.
 
 **This is the strongest argument for §9.4:** the plugin path has no test, and
 this bug is exactly what a test would have caught.
@@ -246,7 +248,7 @@ Fixed by resolving every hook's policy through a single `policyFor(agent)`
 helper that builds the policy on first sight. The gate now fails closed — an
 unseen agent gets the deployment's real policies, not a pass.
 
-Verified: with no prior `agent/pre-step`, an `edit_file` call with no confidence
+Verified: with no prior `agent/pre-step`, a write-class call with no confidence
 estimate is now **denied** rather than dispatched.
 
 ---

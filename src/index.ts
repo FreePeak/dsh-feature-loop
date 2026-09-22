@@ -58,6 +58,17 @@ export interface Config {
    * their reversibility class, and an unclassified tool is `irreversible`.
    */
   gatePolicies?: Record<string, 'auto' | 'auto-if-confident' | 'always-approve'>
+  /**
+   * How a gate-raised review reaches a human. Defaults to `ask`.
+   *
+   * - `ask`  — the Web UI prompts in the conversation composer (via
+   *            `@deepseek-ai/dsh-client-ui-approval`). Fails closed to a refusal
+   *            when no approval channel is mounted, so it is never less safe
+   *            than `deny`.
+   * - `deny` — refuse outright without prompting. Use for unattended and CI
+   *            runs where no human is watching.
+   */
+  gateMode?: 'ask' | 'deny'
 }
 
 /**
@@ -74,6 +85,7 @@ export const Config: z<Config> = z.object({
   reviewBudget: z.number(),
   judgeThreshold: z.number(),
   gatePolicies: z.any(),
+  gateMode: z.union([z.const('ask'), z.const('deny')]),
 }) as unknown as z<Config>
 
 /**
@@ -88,6 +100,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     spec: config.spec,
     confidenceThreshold: config.confidenceThreshold,
     gatePolicies: config.gatePolicies,
+    gateMode: config.gateMode,
     router: {
       ...(config.reviewBudget === undefined ? {} : { reviewBudget: config.reviewBudget }),
       ...(config.judgeThreshold === undefined ? {} : { judgeThreshold: config.judgeThreshold }),

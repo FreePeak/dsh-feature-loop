@@ -1,0 +1,46 @@
+# Settings template for the container.
+#
+# Rendered into $DSH_HOME/settings.yaml on first run by substituting
+# ${ONEGW_BASE_URL} (a `sed` pass in the entrypoint — the slim base image ships
+# no gettext), so the only values you must supply are environment variables: no
+# secrets are baked into the image, and no file is edited by hand.
+#
+#   ONEGW_BASE_URL   the model gateway, reachable FROM INSIDE the container.
+#                    Defaults to http://host.docker.internal:8080/v1 — on
+#                    macOS/Windows Docker Desktop resolves that to the host.
+#                    On Linux, docker-compose.yml adds the extra_hosts entry
+#                    that makes the same name work.
+#   ONEGW_API_KEY    the gateway key. Referenced by name (`apiKeyEnv`), never
+#                    inlined, so this template is safe to commit.
+#
+# ── THE PERMISSION PRESET IS THE ONE SETTING THAT MATTERS ──────────────────
+#
+# `permission.defaultPreset` decides the session's approval policy. On a fresh
+# session `permission-presets` applies that preset's approval policy DIRECTLY,
+# AFTER the `approval` bundle's own `policy:` default — and it is a settings
+# section, so a profile's `cordis.patch.yml` cannot override it.
+#
+#   workspace-write   -> approval: ask   -> the approval panel APPEARS
+#   danger-full-access -> approval: never -> the gate's `ask` becomes
+#                                           `Error: the user rejected tool "X"`
+#                                           with NO panel, blaming a user who
+#                                           was never asked.
+#
+# This template pins `workspace-write` on purpose. If you flip it to
+# danger-full-access, the feature loop's human-in-the-loop step stops working.
+# ───────────────────────────────────────────────────────────────────────────
+
+permission:
+  defaultPreset: workspace-write
+
+llm-pi-ai:
+  providers:
+    onegw:
+      apiKeyEnv: ONEGW_API_KEY
+      api: openai-completions
+      baseURL: ${ONEGW_BASE_URL}
+      models:
+        - { id: opencode/deepseek-v4.1-flash, name: opencode/deepseek-v4.1-flash }
+        - { id: opencode/deepseek-v4-flash, name: opencode/deepseek-v4-flash }
+        - { id: xiaomi/mimo-v2.5, name: xiaomi/mimo-v2.5 }
+        - { id: xai/grok-4.7, name: xai/grok-4.7 }

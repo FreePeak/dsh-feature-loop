@@ -1,0 +1,25 @@
+# Build context exclusions for the container image.
+#
+# The image needs only: src/, package.json, tsconfig.json, cordis.patch.yml and
+# docker/. Everything below is either regenerated in the image or irrelevant to it.
+
+# Installed or generated
+node_modules
+lib
+
+# Version control and CI
+.git
+.gitignore
+.github
+
+# Documentation and tests are not needed to build or run the plugin
+docs
+test
+demo
+todo.md
+*.md
+
+# Local scratch
+.tmp
+*.log
+.DS_Store

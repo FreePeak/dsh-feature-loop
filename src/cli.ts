@@ -207,20 +207,37 @@ function buildJudge(options: Options, apiKey: string, baseURL: string): { judge:
   }
 }
 
-/** Read the gateway key from the environment or the DSH credential store. */
+/**
+ * Read the gateway key from the environment or the DSH credential store.
+ *
+ * Two names are accepted because both are in use: `ONEGW_API_KEY` is what the
+ * DSH credential store records, and `ONEGE_API_KEY` is what earlier versions of
+ * this file looked for. Reading only the latter made the demo fail with "not in
+ * the environment or in ~/.dsh/.credentials.yaml" on a machine where the key WAS
+ * there — under a name this function never checked.
+ *
+ * @returns the gateway API key.
+ * @throws when neither name is present in the environment or the store.
+ */
 async function resolveApiKey(): Promise<string> {
-  const fromEnv = process.env.ONEGE_API_KEY
-  if (fromEnv !== undefined && fromEnv !== '') return fromEnv
+  for (const name of ['ONEGW_API_KEY', 'ONEGE_API_KEY'] as const) {
+    const fromEnv = process.env[name]
+    if (fromEnv !== undefined && fromEnv !== '') return fromEnv
+  }
   const { readFile } = await import('node:fs/promises')
   const { homedir } = await import('node:os')
   const raw = await readFile(resolve(homedir(), '.dsh/.credentials.yaml'), 'utf8')
   // Deliberately a narrow parse rather than a YAML dependency: this is one key
   // on one line, and pulling in a parser for it would be the tail wagging the dog.
-  const match = /^\s*ONEGE_API_KEY:\s*(\S+)\s*$/m.exec(raw)
-  if (match?.[1] === undefined) {
-    throw new Error('ONEGE_API_KEY is not in the environment or in ~/.dsh/.credentials.yaml')
+  // The leading-indent tolerance matters — the store nests these under `refs:`.
+  const match = /^\s*(ONEGW_API_KEY|ONEGE_API_KEY):\s*(\S+)\s*$/m.exec(raw)
+  if (match?.[2] === undefined) {
+    throw new Error(
+      'no gateway key: set ONEGW_API_KEY (or ONEGE_API_KEY) in the environment, '
+      + 'or add it to ~/.dsh/.credentials.yaml',
+    )
   }
-  return match[1]
+  return match[2]
 }
 
 /** Main. */

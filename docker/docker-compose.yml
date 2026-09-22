@@ -1,0 +1,85 @@
+# Compose for the containerised feature loop + Agent Teams.
+#
+#   cd dsh-feature-loop
+#   ONEGW_API_KEY=... docker compose -f docker/docker-compose.yml up --build
+#
+# Then read the `dsh web: http://.../?token=...` line from the logs and open it:
+#
+#   docker compose -f docker/docker-compose.yml logs -f
+#
+# Host port 3090 maps to the container's relay port 8099, which forwards to the
+# UI on 127.0.0.1:3099 inside the container (the harness refuses a wildcard bind,
+# so the relay exists — see docker/entrypoint.sh). Host 3099/3097 are
+# deliberately NOT used: a developer running this repo locally already binds
+# them, and 3081 belongs to that developer's own GUI.
+
+services:
+  dsh-feature-loop:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: dsh-feature-loop:local
+    container_name: dsh-feature-loop
+
+    ports:
+      # Bound to the HOST LOOPBACK only. The harness deliberately refuses to
+      # listen on 0.0.0.0 ("it would expose remote code execution to the
+      # network"), and publishing to 127.0.0.1 on the host keeps that same
+      # posture: the UI is reachable from this machine and nowhere else.
+      - "127.0.0.1:${DSH_HOST_PORT:-3090}:8099"
+
+    environment:
+      # The gateway key. Referenced by name from settings.yaml (`apiKeyEnv`), so
+      # it is never written into a file inside the container.
+      #
+      # Deliberately NOT `${ONEGW_API_KEY:?...}`: compose interpolates at parse
+      # time, so a required-variable form makes even `docker compose build`
+      # fail without a key. The key is a RUN-time concern; the entrypoint warns
+      # loudly when it is missing, and the UI still starts so you can inspect
+      # the composition without a gateway.
+      ONEGW_API_KEY: "${ONEGW_API_KEY:-}"
+
+      # The model gateway as seen FROM INSIDE the container.
+      #   macOS / Windows (Docker Desktop): host.docker.internal resolves already.
+      #   Linux: the extra_hosts entry below provides the same name.
+      # If your gateway listens elsewhere, point this at it — e.g. a compose
+      # service named `onegw` would be http://onegw:8080/v1.
+      ONEGW_BASE_URL: "${ONEGW_BASE_URL:-http://host.docker.internal:8080/v1}"
+
+      # Optional overrides.
+      DSH_PORT: "3099"          # the UI's own port, on loopback inside the container
+      DSH_INTERNAL_PORT: "8099" # the relay Docker publishes
+      DSH_PROFILE: "dsh-fl"
+      # Set to 1 to re-seed the profile and activation patch from the image.
+      FORCE_REINIT: "${FORCE_REINIT:-0}"
+
+    # Makes host.docker.internal work on Linux as well as Docker Desktop.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    volumes:
+      # Persists the profile, settings, sessions and logs across restarts.
+      # To start clean: docker compose -f docker/docker-compose.yml down -v
+      - dsh-data:/data
+
+    restart: unless-stopped
+
+    healthcheck:
+      # Probes the relay port — the path Docker publishes.
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8099/').then(r=>process.exit(r.status===401||r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+
+volumes:
+  # The name is pinned so the volume is exactly `dsh-fl-data`, not
+  # `<project>_dsh-data`. Without `name:` compose prefixes it with the project
+  # name — and because this file lives in docker/, that prefix is the directory
+  # name, which made `make clean` and the docs name a volume that did not exist.
+  dsh-data:
+    name: dsh-fl-data

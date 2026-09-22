@@ -1,0 +1,61 @@
+# Activation patch for the containerised profile.
+#
+# Seeds into $DSH_HOME/profiles/<profile>/cordis.patch.yml on first run.
+#
+# The npm bundles install the feature-loop plugin with NO spec, so it loads and
+# does nothing. This layer targets the same row id and turns the policies on.
+#
+# Two things matter and are easy to get wrong:
+#
+# 1. TOOL NAMES. The harness's tools are `read`, `write`, `edit`, `bash`,
+#    `glob`, `grep`. The names `read_file` / `write_file` / `edit_file` /
+#    `run_tests` belong to this repo's *standalone runner* (src/tools.ts) and
+#    match nothing in a harness session. A name that matches nothing is not an
+#    error — the tool falls through to the unclassified `irreversible` default,
+#    so the gate still fires but with `always-approve` instead of the policy you
+#    configured. That is the "working for the wrong reason" trap.
+#
+# 2. NO JUDGE. With no judge the confidence estimate is undefined, so
+#    `auto-if-confident` has no evidence of confidence and the gate ASKS the
+#    human. That fail-closed ask is what produces the approval panel.
+
+- id: feature-loop
+  config:
+    reviewBudget: 0.10
+    judgeThreshold: 2
+    # `ask` prompts in the Web UI composer. It fails closed to a refusal when no
+    # approval channel is mounted, so it is never less safe than `deny`.
+    # Set `deny` for unattended/CI runs where nobody is watching.
+    gateMode: ask
+    gatePolicies:
+      read: auto
+      glob: auto
+      grep: auto
+      edit: auto-if-confident
+      write: auto-if-confident
+    spec:
+      goal: "the failing test passes and no other test breaks"
+      sensor: ["repo files", "test output"]
+      controller:
+        ladder:
+          - { provider: onegw, model: opencode/deepseek-v4.1-flash }
+        stepsPerRung: 5
+        escalateAfterFailures: 2
+      actuator:
+        read: read
+        glob: read
+        grep: read
+        bash: irreversible
+        edit: reversible-write
+        write: irreversible
+      feedback: "all tests pass, and the diff is the smallest that achieves it"
+      termination:
+        successCommand: "true"
+        guards: ["error-cascade", "tool-cycle"]
+      maxSteps: 12
+      costBudgetUSD: 1.00
+      prices:
+        onegw/opencode/deepseek-v4.1-flash:
+          inputPerMTok: 0.14
+          outputPerMTok: 0.28
+          cacheReadPerMTok: 0.014
