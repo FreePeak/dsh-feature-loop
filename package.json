@@ -78,7 +78,7 @@
     "@deepseek-ai/dsh-llm": "0.1.5",
     "@deepseek-ai/dsh-tools": "0.1.5",
     "@deepseek-ai/schemastery": "0.1.5",
-    "tsdown": "^0.5.0",
+    "tsdown": "^0.23.0",
     "typescript": "^5.8.0",
     "zod": "^3.24.0"
   },
