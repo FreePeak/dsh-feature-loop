@@ -5,7 +5,8 @@
  * @module @deepseek-ai/dsh-agent-loop
  */
 
-import { Context, FiberState, Service } from '@deepseek-ai/cordis'
+import { Context, Service } from '@deepseek-ai/cordis'
+import type { FiberState } from '@deepseek-ai/cordis'
 import { randomUUID } from 'node:crypto'
 import z from '@deepseek-ai/schemastery'
 import { z as zod } from 'zod'
@@ -45,11 +46,22 @@ import type { LoopSpec } from './spec.ts'
 import { OnegwJudge } from './laya.ts'
 import type { Judge } from './laya.ts'
 
-/** Fiber states that cannot own or serve a new lifecycle. */
+/**
+ * Fiber states that cannot own or serve a new lifecycle.
+ *
+ * FORK-DELTA: upstream writes these as `FiberState.UNLOADING` and friends, but
+ * `FiberState` is an *ambient `const enum`* in Cordis — it has no runtime export
+ * (`import { FiberState } from '@deepseek-ai/cordis'` throws a `SyntaxError`
+ * under `--experimental-strip-types`) and type-stripping cannot inline it, which
+ * is exactly what `isolatedModules` reports as TS2748. The published upstream
+ * build only works because its bundler inlines these same numbers. The values
+ * are spelled out here so this module loads under strip-types; they mirror
+ * `cordis/lib/types/fiber.d.ts` (`FAILED = 3`, `DISPOSED = 4`, `UNLOADING = 5`).
+ */
 const INACTIVE_STATES: ReadonlySet<FiberState> = new Set([
-  FiberState.UNLOADING,
-  FiberState.DISPOSED,
-  FiberState.FAILED,
+  5, // FiberState.UNLOADING
+  4, // FiberState.DISPOSED
+  3, // FiberState.FAILED
 ])
 
 const turnBoundaryProjectionSchema: zod.ZodType<TurnBoundaryProjection> = zod.object({
@@ -479,7 +491,11 @@ export class AgentLoop extends Service implements AgentFactory {
     review: z.object({
       confidenceThreshold: z.number().min(0).max(1),
       judgeThreshold: z.number().min(0).max(3),
-      reviewBudget: z.number().min(0).max(1),
+      // Exclusive lower bound: `AttentionRouter` refuses a review budget of 0 —
+      // a loop that may never ask a human is not a supervised loop — and a
+      // schema admitting a value the runtime rejects turns a config typo into a
+      // plugin-load crash reported from the wrong layer.
+      reviewBudget: z.number().min(0.000001).max(1),
     }),
     gatePolicies: z.any(),
   }) as z<Config>
@@ -737,10 +753,14 @@ export class AgentLoop extends Service implements AgentFactory {
       }
     })())
     const untrack = this.ownership.track(dispose)
+    /* FORK-DELTA: captured outside the effect below because that effect is a
+     * `function*` generator, whose `this` is not the factory instance. Reading
+     * `this.policy` inside it yields `undefined` at runtime. */
+    const policy = this.policy
     let unfollowOwner: () => Promise<void> | void
     try {
       unfollowOwner = ownerCtx.effect(function* () {
-        machine = new ReactLoopAgent(loopCtx, id, options, session, this.policy)
+        machine = new ReactLoopAgent(loopCtx, id, options, session, policy)
         machineReady.resolve()
         yield machine.scope.rawDispose
         yield () => {

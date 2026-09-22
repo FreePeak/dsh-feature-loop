@@ -149,3 +149,34 @@ test('routeLabel renders a provider-less rung without a stray slash', () => {
   assert.equal(routeLabel({ model: 'flash' }), 'flash')
   assert.equal(routeLabel({ provider: 'deepseek', model: 'flash' }), 'deepseek/flash')
 })
+
+test('an unpriceable route throws even when the adapter reported no usage', () => {
+  // This is the hole that made the cost ceiling a fiction: a gateway that
+  // reports no usage must not be able to make an unpriced route free. The price
+  // is resolved before the usage check, so an unknown route is an error either
+  // way.
+  const budget = new LoopBudget({ maxSteps: 10, costBudgetUSD: 1, prices: PRICES })
+  assert.throws(() => budget.spend('nobody', 'mystery-model', undefined), UnpricedRouteError)
+})
+
+test('steps the adapter reported no usage for are counted, not hidden as free', () => {
+  const budget = new LoopBudget({ maxSteps: 10, costBudgetUSD: 1, prices: PRICES })
+  budget.spend('deepseek', 'deepseek-v4-flash', { inputTokens: 1_000_000, outputTokens: 0 })
+  budget.spend('deepseek', 'deepseek-v4-flash', undefined)
+  budget.spend('deepseek', 'deepseek-v4-flash', undefined)
+  const snapshot = budget.snapshot()
+  assert.equal(snapshot.steps, 3)
+  assert.equal(snapshot.unpricedSteps, 2, 'a non-zero count means spentUSD is an under-count and must say so')
+  // The priced step is still priced: an unpriced step does not zero the run.
+  assert.ok(Math.abs(snapshot.spentUSD - 0.14) < 1e-9, `expected 0.14, got ${snapshot.spentUSD}`)
+})
+
+test('a run of entirely unpriced steps reports zero spend but a full unpriced count', () => {
+  const budget = new LoopBudget({ maxSteps: 10, costBudgetUSD: 1, prices: PRICES })
+  for (let i = 0; i < 5; i += 1) budget.spend('deepseek', 'deepseek-v4-flash', undefined)
+  const snapshot = budget.snapshot()
+  assert.equal(snapshot.spentUSD, 0)
+  assert.equal(snapshot.unpricedSteps, 5)
+  // And the step ceiling still applies, so an unpriced run is still bounded.
+  assert.equal(budget.verdict(11).kind, 'stop')
+})

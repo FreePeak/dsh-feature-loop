@@ -77,6 +77,17 @@ export const BOOK_THRESHOLDS = {
   budgetWarnFraction: 0.8,
   /** Share of steps one tool may own before it looks like a favourite. */
   toolDominanceFraction: 0.6,
+  /**
+   * Minimum steps before tool-dominance is allowed to fire.
+   *
+   * Not from the book, and it is the one threshold here that is a guard rather
+   * than a number someone chose. The book's 60% share is a claim about a *run* —
+   * "this loop is stuck on one tool" — and at one or two steps every tool is
+   * trivially 100% of all steps. Without this floor the detector fires on the
+   * first step of every single run, and a signal that always fires is noise that
+   * trains its reader to ignore the signals that matter.
+   */
+  toolDominanceMinSteps: 5,
   /** Consecutive error steps before `error-cascade`. */
   errorCascade: 3,
   /** Fraction of the baseline score below which quality has dropped. */
@@ -89,6 +100,7 @@ export interface SignalThresholds {
   excessiveSteps: number
   budgetWarnFraction: number
   toolDominanceFraction: number
+  toolDominanceMinSteps: number
   errorCascade: number
   qualityDropFraction: number
 }
@@ -202,13 +214,14 @@ export function detectSignals(
   }
 
   // tool-dominance: one tool owning most of the run. `info` on purpose — an
-  // agent with a favourite is suspicious, not wrong.
+  // agent with a favourite is suspicious, not wrong — and floored at a minimum
+  // sample, because below that the share is trivially 100%.
   const toolCounts = new Map<string, number>()
   for (const step of history) {
     if (step.tool === undefined) continue
     toolCounts.set(step.tool, (toolCounts.get(step.tool) ?? 0) + 1)
   }
-  if (history.length > 0) {
+  if (history.length >= t.toolDominanceMinSteps) {
     for (const [tool, count] of toolCounts) {
       const share = count / history.length
       if (share > t.toolDominanceFraction) {

@@ -76,6 +76,13 @@ export interface BudgetSnapshot {
   budgetUSD: number
   /** Spent as a fraction of budget; `Infinity` when the budget is 0. */
   fraction: number
+  /**
+   * Steps the adapter reported no usage for, and which therefore cost the run
+   * nothing on paper. Surfaced rather than hidden: a non-zero count means the
+   * `spentUSD` figure is an under-count, and a budget that reads low is worse
+   * than one that reads unknown.
+   */
+  unpricedSteps: number
   byRoute: Readonly<Record<string, { steps: number; usd: number }>>
 }
 
@@ -131,6 +138,7 @@ export function priceUsage(usage: UsageReading, price: ModelPrice): number {
 export class LoopBudget {
   private steps = 0
   private spent = 0
+  private unpricedSteps = 0
   private readonly byRoute: Record<string, { steps: number; usd: number }> = {}
   private readonly config: BudgetConfig
 
@@ -171,7 +179,14 @@ export class LoopBudget {
    */
   spend(provider: string, model: string, usage: UsageReading | undefined): number {
     this.steps += 1
-    const usd = usage === undefined ? 0 : priceUsage(usage, this.priceOf(provider, model))
+    // Resolve the price BEFORE the usage check, and unconditionally. Skipping
+    // this when usage is absent is precisely how an unpriced route becomes
+    // free: a gateway that reports no usage would silently disable the cost
+    // ceiling, and the ceiling is the thing this class exists for. An unknown
+    // route must be an error whether or not the adapter talked about tokens.
+    const price = this.priceOf(provider, model)
+    if (usage === undefined) this.unpricedSteps += 1
+    const usd = usage === undefined ? 0 : priceUsage(usage, price)
     this.spent += usd
     const key = routeKey(provider, model)
     const row = (this.byRoute[key] ??= { steps: 0, usd: 0 })
@@ -219,6 +234,7 @@ export class LoopBudget {
       spentUSD: this.spent,
       budgetUSD: this.config.costBudgetUSD,
       fraction: this.fraction(),
+      unpricedSteps: this.unpricedSteps,
       byRoute: { ...this.byRoute },
     }
   }

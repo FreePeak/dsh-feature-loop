@@ -124,6 +124,23 @@ test('tool dominance is info, because a favourite tool is suspicious not wrong',
   assert.equal(fired.find(s => s.kind === 'tool-dominance')?.severity, 'info')
 })
 
+test('tool dominance stays quiet on a short run, where every tool is 100%', () => {
+  // Without a floor this fires on the first step of every run — a signal that
+  // always fires is noise that trains its reader to ignore the real ones.
+  const one: StepObservation[] = [{ index: 1, tool: 'read_file', argsKey: 'a', costUSD: 0.01 }]
+  const env = { maxSteps: 50, costBudgetUSD: 10, spentUSD: 0.1 }
+  assert.equal(detectSignals(one, env).some(s => s.kind === 'tool-dominance'), false)
+  const four: StepObservation[] = Array.from({ length: 4 }, (_, i) => ({
+    index: i + 1, tool: 'read_file', argsKey: `k${String(i)}`, costUSD: 0.01,
+  }))
+  assert.equal(detectSignals(four, env).some(s => s.kind === 'tool-dominance'), false)
+  // At the floor it becomes meaningful: five steps, one tool owning all of them.
+  const five: StepObservation[] = Array.from({ length: 5 }, (_, i) => ({
+    index: i + 1, tool: 'read_file', argsKey: `k${String(i)}`, costUSD: 0.01,
+  }))
+  assert.equal(detectSignals(five, env).some(s => s.kind === 'tool-dominance'), true)
+})
+
 test('quality drop only fires when a baseline exists — a missing baseline is not a pass', () => {
   const steps: StepObservation[] = [{ index: 1, costUSD: 0.01, score: 0.5 }]
   const env = { maxSteps: 20, costBudgetUSD: 1, spentUSD: 0.01 }
@@ -223,7 +240,11 @@ test('the MVP phases carry the book prompts verbatim, in order', () => {
   assert.match(BUG_FIX_RULES[5], /Never suppress a test/)
   assert.match(FEATURE_RULES[0], /Read the existing architecture/)
   assert.match(phaseOf('bugfix').prompt, /1\. First, write a failing test/)
-  assert.equal(PHASES.feature.actuator.edit, 'reversible-write')
+  assert.equal(PHASES.feature.actuator.edit_file, 'reversible-write')
+  // The actuator must name tools the tool layer actually provides, or the gate
+  // silently falls back to the tool's own declaration for every call.
+  assert.equal(PHASES.bugfix.actuator.read_file, 'read')
+  assert.equal(PHASES.bugfix.actuator.run_tests, 'read')
 })
 
 test('the book thresholds are the ones in the code, not numbers someone liked', () => {
