@@ -1,0 +1,106 @@
+name: Bug report
+description: The loop, the gate, the detectors, the tools or the CLI did something it should not have.
+title: 'bug: '
+labels:
+  - bug
+type: bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **First, the fixture.** `demo/` contains a deliberately planted bug — a
+        nearest-rank off-by-one in `demo/src/latency-window.ts`. Three of its 14
+        tests fail until the loop finds and fixes it. A wrong `percentile` result
+        in the demo is the fixture working, not a defect; `bash demo/reset.sh`
+        re-plants it.
+
+  - type: dropdown
+    id: path
+    attributes:
+      label: Which path?
+      description: >-
+        The standalone runner and the DSH plugin share the policy layer but wire
+        it differently — transport, session state and how a review is delivered
+        all differ — so this is the first thing needed to reproduce anything.
+      options:
+        - Standalone runner (src/runner.ts, src/cli.ts)
+        - DSH plugin (src/agent.ts, src/index.ts)
+        - Shared policy layer (src/spec.ts, budget.ts, routing.ts, signals.ts, review.ts, agent-policy.ts)
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: >-
+        What you observed, as literally as you can. Paste the `[run-end]` line or
+        the relevant transcript excerpt rather than paraphrasing it.
+      placeholder: |
+        [run-end] budget-stop · 5 steps · $0.0039 · 1 review(s) (20% of steps)
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+      description: And why — which module's contract do you read as violated?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: >-
+        The exact command and flags. `--judge`, `--max-steps` and `--budget` all
+        change behaviour, so include them.
+      placeholder: |
+        1. bash demo/reset.sh
+        2. bash demo/run.sh --max-steps 6 --judge none
+        3. ...
+    validations:
+      required: true
+
+  - type: input
+    id: node-version
+    attributes:
+      label: Node version
+      description: >-
+        Output of `node --version`. Node 22 is required: the tests run through
+        `node --experimental-strip-types`, which is a Node 22 feature.
+      placeholder: v22.23.2
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: macOS 15.3 (arm64), Ubuntu 24.04, ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: judge
+    attributes:
+      label: Which judge is configured?
+      description: >-
+        The judge decides which steps are worth a human's attention, so its
+        setting changes the review behaviour you saw.
+      options:
+        - none (detectors only — the dependency-free mode)
+        - chat (ChatJudge, metered)
+        - laya (OnegwJudge / Laya, local)
+    validations:
+      required: true
+
+  - type: textarea
+    id: anything-else
+    attributes:
+      label: Anything else
+      description: Optional. Detector output, the `LoopSpec` in use, or a diff of the session.
+    validations:
+      required: false

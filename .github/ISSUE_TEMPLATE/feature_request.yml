@@ -1,0 +1,73 @@
+name: Feature request
+description: A detector, a policy, a config surface or a runner capability you want.
+title: 'feat: '
+labels:
+  - enhancement
+type: feature
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two kinds of change need an issue before a pull request, not after:
+
+        - **Changes to the gate's fail-closed defaults.** An unclassified tool is
+          treated as `irreversible`, and a missing confidence estimate means
+          "ask". Both are deliberate; a change that makes either fail *open* is a
+          security issue, not a preference.
+        - **New dependencies.** The policy layer is stdlib-only on purpose, and
+          `package.json` carries one runtime dependency because the plugin's
+          config schema needs it. `CONTRIBUTING.md` has the rest.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem you are trying to solve
+      description: >-
+        Describe the situation that made you want this, before describing the
+        thing itself. A concrete run — what the loop did, what it cost, what a
+        human had to do by hand — is worth more than a category of annoyance.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Your proposed solution
+      description: >-
+        Where it would live (`signals.ts` for a detector, `review.ts` for a
+        policy, `runner.ts` for the standalone loop, `agent-policy.ts` for a
+        plugin decision) and what it would change for existing runs.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: >-
+        Including doing nothing, and including a smaller version of the same
+        idea. If your proposal adds a knob, say why a new detector would not do.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: dependency
+    attributes:
+      label: Would this require a new dependency?
+      description: >-
+        The policy layer is deliberately dependency-free — path handling,
+        percentile arithmetic and HTTP are the Node standard library on purpose.
+      options:
+        - 'No — standard library only'
+        - 'Yes — and I will explain below what the standard library cannot do'
+        - 'Unsure'
+    validations:
+      required: true
+
+  - type: textarea
+    id: dependency-detail
+    attributes:
+      label: If a dependency is involved, which one and why
+      description: Optional. Name the package and the specific thing it does that the standard library does not.
+    validations:
+      required: false
