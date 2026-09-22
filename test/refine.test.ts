@@ -10,6 +10,9 @@
 
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
+import { mkdtempSync, readFileSync, existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import { runRefined, passQuality, MIN_IMPROVEMENT } from '../src/refine.ts'
 import type { RefineOptions } from '../src/refine.ts'
@@ -200,4 +203,33 @@ test('passQuality averages judge scores and tolerates an unscored pass', () => {
   assert.equal(passQuality([{ kind: 'judge', step: 1, score: 1 }, { kind: 'judge', step: 2, score: 3 }]), 2)
   assert.equal(passQuality([{ kind: 'judge', step: 1, score: undefined }]), undefined)
   assert.equal(passQuality([]), undefined)
+})
+
+test('each pass appends one run record with the pass number and scores', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'refine-history-'))
+  const historyPath = join(dir, 'runs.jsonl')
+  const first = passResult({ outcome: 'model-stop', scores: [1], spentUSD: 0.1 })
+  const second = passResult({ outcome: 'goal-met', scores: [3], spentUSD: 0.1 })
+  const { runFn } = scriptedPasses([first, second])
+  const result = await runRefined(options({ loops: 3, totalBudgetUSD: 10, historyPath, taskKey: 'task-1', runFn }))
+  assert.equal(result.passes, 2)
+  const lines = readFileSync(historyPath, 'utf8').trim().split('\n')
+  assert.equal(lines.length, 2)
+  const records = lines.map(line => JSON.parse(line) as { pass: number, passes: number, taskKey: string, outcome: string, judgeScores: number[], qualityScore?: number })
+  assert.equal(records[0]!.pass, 1)
+  assert.equal(records[1]!.pass, 2)
+  assert.equal(records[0]!.passes, 3)
+  assert.equal(records[0]!.taskKey, 'task-1')
+  assert.deepEqual(records[0]!.judgeScores, [1])
+  assert.equal(records[1]!.outcome, 'goal-met')
+  assert.equal(records[1]!.qualityScore, 3)
+})
+
+test('no history file is written without both historyPath and taskKey', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'refine-nohistory-'))
+  const historyPath = join(dir, 'runs.jsonl')
+  const { runFn } = scriptedPasses([passResult({ outcome: 'goal-met', scores: [3] })])
+  // taskKey omitted: the run must not create the file on its own.
+  await runRefined(options({ loops: 3, historyPath, runFn }))
+  assert.equal(existsSync(historyPath), false)
 })

@@ -36,6 +36,8 @@ import { runLoop } from './runner.ts'
 import type { LoopRunnerOptions, LoopRunResult } from './runner.ts'
 import type { LoopEvent } from './runner.ts'
 import { parseLoops } from './spec.ts'
+import { appendRecord } from './runlog.ts'
+import type { RunRecord } from './runlog.ts'
 
 /** The book's anti-oscillation rule: stop when min quality improves by less. */
 export const MIN_IMPROVEMENT = 0.05
@@ -111,10 +113,11 @@ export function passQuality(transcript: readonly LoopEvent[]): number | undefine
  * Whether the challenger beats the incumbent.
  *
  * Deterministic and documented: goal-met first (the only outcome that means
- * "done"), then higher Laya/judge quality, then lower cost, then fewer steps.
- * A pass with no quality number never outranks one with a number on quality —
- * "not scored" is not a score — but it may still win on cost or steps when
- * neither pass met the goal and quality is absent on both sides.
+ * "done"), then higher pass quality (the mean of the pass's judge scores),
+ * then lower cost, then fewer steps. A pass with no quality number never
+ * outranks one with a number on quality — "not scored" is not a score — but
+ * it may still win on cost or steps when neither pass met the goal and
+ * quality is absent on both sides.
  */
 function beats(challenger: PassRecord, incumbent: PassRecord): boolean {
   const cMet = challenger.result.outcome === 'goal-met'
@@ -177,6 +180,12 @@ export async function runRefined(options: RefineOptions): Promise<RefinedResult>
       `optimize.totalBudgetUSD must be > 0, received ${String(budgetOpt)} — an unlimited refinement budget is not a budget`,
     )
   }
+  if (!Number.isFinite(qualityThreshold) || qualityThreshold < 0 || qualityThreshold > 3) {
+    throw new TypeError(
+      `qualityThreshold must be in [0, 3], received ${String(qualityThreshold)} — `
+      + 'outside the 0–3 judge scale it can never be met, or is always met',
+    )
+  }
   const run = runFn ?? runLoop
   const startedAt = Date.now()
   const runId = randomUUID()
@@ -192,11 +201,13 @@ export async function runRefined(options: RefineOptions): Promise<RefinedResult>
 
   for (let pass = 1; pass <= loops; pass += 1) {
     // A pass does not start when the remaining refinement budget cannot fund
-    // it: the expected cost is the mean of passes so far, falling back to one
-    // per-pass budget share for the first pass. A refinement that spends its
-    // whole budget proving the budget was too small has still spent it.
+    // it: the expected cost is the mean spend of passes so far, falling back
+    // to one per-pass budget share for the first pass (spec.costBudgetUSD is
+    // the wrong fallback — it prices the pass, not the refinement). A
+    // refinement that spends its whole budget proving the budget was too small
+    // has still spent it.
     const expected = passes === 0 ? totalBudgetUSD / loops : spentTotal / passes
-    if (spentTotal + expected > totalBudgetUSD && best !== undefined) {
+    if (spentTotal + expected > totalBudgetUSD) {
       stoppedEarly = true
       stopReason = `refinement budget exhausted: $${spentTotal.toFixed(4)} spent of $${totalBudgetUSD.toFixed(2)}, `
         + `next pass needs ~$${expected.toFixed(4)}`
@@ -210,11 +221,18 @@ export async function runRefined(options: RefineOptions): Promise<RefinedResult>
     if (best === undefined || beats(record, best)) best = record
 
     if (historyPath !== undefined && taskKey !== undefined) {
-      // Dynamic import keeps this module in the harness-free closure: runlog
-      // is Node builtins only, but a static import would still load its fs
-      // surface into every consumer that only refines in memory.
-      const { appendRecord } = await import('./runlog.ts')
-      appendRecord(historyPath, {
+      // Honestly unavailable from a LoopRunResult: the runner's transcript
+      // carries totals (step-start spentUSD, judge scores, signals) but not
+      // per-step latency, per-route spend, or unpriced-step counts, so those
+      // fields are recorded as absent (zeros/empties) rather than invented.
+      // qualityScore is the pass mean, not Laya on a final artifact: refine
+      // has no artifact handle, and labelling the mean as Laya's score would
+      // be a proxy dressed up as a measurement.
+      const judgeScores = result.transcript
+        .filter((e): e is Extract<LoopEvent, { kind: 'judge' }> => e.kind === 'judge')
+        .map(e => e.score)
+        .filter((s): s is number => typeof s === 'number')
+      const record: RunRecord = {
         runId,
         startedAt,
         endedAt: Date.now(),
@@ -232,20 +250,21 @@ export async function runRefined(options: RefineOptions): Promise<RefinedResult>
         wallMs: 0,
         latencyKind: 'round-trip',
         signals: result.signals.map(s => ({ kind: s.kind, severity: s.severity })),
-        judgeScores: result.transcript
-          .filter((e): e is Extract<LoopEvent, { kind: 'judge' }> => e.kind === 'judge')
-          .map(e => e.score)
-          .filter((s): s is number => typeof s === 'number'),
+        judgeScores,
         reviewFraction: result.reviewFraction,
         specFingerprint: fingerprint ?? 'none',
-      })
+        ...(quality === undefined ? {} : { qualityScore: quality }),
+      }
+      appendRecord(historyPath, record)
     }
 
     // Stop rules, in order. Goal-met AND at/above the bar stops: a goal-met
     // pass below the bar is a check that passed while the judge still disliked
     // the artifact, and one more pass is cheaper than shipping it. With no
     // judge scores at all, quality is undefined and goal-met alone stops —
-    // "not scored" must not hold a finished task hostage.
+    // never invent a score ("not scored" is not 0), and never hold a finished
+    // task hostage for a judge that never spoke: the check is the observable
+    // condition, the judge is advisory.
     if (result.outcome === 'goal-met' && (quality === undefined || quality >= qualityThreshold)) {
       if (pass < loops) {
         stoppedEarly = true
