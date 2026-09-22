@@ -36,6 +36,17 @@ export interface UsageReading {
   outputTokens: number
   cacheReadTokens?: number
   cacheWriteTokens?: number
+  /**
+   * How much of `outputTokens` was reasoning, when the adapter breaks it out.
+   *
+   * A breakdown, not an addition: OpenAI-compatible gateways report
+   * `completion_tokens_details.reasoning_tokens` as a subset of
+   * `completion_tokens`, which is what `outputTokens` holds (see `readUsage`
+   * in `llm.ts`). {@link priceUsage} therefore already bills these tokens
+   * inside the output line — carried here for reporting and ladder decisions,
+   * never priced a second time.
+   */
+  reasoningTokens?: number
 }
 
 /** A price table keyed by `provider/model`. Versioned config, never a constant. */
@@ -113,6 +124,12 @@ export function routeKey(provider: string, model: string): string {
  * count, so a meter that prices `inputTokens` alone under-reports every cached
  * loop — which is the common case, because a multi-step loop re-sends its
  * prefix on every step.
+ *
+ * Reasoning tokens are deliberately not a fourth line: adapters report
+ * `reasoningTokens` as a breakdown *of* `outputTokens` (the
+ * `completion_tokens_details` subset of `completion_tokens`), so the output
+ * multiplication below already bills them at the output rate. Adding a
+ * reasoning line would double-count every reasoning-model step.
  */
 export function priceUsage(usage: UsageReading, price: ModelPrice): number {
   const cacheRead = usage.cacheReadTokens ?? 0

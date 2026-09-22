@@ -23,6 +23,11 @@ import { setTimeout as delay } from 'node:timers/promises'
 
 import { DashboardState, parseDashboardConfig, startDashboard } from '../src/dashboard.ts'
 import type { DashboardHandle, DashboardSnapshot } from '../src/dashboard.ts'
+// Type-only, so these are erased at runtime: the measurement modules are
+// authored concurrently, and this file must pin their shapes without
+// loading their code.
+import type { MetricsSummary } from '../src/metrics.ts'
+import type { Recommendation } from '../src/optimizer.ts'
 import { apply } from '../src/plugin.ts'
 import type { CreatePolicyOptions } from '../src/plugin.ts'
 
@@ -665,3 +670,139 @@ test('the page carries a nonce CSP covering its script and style', async (t) => 
   assert.ok(html.includes(`nonce="${nonce}"`), 'the nonce reaches the page elements')
 })
 
+// ── measurement surfaces: metrics and recommendations ──────────────────────
+
+/** A summary shaped exactly like `metrics.ts` will produce one. */
+const METRICS: MetricsSummary = {
+  runs: 7,
+  provisional: true,
+  malformed: 1,
+  cost: {
+    perRun: { p50: 0.42, p95: 1.2, latest: 0.5, baseline: 0.4 },
+    perStep: { p50: 0.05, p95: 0.2, latest: 0.06 },
+    goalMetCost: 1.1,
+    unpricedSteps: 0,
+  },
+  speed: {
+    steps: { p50: 8, p95: 12, latest: 9 },
+    latencyMs: { p50: 900, p95: 2500, latest: 1100, baseline: 1000 },
+    wallMs: { p50: 9000, p95: 20000, latest: 12000 },
+    latencyKind: 'mixed',
+  },
+  quality: {
+    goalMetRate: 0.71,
+    firstPassRate: 0.5,
+    meanJudge: 2.4,
+    reviewFraction: 0.3,
+  },
+  alerts: [{ kind: 'cost-spike', severity: 'warning', detail: 'latest run cost 2× p50' }],
+}
+
+/** A recommendation shaped exactly like `optimizer.ts` will produce one. */
+const RECOMMENDATION: Recommendation = {
+  lever: 'ladder-rung',
+  current: '1',
+  proposed: '2',
+  evidence: 'runs 4–7 hit the ceiling before the goal; judge still met.',
+  confidence: 0.8,
+  questionType: 'choice',
+}
+
+test('setMetrics and setRecommendations land in the snapshot', async (t) => {
+  const { dash, state } = await started(t)
+  state.setMetrics(METRICS)
+  state.setRecommendations([RECOMMENDATION])
+
+  const snapshot = await getState(dash)
+  assert.deepEqual(snapshot.metrics, METRICS, 'the summary rides the same snapshot as runs')
+  assert.deepEqual(snapshot.recommendations, [RECOMMENDATION])
+
+  // Replacement, not merge: a second feed replaces the first entirely, so
+  // the page can never render a blend of two roll-ups.
+  state.setRecommendations([])
+  assert.deepEqual((await getState(dash)).recommendations, [])
+})
+
+test('SSE frames carry the measurement surfaces too', async (t) => {
+  const { dash, state } = await started(t)
+  state.setMetrics(METRICS)
+  state.setRecommendations([RECOMMENDATION])
+
+  const controller = new AbortController()
+  const res = await fetch(`${dash.url}api/events?token=${encodeURIComponent(dash.token)}`, {
+    signal: controller.signal,
+  })
+  assert.equal(res.status, 200)
+  // A first frame must arrive promptly on loopback; the guard turns "never"
+  // into a bounded failure so a hung stream cannot hang the whole suite.
+  const guard = setTimeout(() => controller.abort(), 3000)
+  guard.unref?.()
+  t.after(() => { clearTimeout(guard); controller.abort() })
+
+  const reader = res.body?.getReader()
+  assert.ok(reader !== undefined, 'the SSE body is a stream')
+  const decoder = new TextDecoder()
+  let text = ''
+  let frame: DashboardSnapshot | undefined
+  while (frame === undefined) {
+    const chunk = await reader.read()
+    assert.equal(chunk.done, false, 'the stream closed before its first data frame')
+    text += decoder.decode(chunk.value, { stream: true })
+    // Chunks may split anywhere; wait until one full `data:` line is present.
+    const match = /^data: (.*)$/m.exec(text)
+    if (match?.[1] !== undefined) frame = JSON.parse(match[1]) as DashboardSnapshot
+  }
+  assert.deepEqual(frame.metrics, METRICS)
+  assert.deepEqual(frame.recommendations, [RECOMMENDATION])
+})
+
+test('/api/state requires the token even when metrics are present', async (t) => {
+  const { dash, state } = await started(t)
+  state.setMetrics(METRICS)
+  state.setRecommendations([RECOMMENDATION])
+
+  assert.equal((await fetch(`${dash.url}api/state`)).status, 401, 'measurement data is still protected data')
+  assert.equal((await fetch(`${dash.url}api/state?token=wrong`)).status, 401)
+
+  const res = await fetch(`${dash.url}api/state`, {
+    headers: { 'x-dashboard-token': dash.token },
+  })
+  assert.equal(res.status, 200)
+  const body = await res.json() as DashboardSnapshot
+  assert.ok(body.metrics !== undefined, 'the authorized read still carries the data')
+})
+
+test('there is no auto-apply endpoint: GET and POST /api/apply both 404', async (t) => {
+  const { dash, state } = await started(t)
+  state.setRecommendations([RECOMMENDATION])
+
+  // Deliberately WITH a valid token: the absence is a design decision, not
+  // an auth wall. Applying a recommendation is a human copying its config
+  // snippet by hand — a local model must never loosen its own ceiling.
+  const get = await fetch(`${dash.url}api/apply?token=${encodeURIComponent(dash.token)}`)
+  assert.equal(get.status, 404, 'GET must not exist either')
+
+  const post = await fetch(`${dash.url}api/apply`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-dashboard-token': dash.token,
+      origin: new URL(dash.url).origin,
+    },
+    body: JSON.stringify({ lever: RECOMMENDATION.lever, proposed: RECOMMENDATION.proposed }),
+  })
+  assert.equal(post.status, 404, 'the model must never be able to apply its own advice')
+})
+
+test('absent metrics/recommendations still produce a valid snapshot shape', async (t) => {
+  const { dash } = await started(t)
+  const snapshot = await getState(dash)
+  // Exact key set: absent surfaces are absent keys, never zeroed numbers
+  // that would read as "measured, and it is all fine".
+  assert.deepEqual(snapshot, {
+    answers: true,
+    pending: [],
+    runs: [],
+    feed: [],
+  })
+})

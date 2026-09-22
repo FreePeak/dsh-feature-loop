@@ -113,6 +113,17 @@ export interface LoopRunnerOptions {
   /** Model call budget per step, passed through to the gateway. */
   maxTokensPerStep?: number
   /**
+   * Evidence from a previous refinement pass, delivered as a plugin-sourced
+   * user notice on the opening turn.
+   *
+   * The one seam pass N+1 needs into pass N: cost, steps, judge scores, the
+   * weakest dimension, the failing check output. It is a *message*, not a
+   * config change — proposals stay proposals-only, and the book's
+   * Self-Correction-with-Reflection pattern is exactly this: the same loop,
+   * re-run with its own prior evidence in context.
+   */
+  passNotice?: string
+  /**
    * How many times the model may stop without the success condition holding
    * before the run is called `model-stop`. Default 2.
    */
@@ -225,7 +236,12 @@ export async function runLoop(options: LoopRunnerOptions): Promise<LoopRunResult
 
   const messages: LlmMessage[] = [
     { role: 'system', content: buildSystemPrompt(spec, options.phase) },
-    { role: 'user', content: `Begin. ${spec.goal}` },
+    {
+      role: 'user',
+      content: options.passNotice === undefined
+        ? `Begin. ${spec.goal}`
+        : `Begin. ${spec.goal}\n\n[refinement evidence from the previous pass]\n${options.passNotice}`,
+    },
   ]
 
   const history: StepObservation[] = []
@@ -320,6 +336,12 @@ export async function runLoop(options: LoopRunnerOptions): Promise<LoopRunResult
 
     // 6. The model call.
     let result
+    // Round-trip timing, not model timing: this spans dispatch to the settled
+    // response — gateway queueing and transport retries included — which is
+    // runlog's `latencyKind: 'round-trip'`. The runner has no seam that
+    // isolates pure model time, and a figure labelled otherwise would be a
+    // proxy dressed up as a measurement.
+    const callStartedAt = performance.now()
     try {
       result = await options.llm.complete({
         model: decision.route.provider === undefined
@@ -340,6 +362,9 @@ export async function runLoop(options: LoopRunnerOptions): Promise<LoopRunResult
       outcome = 'error'
       break
     }
+    // Recorded on the step's observations below: the loop's history is where
+    // the speed axis becomes visible to the detectors and to the run record.
+    const latencyMs = performance.now() - callStartedAt
 
     lastStepUSD = budget.spend(decision.route.provider ?? 'default', decision.route.model, result.usage)
     spentUSD = budget.snapshot().spentUSD
@@ -385,14 +410,14 @@ export async function runLoop(options: LoopRunnerOptions): Promise<LoopRunResult
           tool_call_id: call.id,
           content: `Unknown tool "${call.function.name}". Available: ${[...toolsByName.keys()].join(', ')}`,
         })
-        history.push({ index: step, tool: call.function.name, argsKey: '', error: true, costUSD: 0 })
+        history.push({ index: step, tool: call.function.name, argsKey: '', error: true, costUSD: 0, latencyMs })
         continue
       }
 
       const parsed = parseArgs(call.function.arguments)
       if (!parsed.ok) {
         messages.push({ role: 'tool', tool_call_id: call.id, content: `Bad arguments: ${parsed.error}` })
-        history.push({ index: step, tool: tool.name, argsKey: '', error: true, costUSD: 0 })
+        history.push({ index: step, tool: tool.name, argsKey: '', error: true, costUSD: 0, latencyMs })
         continue
       }
 
@@ -429,6 +454,7 @@ export async function runLoop(options: LoopRunnerOptions): Promise<LoopRunResult
         argsKey: canonicalArgs(parsed.args),
         error: !toolResult.ok,
         costUSD: 0,
+        latencyMs,
       })
       emit({
         kind: 'tool',

@@ -31,7 +31,7 @@ import { MessageId } from '@deepseek-ai/dsh-llm'
 import type { LlmCallConfig, UserMessage } from '@deepseek-ai/dsh-llm'
 import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
 import { LoopBudget } from './budget.ts'
-import type { BudgetSnapshot } from './budget.ts'
+import type { BudgetSnapshot, UsageReading } from './budget.ts'
 import { ModelLadder, routeLabel } from './routing.ts'
 import { AttentionRouter, ReviewGate, judgeQuestion } from './review.ts'
 import type { GatePolicy } from './review.ts'
@@ -115,6 +115,20 @@ export interface FeatureLoopPolicy {
   /** The spec, when the deployment configured one. */
   spec: LoopSpec | undefined
   budget: LoopBudget | undefined
+  /**
+   * Session-log cursor: the first seq this policy has not yet priced into
+   * `budget`.
+   *
+   * Both hook paths (`agent/pre-step` and `agent/request`) drain settled
+   * attempts, and they routinely observe the same committed
+   * `assistant/message`; the cursor is what makes `spend()` happen exactly
+   * once per settled attempt instead of twice. `undefined` means "not opened
+   * yet": the first drain opens it at the log's current length, so the budget
+   * is a property of *this run* — a session resumed mid-conversation does not
+   * open already "spent" by the turns that happened before the plugin was
+   * watching.
+   */
+  pricedThroughSeq: number | undefined
   ladder: ModelLadder | undefined
   router: AttentionRouter
   gate: ReviewGate | undefined
@@ -258,6 +272,7 @@ export function createPolicy(options: CreatePolicyOptions): FeatureLoopPolicy {
   return {
     spec,
     budget,
+    pricedThroughSeq: undefined,
     ladder,
     router,
     gate,
@@ -435,6 +450,108 @@ export type GateVerdict =
   | { kind: 'proceed' }
   | { kind: 'ask', reason: string }
   | { kind: 'deny', reason: string }
+
+/**
+ * The slice of the agent's session log the spend meter reads, declared
+ * structurally.
+ *
+ * Structural for the same reason `runIdOf` reads `agent.id` structurally: the
+ * plugin must typecheck against the harness the local checkout has, must
+ * tolerate test agents that carry only an `id`, and must not take a type-level
+ * dependency on one harness build's session types for two method calls.
+ */
+interface SettledSession {
+  /** Log length — the next event's seq. */
+  readonly seq?: unknown
+  /**
+   * The append-only log, sliced from a seq.
+   * @param fromSeq - inclusive start; the log's seq contract is contiguous.
+   */
+  snapshotEvents(fromSeq?: number): readonly {
+    readonly seq?: unknown
+    readonly type?: unknown
+    readonly data?: unknown
+  }[]
+}
+
+/**
+ * Price every settled model attempt this policy has not charged yet.
+ *
+ * Why this exists: on the plugin path `LoopBudget.spend()` had no call site,
+ * so `costBudgetUSD` measured zero — the PRD calls that the largest
+ * correctness gap in this package. The usage becomes visible only when an
+ * attempt *settles*: the harness commits an `assistant/message` carrying its
+ * `usage` to the session log after the model call returns. The
+ * `agent/request` handler cannot see it — that waterfall runs *before*
+ * dispatch and yields only the call config — so the two settled-step
+ * boundaries drain the log forward instead.
+ *
+ * Called from both hooks on purpose: `agent/pre-step` prices the previous
+ * step *before* `reviewStep` reads the verdict, so a ceiling that is already
+ * breached stops the run one step earlier; `agent/request` catches the tail
+ * a run that ends without another pre-step would otherwise never charge. The
+ * cursor makes the second call a no-op whenever the first one already drained
+ * the same events.
+ *
+ * Latency semantics for later wiring: the span observable around this drain
+ * is settle-to-settle — a whole round trip including gateway queueing — so
+ * any runlog integration must record plugin-path timings as
+ * `latencyKind: 'round-trip'`, never `'model'`. This plugin has no seam that
+ * isolates pure model time, and a label claiming otherwise would be a proxy
+ * presented as a measurement.
+ *
+ * A settled attempt on a route the price table does not know throws
+ * `UnpricedRouteError` out of the hook and thereby fails the turn — the same
+ * stance the runner takes at pre-flight: an unpriced route must fail loudly
+ * rather than price at zero and disable the ceiling it exists to enforce.
+ *
+ * ponytail: retried/failed attempts settle as `assistant/attempt` records
+ * whose usage (if any) sits inside `stream`; they are not priced yet, so a
+ * run that retries a lot under-reports spend. Ceiling: the under-count only
+ * touches failed attempts, and `unpricedSteps` keeps visible what is *not*
+ * counted on the success path. Upgrade path: price the `usage` stream chunk
+ * out of the attempt record the same way, once a test can pin its shape.
+ *
+ * @param policy - the agent's policies; a policy without a budget (no spec
+ *   configured) has nothing to meter and returns immediately.
+ * @param agent - the agent whose session settled the attempts, when there is
+ *   one. An agent-less policy has no session and therefore nothing to drain.
+ */
+function spendSettledUsage(policy: FeatureLoopPolicy, agent: Agent | undefined): void {
+  if (policy.budget === undefined) return
+  const session = (agent as { readonly session?: SettledSession } | undefined)?.session
+  if (session === undefined) return
+  if (policy.pricedThroughSeq === undefined) {
+    policy.pricedThroughSeq = typeof session.seq === 'number' ? session.seq : 0
+  }
+  for (const event of session.snapshotEvents(policy.pricedThroughSeq)) {
+    const seq = Number(event.seq)
+    const advanced = Number.isFinite(seq)
+    if (event.type !== 'assistant/message') {
+      if (advanced) policy.pricedThroughSeq = seq + 1
+      continue
+    }
+    const data = event.data as {
+      usage?: UsageReading
+      message?: { source?: { provider?: unknown, model?: unknown } }
+    }
+    // `AssistantMessage.source` *requires* provider and model, so this is a
+    // guard against a non-model producer, not a pricing path: a message
+    // without a route cannot be priced, and inventing one would book the cost
+    // against a route that never served it.
+    const provider = typeof data.message?.source?.provider === 'string' ? data.message.source.provider : undefined
+    const model = typeof data.message?.source?.model === 'string' ? data.message.source.model : undefined
+    if (provider !== undefined && model !== undefined) {
+      // May throw UnpricedRouteError — deliberately AFTER nothing was
+      // skipped: the cursor advances only once this spend lands, so a turn
+      // the throw fails does not swallow the attempt's usage; the next drain
+      // retries it and fails again until the price table is fixed. Loud and
+      // retried beats silent and lost.
+      policy.budget.spend(provider, model, data.usage)
+    }
+    if (advanced) policy.pricedThroughSeq = seq + 1
+  }
+}
 
 /**
  * Register the dashboard's answerer ahead of every other `approval/request`
@@ -699,6 +816,11 @@ export function apply(
 
   const disposeStep = ctx.on('agent/pre-step', async ({ agent, turn, step }, next) => {
     const policy = policyFor(agent)
+    // Price the settled attempts of the step(s) before this boundary FIRST:
+    // a verdict computed against a budget that has not yet been told what the
+    // previous attempt cost is a verdict one step late, and one step late is
+    // exactly how a cost ceiling arrives after the money is gone.
+    spendSettledUsage(policy, agent)
     const base = await next()
     if (base.kind === 'reject') return base
     const { decision, notices, signals, judgeScore, budget } = await reviewStep(policy, step)
@@ -728,6 +850,11 @@ export function apply(
   const disposeRequest = ctx.on('agent/request', async ({ agent, step }, next) => {
     const resolved = await next()
     const policy = policyFor(agent)
+    // The same drain as `agent/pre-step`. This handler fires per attempt, so
+    // it also settles the last attempt of a run whose final step never gets
+    // another pre-step — without it, the closing assistant message of a turn
+    // would be the one attempt the meter never charges. The cursor dedupes.
+    spendSettledUsage(policy, agent)
     const routed = routeForStep(policy, step, undefined)
     if (routed?.model !== undefined) {
       state.recordRoute(

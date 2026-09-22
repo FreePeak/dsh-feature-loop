@@ -109,6 +109,11 @@ roles, and the cost ceiling still prices what actually runs.
 Acceptance: a run with a deliberately tiny `costBudgetUSD` stops on cost, and a
 test asserts spend is non-zero after a priced attempt.
 
+Status: **done on `dsh/loop-optimize`** — `plugin.ts` drains settled
+`assistant/message` events into `budget.spend()` from both hooks (cursor-deduped),
+`runner.ts` prices every model result and times the call, and
+`test/budget.test.ts` asserts a priced attempt costs $0.168, not zero.
+
 ## P1 — Test the plugin's wiring
 
 `src/plugin.ts` is the most harness-coupled module and the thinnest on tests

@@ -16,6 +16,8 @@ import z from '@deepseek-ai/schemastery'
 import { apply as applyFeatureLoop } from './plugin.ts'
 import type { CreatePolicyOptions, FeatureLoopPolicy } from './plugin.ts'
 import type { DashboardConfig } from './dashboard.ts'
+import { parseOptimizeConfig } from './spec.ts'
+import type { OptimizeConfig } from './spec.ts'
 
 export {
   apply as applyListeners,
@@ -82,6 +84,18 @@ export interface Config {
    * review brief per ask, rendered above the Allow/Reject buttons.
    */
   dashboard?: DashboardConfig
+  /**
+   * The refinement-loop knobs (`loops`, `derive`, `history`, `judge`,
+   * `totalBudgetUSD`). Omitted means no refinement — today's behaviour,
+   * exactly.
+   *
+   * Validated field-by-field at load by `parseOptimizeConfig` even though
+   * nothing consumes it yet: a typo must fail when the plugin loads, not the
+   * day the refinement wiring lands. The wiring itself belongs to a later
+   * phase — deliberately not forwarded to `applyFeatureLoop` here, so the
+   * validation is live without inventing behaviour nothing reads.
+   */
+  optimize?: OptimizeConfig
 }
 
 /**
@@ -101,6 +115,7 @@ export const Config: z<Config> = z.object({
   gatePolicies: z.any(),
   gateMode: z.union([z.const('ask'), z.const('deny')]),
   dashboard: z.any(),
+  optimize: z.any(),
 }) as unknown as z<Config>
 
 /**
@@ -112,6 +127,11 @@ export const Config: z<Config> = z.object({
  * nothing when cordis collects the listener disposers itself.
  */
 export function apply(ctx: Context, config: Config = {}): (() => void) | void {
+  // Fail at load, before any listener registers — the same rule as the spec
+  // and the dashboard block: a misconfigured optimize band stops the plugin
+  // from loading; it never degrades into a refinement loop nobody meant to
+  // start, and it is validated even though nothing consumes the block yet.
+  if (config.optimize !== undefined) parseOptimizeConfig(config.optimize)
   return applyFeatureLoop(ctx, {
     spec: config.spec,
     confidenceThreshold: config.confidenceThreshold,

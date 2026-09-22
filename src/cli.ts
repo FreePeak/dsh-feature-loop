@@ -21,9 +21,11 @@ import { createOnegwClient } from './llm.ts'
 import { createChatJudge } from './judge.ts'
 import { OnegwJudge, NO_JUDGE } from './laya.ts'
 import type { Judge } from './laya.ts'
-import { runLoop, renderTranscript } from './runner.ts'
+import { runRefined } from './refine.ts'
+import { renderTranscript } from './runner.ts'
 import type { ReviewRequest } from './runner.ts'
 import { phaseOf } from './prompts.ts'
+import { parseLoops } from './spec.ts'
 import type { LoopSpec } from './spec.ts'
 
 const run = promisify(exec)
@@ -44,6 +46,12 @@ interface Options {
   auto: boolean
   maxTokens: number
   quiet: boolean
+  /**
+   * Refinement passes, when `--loops` was given. Absent means one pass:
+   * `runRefined` with no `loops` runs `runLoop` exactly once, so "not asked
+   * for" and "not wired" are the same behaviour by construction.
+   */
+  loops?: number
 }
 
 const USAGE = `dsh-feature-loop — run the loop against a repository
@@ -61,6 +69,7 @@ const USAGE = `dsh-feature-loop — run the loop against a repository
   --judge-model <id>  model the chat judge uses               (default: xiaomi/mimo-v2.5)
   --review-budget <f> fraction of steps a human may be asked  (default: 0.10)
   --max-tokens <n>    per-step output cap                     (default: 4096)
+  --loops <n>         refinement passes, integer 3–10 (default: 1)
   --auto              never block on a human (CI/demo mode)
   --quiet             suppress the per-step narration
   -h, --help          this text
@@ -109,6 +118,14 @@ function parseArgs(argv: string[]): Options | 'help' {
       case '--judge-model': options.judgeModel = value(i, arg); i += 1; break
       case '--review-budget': options.reviewBudget = Number(value(i, arg)); i += 1; break
       case '--max-tokens': options.maxTokens = Number(value(i, arg)); i += 1; break
+      case '--loops': {
+        // Validated through the same helper the config block uses, under the
+        // CLI's own field name — so `--loops 30` fails at parse time with the
+        // same band message `optimize.loops: 30` would produce.
+        options.loops = parseLoops(Number(value(i, arg)), '--loops')
+        i += 1
+        break
+      }
       case '--auto': options.auto = true; break
       case '--quiet': options.quiet = true; break
       default: throw new Error(`unknown flag "${arg}"`)
@@ -317,7 +334,10 @@ async function main(): Promise<number> {
   }
   process.stdout.write(`  preflight verify failing as expected — the loop has real work\n\n`)
 
-  const result = await runLoop({
+  // One entry point for one pass or many: with no `--loops`, `runRefined`
+  // runs `runLoop` exactly once — the flag and the refinement share the code,
+  // so they cannot disagree about what a pass means.
+  const result = await runRefined({
     spec,
     phase: phaseOf(options.phase),
     tools,
@@ -327,6 +347,7 @@ async function main(): Promise<number> {
     onReview,
     checkSuccess,
     maxTokensPerStep: options.maxTokens,
+    ...options.loops === undefined ? {} : { loops: options.loops },
     onEvent: options.quiet
       ? undefined
       : (event) => {
@@ -355,6 +376,9 @@ async function main(): Promise<number> {
   process.stdout.write(`  cost           $${result.spentUSD.toFixed(6)} of $${options.budgetUSD.toFixed(2)}\n`)
   process.stdout.write(`  human reviews  ${String(result.reviews)} (${(result.reviewFraction * 100).toFixed(0)}% of steps)\n`)
   process.stdout.write(`  signals        ${result.signals.length === 0 ? 'none' : [...new Set(result.signals.map(s => s.kind))].join(', ')}\n`)
+  if (result.passes > 1) {
+    process.stdout.write(`  passes         ${String(result.passes)}${result.stoppedEarly ? ` (stopped early: ${result.stopReason})` : ''}\n`)
+  }
 
   return result.outcome === 'goal-met' ? 0 : 1
 }

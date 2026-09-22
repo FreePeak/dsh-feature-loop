@@ -186,7 +186,7 @@ check: test typecheck ## Run the test suite and the typecheck
 	@echo "  check passed"
 
 .PHONY: test
-test: ## Run the unit test suite (175 tests, no network)
+test: ## Run the unit test suite (no network)
 	@node --experimental-strip-types --test test/*.test.ts 2>&1 | tail -8
 
 .PHONY: typecheck
@@ -218,8 +218,10 @@ typecheck: ## Typecheck src/ (mirrors the CI file list)
 
 # The harness-free import closure, exactly as CI lists it.
 CI_FILES := src/agent-policy.ts src/budget.ts src/cli.ts src/dashboard.ts \
-            src/dashboard-page.ts src/explainer.ts src/judge.ts src/laya.ts \
-            src/llm.ts src/messages.ts src/brief.ts src/approval-bridge.ts src/prompts.ts src/review.ts src/routing.ts \
+            src/dashboard-page.ts src/envelope.ts src/explainer.ts src/judge.ts src/laya.ts \
+            src/llm.ts src/messages.ts src/metrics.ts src/optimizer.ts src/brief.ts \
+            src/approval-bridge.ts src/prompts.ts src/refine.ts src/review.ts \
+            src/routing.ts src/runlog.ts \
             src/runner.ts src/signals.ts src/spec.ts src/tools.ts
 
 .PHONY: integration

@@ -73,6 +73,18 @@
         # ────────────────────────────────────────────────────────────────────
 
         # ────────────────────────────────────────────────────────────────────
+        # Refinement + measured envelopes (Laya-guided optimization).
+        # Omitted = today's single-pass behaviour, exactly.
+        #
+        # optimize:
+        #   loops: 3              # refinement passes, integer 3–10 (fails at load outside)
+        #   derive: true          # derive step/cost expectations from run history
+        #   history: .feature-loop/runs.jsonl   # run-history file envelopes derive from
+        #   judge: chat           # none | chat | laya — who scores artifacts across passes
+        #   totalBudgetUSD: 3.00  # refinement budget; default is derived × loops × 0.6
+        # ────────────────────────────────────────────────────────────────────
+
+        # ────────────────────────────────────────────────────────────────────
         # The 8-dimension spec. Uncomment to switch the policies ON.
         #
         # All eight dimensions are required and validated at load:

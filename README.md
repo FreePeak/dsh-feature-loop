@@ -278,6 +278,31 @@ and style and nothing else.
 generated per boot and required on every request. An existing Docker volume
 seeded before this feature needs `FORCE_REINIT=1 make up` to pick the row up.
 
+### The optimize block — refinement passes from measured history
+
+`optimize:` sits beside the spec and changes nothing when omitted. When present
+it is validated at load (a `loops: 30` stops the plugin from loading, naming
+the field and the 3–10 band):
+
+```yaml
+- id: feature-loop
+  config:
+    optimize:
+      loops: 3              # refinement passes, integer 3–10
+      derive: true          # envelopes from run history, not hand-set numbers
+      # history: .feature-loop/runs.jsonl   # override the history path
+      # judge: chat         # none | chat | laya — who scores across passes
+      # totalBudgetUSD: 3.00  # refinement budget; default derived × loops × 0.6
+```
+
+Every run appends one line to `.feature-loop/runs.jsonl` (JSONL, Node builtins
+only); the envelope (`maxSteps`, `costBudgetUSD`, success command) is derived
+from the P95 of that history with +30% headroom, and the dashboard gains
+**Metrics** (cost / speed / quality tiles with baselines and alerts) and
+**Optimizations** (one copy-ready card per proposal). Proposals are display
+only — applying one means copying its snippet by hand; there is deliberately
+no endpoint that lets the judge loosen its own ceilings.
+
 **The guard is the safety property.** The dashboard's answerer is registered
 ahead of every other `approval/request` listener — required, because the
 harness's remote forwarder holds the request without calling `next()` while a
@@ -443,11 +468,11 @@ Two genuine bugs were found in the fork while it existed, both now moot:
   packages; the same handshake is covered by the integration suite
   (`test/integration/plugin-in-dsh.spec.ts`), which is where the plugin's
   behaviour is exercised against the real harness.
-- **Spend is observed, not metered by the plugin.** `LoopBudget.spend()` must be
-  called with real usage for the cost ceiling to mean anything; the plugin
-  currently reads spend from the budget snapshot rather than pricing each settled
-  attempt. **This is the largest correctness gap** and is Phase 2b work.
-  `maxSteps` is the only ceiling that is trustworthy today.
+- **Spend is metered on both paths.** `runner.ts` prices every model result into
+  `LoopBudget`, and the plugin drains settled `assistant/message` events into
+  `spend()` from both hooks (cursor-deduped, `assistant/attempt` retries still
+  unpriced — marked `ponytail:` at the call site). The cost ceiling is
+  load-bearing: a run with a deliberately tiny `costBudgetUSD` stops on cost.
 - **The approval prompt depends on the session's permission preset, and the
   user's settings win.** A fresh session's approval policy comes from
   `permission.defaultPreset` in `~/.dsh/settings.yaml`, which
@@ -521,8 +546,13 @@ Two genuine bugs were found in the fork while it existed, both now moot:
   (`web/app.tsx`, vendored as `assets/assistant-ui/`); approvals ride
   `ToolCallMessagePart.approval` and `onRespondToToolApproval`, mapped by the
   pure `src/approval-bridge.ts` onto the existing guarded endpoint.
-- **Phase 2b — real spend accounting** ⬜ price each settled attempt into
-  `LoopBudget` so the cost ceiling is load-bearing (the largest open gap).
+- **Phase 2b — real spend accounting** ✅ `runner.ts` prices every model result;
+  the plugin drains settled attempts from both hooks. The cost ceiling stops
+  runs; `test/budget.test.ts` asserts spend is non-zero after a priced attempt.
+- **Phase 2c — Laya-guided optimization** ✅ `optimize:` block, run history,
+  derived envelopes, metrics, Laya-as-advisor proposals (display only),
+  refinement passes with the book's < 0.05 stop rule, and SSE metrics +
+  recommendations on the dashboard snapshot.
 - **Phase 3 — Laya** ⬜ deploy the `systemone` provider in onegw, switch `--judge laya`
 
 ### Verifying the whole thing
