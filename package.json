@@ -62,7 +62,8 @@
     "demo:reset": "bash demo/reset.sh",
     "demo:steps": "bash demo/run.sh --max-steps 6",
     "demo:cost": "bash demo/run.sh --budget 0.000001",
-    "demo:nojudge": "bash demo/run.sh --judge none"
+    "demo:nojudge": "bash demo/run.sh --judge none",
+    "lint:workflows": "actionlint .github/workflows/*.yml"
   },
   "dsh": {
     "bundle": {

@@ -1,0 +1,13 @@
+# actionlint configuration.
+#
+# `dsh-loop` is a custom label on this repository's self-hosted runner. actionlint
+# only knows the GitHub-hosted labels, so without this it reports
+# `label "dsh-loop" is unknown` on every `runs-on` that uses it — a false
+# positive, since a self-hosted label is defined by the runner you register, not
+# by GitHub.
+#
+# Declaring it here keeps `actionlint` meaningful: it stays quiet on the labels
+# that are actually valid, so a genuinely misspelled one still stands out.
+self-hosted-runner:
+  labels:
+    - dsh-loop
