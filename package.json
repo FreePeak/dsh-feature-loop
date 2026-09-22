@@ -23,7 +23,13 @@
   "scripts": {
     "build": "tsdown",
     "test": "node --experimental-strip-types --test test/*.test.ts",
-    "sync": "bash scripts/sync-upstream.sh"
+    "typecheck": "tsc --noEmit",
+    "sync": "bash scripts/sync-upstream.sh",
+    "demo": "bash demo/run.sh",
+    "demo:reset": "bash demo/reset.sh",
+    "demo:steps": "bash demo/run.sh --max-steps 6",
+    "demo:cost": "bash demo/run.sh --budget 0.000001",
+    "demo:nojudge": "bash demo/run.sh --judge none"
   },
   "dsh": {
     "bundle": {

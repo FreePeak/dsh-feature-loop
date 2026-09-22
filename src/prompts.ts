@@ -79,15 +79,14 @@ export const BUGFIX_PHASE: Phase = {
   ].join('\n'),
   actuator: {
     // Reading is free and safe, so it never interrupts you.
-    read: 'read',
-    grep: 'read',
-    glob: 'read',
-    // The reproduction is a test file: reversible, and gated by confidence.
-    write_test: 'reversible-write',
-    // The fix itself is a source write.
-    edit: 'reversible-write',
+    read_file: 'read',
+    list_files: 'read',
     // Running tests is how the loop learns; read-only in effect.
     run_tests: 'read',
+    // Writing the reproduction and the fix are both source writes: reversible,
+    // and gated by confidence rather than by a human every time.
+    write_file: 'reversible-write',
+    edit_file: 'reversible-write',
   },
   successCommand: 'run ALL tests, not just the new one',
 }
@@ -103,12 +102,11 @@ export const FEATURE_PHASE: Phase = {
     'The loop will stop you at its step and cost ceilings. If it does, report what you verified and what remains.',
   ].join('\n'),
   actuator: {
-    read: 'read',
-    grep: 'read',
-    glob: 'read',
-    edit: 'reversible-write',
-    write_test: 'reversible-write',
+    read_file: 'read',
+    list_files: 'read',
     run_tests: 'read',
+    write_file: 'reversible-write',
+    edit_file: 'reversible-write',
   },
   successCommand: 'run ALL tests, not just the new one',
 }
@@ -129,7 +127,13 @@ export const PHASES: Record<PhaseName, Phase> = {
       'Do not change behaviour in a refactor.',
       'Stop if a change requires a behaviour change; report it instead.',
     ]),
-    actuator: { read: 'read', grep: 'read', glob: 'read', edit: 'reversible-write', run_tests: 'read' },
+    actuator: {
+      read_file: 'read',
+      list_files: 'read',
+      run_tests: 'read',
+      edit_file: 'reversible-write',
+      write_file: 'reversible-write',
+    },
     successCommand: 'run ALL tests',
   },
 }
