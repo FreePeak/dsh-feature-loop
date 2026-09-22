@@ -75,10 +75,9 @@ constructor(private readonly root: string, private readonly budget: LoopBudget) 
 ```
 
 This is not a warning and not a lint rule. It is a parse error, and it is the
-single most repeated gotcha in this repository — the vendored files inherit it
-from upstream, and it is why `src/index.ts` is not loadable under
-`--experimental-strip-types` at all (`agent.ts`, `assistant-stream.ts` and
-`inbox.ts` use parameter properties; see the README's Known limits).
+single most repeated gotcha in this repository. It is why the policy modules
+declare fields explicitly and assign them in the constructor body. There are no
+longer any vendored files inheriting it from upstream — see "The de-fork" below.
 
 Declare the field and assign it in the body:
 
@@ -100,64 +99,34 @@ export class ReviewGate {
 
 Two consequences worth knowing before you write code:
 
-- **Logic you leave inside `agent.ts` is logic nothing checks.** A test cannot
-  import that file. That is why the plugin's branchy decisions live in
-  `agent-policy.ts` (27 tests) rather than in the agent. If you add a decision to
-  the plugin path, put the decision in a module a test can import and leave the
-  wiring in `agent.ts`.
-- **Do not convert the vendored files to explicit fields** just to make them
-  loadable. It would break byte-identity with upstream and turn every future
-  `sync-upstream.sh` run into a merge. This is deferred deliberately, not
-  forgotten.
+- **Keep the plugin thin.** `src/plugin.ts` is wiring, not policy. Its branchy
+  decisions live in `agent-policy.ts` (27 tests) so a test can reach them. If you
+  add a decision, put the decision in a pure module a test can import and leave
+  only the listener plumbing in `plugin.ts`.
+- **`src/plugin.ts` is the one module CI cannot typecheck** (it imports
+  `@deepseek-ai/dsh-*` at versions CI cannot resolve). Typecheck it locally
+  against the prebuilt packages before you push.
 
-## The `FORK-DELTA` convention
+## The de-fork
 
-These files are vendored from `@deepseek-ai/dsh-agent-loop`:
+This repository used to vendor nine files from `@deepseek-ai/dsh-agent-loop` and
+mark every local edit `FORK-DELTA`. **All of that is gone.** The harness publishes
+an extension point for every policy this package adds, so the vendored loop was
+deleted and replaced by `src/plugin.ts` (368 lines).
 
-```
-src/agent.ts  src/index.ts  src/inbox.ts  src/tool-calls.ts
-src/runtime-context.ts  src/assistant-stream.ts
-src/constants.ts  src/invariant.ts
-```
+There is no `sync-upstream.sh`, no `upstream.lock`, no `cordis.patch.yml`, and no
+`FORK-DELTA` convention to follow. If you find yourself copying a file out of
+`deepseek-harness`, stop: register a listener on the harness's own event instead.
 
-`scripts/sync-upstream.sh` re-vendors them from the upstream checkout and diffs
-the result against what this repository holds. It cannot tell your local edit
-from a new upstream release unless you mark it, and the marker is how it knows:
+| Policy | Extension point |
+|---|---|
+| Step and cost ceilings | `agent/pre-step` → return `{kind:'reject', reason}` |
+| Cheap-first routing | `agent/request` → override provider/model |
+| Review gate | `tools/pre-execute` → return `{kind:'deny', reason}` |
+| Termination | `agent/turn-stopping` |
 
-```bash
-grep -rn "FORK-DELTA" src/
-bash scripts/sync-upstream.sh   # diff against the pinned upstream commit
-```
-
-**Every local edit in a vendored file gets a `FORK-DELTA` comment.** A new one
-looks like this:
-
-```ts
-/* FORK-DELTA(7): the step's routed rung is applied to the request seed here
- * rather than in the harness, because the ladder is a fork concept and upstream
- * has exactly one route. Re-apply this hunk after re-vendoring: upstream's
- * `prepareRequest` sets the model directly. */
-this.stepRoute = this.ladder.forStep(step)
-```
-
-Why it matters, concretely: the sync script strips lines containing `FORK-DELTA`
-from both sides before comparing (`grep -v "^.*FORK-DELTA"`). An unmarked edit
-therefore shows up as "upstream has changed" on a file upstream never touched —
-or worse, gets silently overwritten the next time someone re-vendors. Keep the
-marker on its own line, not appended to a line of code, or the comparison will
-not strip it.
-
-The parenthesised number groups edits that belong to the same delta; the fork
-currently uses `0` through `6`, and a single self-contained line may omit the
-number (`/* FORK-DELTA: ... */`). Markers are currently present in `agent.ts`,
-`index.ts` and `tool-calls.ts`.
-
-`upstream.lock` pins the upstream commit (`c291e796`, v0.1.5-rc.2). Note that
-`sync-upstream.sh` rewrites the lock as a side effect of running, so check
-`git diff upstream.lock` before committing.
-
-When you re-vendor, the script prints the copy command and the three steps:
-copy the upstream files, re-apply the `FORK-DELTA` hunks, run the tests.
+The audit, the per-file line counts, and the acceptance criteria are in
+[`docs/PRD.md`](docs/PRD.md).
 
 ## No new dependencies
 
@@ -251,7 +220,7 @@ depend on:
   treated as `irreversible`, and a missing confidence estimate meaning "ask" —
   both are deliberate. A change that makes either fail *open* is a security
   issue; see `SECURITY.md`.
-- **Anything that changes the public config surface** — the plugin's config
-  schema in `src/index.ts`, `LoopSpec`'s shape, `RouterConfig`, the exported
-  interfaces of the policy modules. A config change is a breaking change for
-  every deployment even when the version number does not move.
+- **Anything that changes the public config surface** — the plugin's
+  `createPolicy` options in `src/plugin.ts`, `LoopSpec`'s shape, `RouterConfig`,
+  the exported interfaces of the policy modules. A config change is a breaking
+  change for every deployment even when the version number does not move.

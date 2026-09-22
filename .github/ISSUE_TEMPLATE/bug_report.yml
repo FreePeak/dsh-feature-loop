@@ -24,7 +24,7 @@ body:
         all differ — so this is the first thing needed to reproduce anything.
       options:
         - Standalone runner (src/runner.ts, src/cli.ts)
-        - DSH plugin (src/agent.ts, src/index.ts)
+        - DSH plugin (src/plugin.ts)
         - Shared policy layer (src/spec.ts, budget.ts, routing.ts, signals.ts, review.ts, agent-policy.ts)
         - Not sure
     validations:

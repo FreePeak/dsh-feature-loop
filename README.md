@@ -7,12 +7,20 @@
 [![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](.nvmrc)
 [![Tests](https://img.shields.io/badge/tests-126%20passing-brightgreen.svg)](#quick-start)
 
-A **book-shaped loop** for bug-fixing and small features: budget ceilings,
-cheap-first routing, a step-level review gate, and a local judge that decides
-which steps are worth your attention.
+A **book-shaped policy layer** for bug-fixing and small features: budget
+ceilings, cheap-first routing, a step-level review gate, and a local judge that
+decides which steps are worth your attention.
 
-Built on `@deepseek-ai/dsh-agent-loop` as a vendored fork, plus a standalone
-runner that exercises the same policies without a harness build.
+Hosted on `@deepseek-ai/dsh-agent-loop`'s own extension points
+(`agent/pre-step`, `agent/request`, `tools/pre-execute`) rather than forking it,
+plus a standalone runner that exercises the same policies without a harness
+build.
+
+> **De-forked.** This package used to vendor a copy of the agent loop. It no
+> longer does — the harness publishes an extension point for every policy this
+> package adds, so ~3,064 lines of forked code were removed and replaced by
+> `src/plugin.ts`. See [`docs/PRD.md`](docs/PRD.md) for the audit and the
+> acceptance criteria.
 
 ---
 
@@ -86,6 +94,21 @@ bash demo/run.sh --judge none         # detectors only, no judge
 
 `demo/run.sh` resets the planted bug first, so every run has real work to do.
 
+### Installing it into DSH
+
+To run the plugin inside a real harness profile — including alongside Agent
+Teams — follow **[`docs/SETUP.md`](docs/SETUP.md)**. It covers the build, a
+scratch profile, the cordis patch, and a small task that makes the ceilings and
+the review gate visibly fire, plus the failure modes people actually hit.
+
+```bash
+pnpm build                                       # the harness loads built JS, not .ts
+dsh plugin --profile <name> add -w file:$PWD     # `-w` is required for a profile
+dsh --profile <name> --dump-config | grep -A8 feature-loop   # verify composition
+```
+
+The audit behind the current design is in **[`docs/PRD.md`](docs/PRD.md)**.
+
 ---
 
 ## The book mapping
@@ -115,34 +138,38 @@ threshold with no provenance is a number someone liked.
 
 The policies are shared. Only transport and session state differ.
 
-| | Standalone runner (`src/runner.ts`, `src/cli.ts`) | DSH plugin (`src/agent.ts`, `src/index.ts`) |
+| | Standalone runner (`src/runner.ts`, `src/cli.ts`) | DSH plugin (`src/plugin.ts`) |
 |---|---|---|
 | Transport | `src/llm.ts` → onegw | harness `llm` service |
-| Budget ceilings | ✅ wired | ✅ wired |
-| Cheap-first ladder | ✅ wired | ✅ wired |
-| Metering | ✅ wired | ✅ wired |
-| Signals | ✅ wired | ✅ wired (`preStep`) |
-| Review gate | ✅ wired | ✅ wired, one step late (see below) |
-| Judge | ✅ wired | ✅ wired (`preStep`, awaited) |
+| Budget ceilings | ✅ wired | ✅ wired (`agent/pre-step`, `reject`) |
+| Cheap-first ladder | ✅ wired | ✅ wired (`agent/request`) |
+| Metering | ✅ wired | ⚠️ see "Known limits" |
+| Signals | ✅ wired | ✅ wired (`agent/pre-step`) |
+| Review gate | ✅ wired (blocks) | ✅ wired (`tools/pre-execute`, **denies**) |
+| Judge | ✅ wired | ✅ wired (`agent/pre-step`, awaited) |
 | Operator review | ✅ wired (blocks) | ✅ surfaces as a notice |
 
-**One honest difference.** In the plugin path a review is *surfaced*, not
-*enforced*: it arrives as a labelled notice in the step's message batch, which is
-the channel that reaches both the model and the human reading the transcript.
-`{kind:'reject'}` stays reserved for a ceiling, where continuing would spend
-money the deployment already said it would not.
+**The gate now denies before dispatch.** This used to be the one honest
+difference between the two paths, and it was a defect: the old fork consulted the
+gate from its own copy of `executeToolCalls`, so a gate-raised review arrived
+*one step late* — after the tool had already run. The fork's README filed
+blocking approval as an unfinished refinement.
 
-The gate specifically is consulted from `executeToolCalls` rather than `preStep`,
-because `preStep` runs *before* the model has chosen a tool — there is no tool
-name to classify yet. That means a gate-raised review is delivered one step late,
-after the tool has already run. It is marked `ponytail:` in `agent.ts` with its
-upgrade path: a `tools/pre-execute` listener registered where the loop context is
-built, which can deny the call before dispatch. Dropping the call here instead
-would leave the assistant's tool-call block with no `tool/result` behind it,
-which invalidates session replay.
+Hosting on the harness closed it. `tools/pre-execute` is a first-class
+pre-dispatch hook returning `PreToolDecision` (`allow` / `deny` / `ask`), so the
+plugin can deny the call *before* it is dispatched:
 
-`tools/execute` — where the gate conceptually belongs — is dispatched one layer
-below this file inside `@deepseek-ai/dsh-tools`, and `agent.ts` has no view of it.
+```ts
+ctx.on('tools/pre-execute', async ({ agent, name }, next) => {
+  const gate = gateForTool(policyFor(agent), name)
+  if (gate.allowed) return next()
+  return { kind: 'deny', reason: gate.notice }   // answered, not dropped
+})
+```
+
+A denied call is **answered**, not dropped: the assistant's tool-call block must
+receive a result or session replay is invalidated. `deny` materializes a tool
+error the model can read and react to.
 
 ---
 
@@ -150,6 +177,7 @@ below this file inside `@deepseek-ai/dsh-tools`, and `agent.ts` has no view of i
 
 ```
 src/
+  ── the product: pure policy, no harness import ──
   spec.ts        the book's 8 dimensions, validated at load
   budget.ts      step/cost ceilings, USD price table, unpriced-step tracking
   routing.ts     cheap-first ladder, escalation on evidence
@@ -158,14 +186,17 @@ src/
   agent-policy.ts the plugin agent's decisions, extracted so they are testable
   judge.ts       chat judge (works anywhere)
   laya.ts        Laya judge via onegw /v1/systemone (the intended production path)
-  messages.ts    notice text, wrapped for both DSH and OpenAI-shaped transports
+  messages.ts    notice text; imports nothing, which keeps the test suite runnable
   prompts.ts     BUG_FIX_PROMPT / FEATURE_PROMPT / REFACTOR_PROMPT
-  runner.ts      the standalone loop: spec → budget → route → judge → review → model → tools
+
+  ── the harness host ──
+  plugin.ts      agent/pre-step · agent/request · tools/pre-execute
+
+  ── the standalone proof: the same policies, no harness ──
+  runner.ts      spec → budget → route → judge → review → model → tools
   llm.ts         OpenAI-compatible client + scripted client for tests
   tools.ts       sandboxed read/write/edit/list/run_tests, path-confined
   cli.ts         the demo entry point
-  agent.ts       vendored upstream + FORK-DELTA
-  index.ts       vendored upstream + FORK-DELTA
 demo/
   src/latency-window.ts   the planted bug (nearest-rank off-by-one)
   test/                  14 tests, 3 of which fail on the bug
@@ -205,19 +236,33 @@ To use Laya once deployed: `--judge laya`.
 
 ---
 
-## Fork delta
+## Fork delta — removed
 
-Every customisation in vendored code is marked `FORK-DELTA`:
+This package used to vendor nine files from `@deepseek-ai/dsh-agent-loop` and
+mark every customisation `FORK-DELTA` (35 markers), pinned via `upstream.lock`
+to `c291e796` (v0.1.5-rc.2) and reconciled by `scripts/sync-upstream.sh`.
 
-```bash
-grep -rn "FORK-DELTA" src/          # 35 markers: 18 in agent.ts, 12 in index.ts, 5 in tool-calls.ts
-bash scripts/sync-upstream.sh       # diff against the pinned upstream commit
-```
+**All of that is gone.** The harness publishes an extension point for every
+policy this package adds, so the vendored loop, the sync script, the lock and
+`cordis.patch.yml` were deleted and replaced by `src/plugin.ts`.
 
-`upstream.lock` pins `c291e796` (v0.1.5-rc.2).
+| Removed | Lines | Upstream diff |
+|---|---|---|
+| `src/agent.ts` | 968 | 364 changed lines |
+| `src/index.ts` | 1069 | 222 changed lines |
+| `src/tool-calls.ts` | 328 | 46 changed lines |
+| `src/inbox.ts` | 247 | 7 changed lines |
+| `src/runtime-context.ts` | 159 | **0 — byte-identical** |
+| `src/assistant-stream.ts` | 140 | **0 — byte-identical** |
+| `src/constants.ts` | 6 | **0 — byte-identical** |
+| `src/invariant.ts` | 65 | **0 — byte-identical, imported by nothing** |
+| `src/notices.ts` | 82 | wrapper for the vendored `inbox.ts` |
+| `scripts/sync-upstream.sh`, `upstream.lock`, `cordis.patch.yml` | 140 | fork machinery |
 
-Two genuine bugs were found and fixed while compiling the fork against the real
-harness packages:
+≈3,064 lines out, one 368-line plugin in. The full audit is in
+[`docs/PRD.md`](docs/PRD.md).
+
+Two genuine bugs were found in the fork while it existed, both now moot:
 
 - `import { FiberState } from '@deepseek-ai/cordis'` was a hard `SyntaxError` —
   cordis declares it as an ambient `const enum` with no runtime export. It only
@@ -229,11 +274,15 @@ harness packages:
 
 ## Known limits
 
-- **`src/index.ts` is not loadable under `--experimental-strip-types`** —
-  `agent.ts`, `assistant-stream.ts` and `inbox.ts` use parameter properties,
-  which strip-types rejects. The policy modules and the runner are unaffected.
-  Converting them would break byte-identity with upstream, so it is deferred.
-- **The DSH plugin path needs a build.** It imports `@deepseek-ai/dsh-*`; the
+- **`src/plugin.ts` is not typechecked in CI.** It imports `@deepseek-ai/dsh-*`
+  at versions CI cannot resolve (there is no lockfile, and
+  `@deepseek-ai/cordis@0.4.0` has no published version). It is typechecked
+  locally against the prebuilt packages.
+- **Spend is observed, not metered by the plugin.** `LoopBudget.spend()` must be
+  called with real usage for the cost ceiling to mean anything; the plugin
+  currently reads spend from the budget snapshot rather than pricing each settled
+  attempt. **This is the largest correctness gap** and is Phase 2 work.
+- **The plugin path needs a build.** It imports `@deepseek-ai/dsh-*`; the
   standalone runner does not.
 - **Review rate is 20% in the demo, not the book's <10%.** Critical signals are
   deliberately not rate-limited — safety is not subject to an attention budget —
@@ -253,11 +302,12 @@ harness packages:
 - **Phase 1 — loop integration** ✅ runner + CLI + tools + demo, working end to end
 - **Phase 1b — plugin compiles** ✅ `tsc --noEmit` clean against prebuilt `@deepseek-ai/dsh-*`
 - **Phase 2 — plugin review gate** ✅ all six detectors, the judge, the router and
-  the gate are read by `agent.ts`; reviews surface as notices. The decisions live
-  in `agent-policy.ts` (27 tests) because `agent.ts` cannot be imported by a test
-  at all — it inherits upstream's parameter properties, which
-  `--experimental-strip-types` rejects. Blocking approval via `tools/pre-execute`
-  is the remaining refinement (see the `ponytail:` note).
+  the gate are read by `src/plugin.ts`; the gate **denies before dispatch**.
+- **Phase 1c — de-fork** ✅ the vendored loop is gone; the policies are hosted on
+  `agent/pre-step` / `agent/request` / `tools/pre-execute`. See
+  [`docs/PRD.md`](docs/PRD.md).
+- **Phase 2b — real spend accounting** ⬜ price each settled attempt into
+  `LoopBudget` so the cost ceiling is load-bearing (the largest open gap).
 - **Phase 3 — Laya** ⬜ deploy the `systemone` provider in onegw, switch `--judge laya`
 
 ### Verifying the whole thing
@@ -266,17 +316,21 @@ harness packages:
 node --experimental-strip-types --test test/*.test.ts   # 126 pass
 node /Users/linh.doan/.npm/_npx/a322a253dbd59f36/node_modules/typescript/lib/tsc.js --noEmit   # clean
 bash demo/run.sh                                        # goal-met
-grep -rn "FORK-DELTA" src/ | wc -l                      # 35 markers
+grep -rn "FORK-DELTA" src/ | wc -l                      # 0 — the fork is gone
 ```
 
-### Two gaps closed while wiring Phase 2
+### Three gaps closed along the way
 
+- **The gate was one step late.** The fork consulted its gate from its own copy of
+  `executeToolCalls`, so a gate-raised review arrived after the tool had already
+  run. Hosting the gate on `tools/pre-execute` denies the call before dispatch —
+  the fix the fork could not reach without forking.
 - **`error-cascade` could not fire in the plugin path.** `StepObservation.error`
   was never populated: per-call `isError` was internal to `tool-calls.ts` and
   thrown away at the `executeToolCalls` boundary. Since `error-cascade` is one of
   only two *critical* signals, the plugin gate was silently running on four
-  detectors instead of six. `executeToolCalls` now returns per-call outcomes
-  (`FORK-DELTA(6)`) and the step's observation learns the result.
+  detectors instead of six. `plugin.ts` records the outcome from the tool
+  boundary, so the step's observation learns the result.
 - **`tool-dominance` fired on step 1.** At one or two steps every tool is
   trivially 100% of all steps, so the detector fired on the first step of every
   run — a signal that always fires is noise that trains its reader to ignore the
