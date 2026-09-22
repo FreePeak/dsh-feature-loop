@@ -219,8 +219,8 @@ typecheck: ## Typecheck src/ (mirrors the CI file list)
 # The harness-free import closure, exactly as CI lists it.
 CI_FILES := src/agent-policy.ts src/budget.ts src/cli.ts src/dashboard.ts \
             src/dashboard-page.ts src/envelope.ts src/explainer.ts src/judge.ts src/laya.ts \
-            src/llm.ts src/messages.ts src/metrics.ts src/optimizer.ts src/brief.ts \
-            src/approval-bridge.ts src/prompts.ts src/refine.ts src/review.ts \
+            src/llm.ts src/messages.ts src/metrics.ts src/optimize.ts src/optimizer.ts \
+            src/brief.ts src/approval-bridge.ts src/prompts.ts src/refine.ts src/review.ts \
             src/routing.ts src/runlog.ts \
             src/runner.ts src/signals.ts src/spec.ts src/tools.ts
 

@@ -27,6 +27,8 @@ import type { ReviewRequest } from './runner.ts'
 import { phaseOf } from './prompts.ts'
 import { parseLoops } from './spec.ts'
 import type { LoopSpec } from './spec.ts'
+import { advisoryFor, defaultHistoryPath, planEnvelope, recordsForTask } from './optimize.ts'
+import { readRecords, specFingerprint, taskKeyOf } from './runlog.ts'
 
 const run = promisify(exec)
 
@@ -52,6 +54,24 @@ interface Options {
    * for" and "not wired" are the same behaviour by construction.
    */
   loops?: number
+  /**
+   * Whether `--max-steps` / `--budget` were given. An explicit flag is an
+   * instruction and outranks a derived ceiling; a default is not, and
+   * `--derive` is allowed to move it. Tracked as a pin rather than compared
+   * against the default value, because "the operator typed the default" and
+   * "nobody typed anything" are different statements.
+   */
+  maxStepsPinned: boolean
+  budgetPinned: boolean
+  /** Derive this run's ceilings from recorded history instead of the flags alone. */
+  derive: boolean
+  /**
+   * The run-history file. Defaults to `.feature-loop/runs.jsonl` under the
+   * invoking directory — NOT under `--root`: the sandbox is what the loop may
+   * edit, and a loop able to rewrite the file its own ceilings come from is a
+   * loop that can raise its own ceiling.
+   */
+  history?: string
 }
 
 const USAGE = `dsh-feature-loop — run the loop against a repository
@@ -70,6 +90,8 @@ const USAGE = `dsh-feature-loop — run the loop against a repository
   --review-budget <f> fraction of steps a human may be asked  (default: 0.10)
   --max-tokens <n>    per-step output cap                     (default: 4096)
   --loops <n>         refinement passes, integer 3–10 (default: 1)
+  --derive            derive the ceilings from recorded run history
+  --history <file>    run-history file (default: .feature-loop/runs.jsonl)
   --auto              never block on a human (CI/demo mode)
   --quiet             suppress the per-step narration
   -h, --help          this text
@@ -77,6 +99,13 @@ const USAGE = `dsh-feature-loop — run the loop against a repository
 The verify command is resolved relative to --root, not to your shell: it runs
 INSIDE the sandbox, the same place the loop's tools run. Passing "demo/verify.sh"
 while --root is "demo" would look for demo/demo/verify.sh.
+
+Every run appends one line to the history file. With --derive, the step and cost
+ceilings for the NEXT run are the P95 of this goal's recorded runs plus 30%
+headroom, and the provenance of every number is printed. An explicit --max-steps
+or --budget is a pin and is never overridden; the configured budget is a cap, so
+a derivation may tighten it but never raise it. With too little history (under
+five usable runs) nothing is applied — a floor is not a measurement.
 `
 
 /** Parse argv into options, rejecting unknown flags loudly. */
@@ -96,6 +125,9 @@ function parseArgs(argv: string[]): Options | 'help' {
     auto: false,
     maxTokens: 4096,
     quiet: false,
+    maxStepsPinned: false,
+    budgetPinned: false,
+    derive: false,
   }
   const value = (i: number, flag: string): string => {
     const v = argv[i + 1]
@@ -112,8 +144,10 @@ function parseArgs(argv: string[]): Options | 'help' {
       case '--phase': options.phase = value(i, arg) as Options['phase']; i += 1; break
       case '--model': options.model = value(i, arg); i += 1; break
       case '--provider': options.provider = value(i, arg); i += 1; break
-      case '--budget': options.budgetUSD = Number(value(i, arg)); i += 1; break
-      case '--max-steps': options.maxSteps = Number(value(i, arg)); i += 1; break
+      case '--budget': options.budgetUSD = Number(value(i, arg)); options.budgetPinned = true; i += 1; break
+      case '--max-steps': options.maxSteps = Number(value(i, arg)); options.maxStepsPinned = true; i += 1; break
+      case '--derive': options.derive = true; break
+      case '--history': options.history = value(i, arg); i += 1; break
       case '--judge': options.judge = value(i, arg) as Options['judge']; i += 1; break
       case '--judge-model': options.judgeModel = value(i, arg); i += 1; break
       case '--review-budget': options.reviewBudget = Number(value(i, arg)); i += 1; break
@@ -269,15 +303,47 @@ async function main(): Promise<number> {
   const baseURL = process.env.ONEGE_BASE_URL ?? 'http://127.0.0.1:8080/v1'
   const apiKey = await resolveApiKey()
   const root = resolve(process.cwd(), options.root)
-  const spec = demoSpec(options)
+  const configured = demoSpec(options)
+  const historyPath = options.history ?? defaultHistoryPath()
+
+  // Derived before the banner, so what is printed is the ceiling the run will
+  // actually use rather than the flag it started from.
+  const plan = options.derive
+    ? planEnvelope({
+        historyPath,
+        goal: configured.goal,
+        spec: configured,
+        pinned: { maxSteps: options.maxStepsPinned, costBudgetUSD: options.budgetPinned },
+        root,
+      })
+    : undefined
+  const spec = plan?.spec ?? configured
+  // The task key is the goal's hash and the goal is never rewritten by an
+  // envelope, so one call serves both the plan and the record.
+  const taskKey = taskKeyOf(spec.goal)
+  // Fingerprinted BEFORE the envelope is applied, and deliberately: the record
+  // already carries the ceilings that were enforced (`maxSteps`, `budgetUSD`),
+  // while the fingerprint is what groups a task's runs so a derivation has a
+  // history to read at all. Fingerprinting the derived ceilings would move the
+  // group every time the derivation moved a ceiling — the history would split
+  // into one-record groups, every envelope would be provisional forever, and
+  // the loop could never learn from itself.
+  const fingerprint = specFingerprint(configured)
+
   const { judge, label: judgeLabel } = buildJudge(options, apiKey, baseURL)
 
   process.stdout.write(`dsh-feature-loop demo\n`)
   process.stdout.write(`  sandbox   ${root}\n`)
   process.stdout.write(`  model     ${effectiveRoute(options).fullID}\n`)
   process.stdout.write(`  judge     ${judgeLabel}\n`)
-  process.stdout.write(`  ceilings  ${String(options.maxSteps)} steps, $${options.budgetUSD.toFixed(2)}\n`)
-  process.stdout.write(`  verify    ${options.verify}\n\n`)
+  process.stdout.write(`  ceilings  ${String(spec.maxSteps)} steps, $${spec.costBudgetUSD.toFixed(2)}\n`)
+  process.stdout.write(`  verify    ${options.verify}\n`)
+  process.stdout.write(`  history   ${historyPath}\n`)
+  if (plan !== undefined) {
+    process.stdout.write(`\n  envelope (${plan.records.length} recorded run(s) for this goal)\n`)
+    for (const line of plan.provenance) process.stdout.write(`    · ${line}\n`)
+  }
+  process.stdout.write('\n')
 
   const tools = createTools({ root })
   const llm = createOnegwClient({ baseURL, apiKey })
@@ -348,6 +414,12 @@ async function main(): Promise<number> {
     checkSuccess,
     maxTokensPerStep: options.maxTokens,
     ...options.loops === undefined ? {} : { loops: options.loops },
+    // Every run records itself, whether or not --derive asked for a derivation:
+    // a run whose evidence is thrown away is a run nobody can learn from, and
+    // the file is the only thing that makes the next derivation possible.
+    historyPath,
+    taskKey,
+    specFingerprint: fingerprint,
     onEvent: options.quiet
       ? undefined
       : (event) => {
@@ -378,6 +450,42 @@ async function main(): Promise<number> {
   process.stdout.write(`  signals        ${result.signals.length === 0 ? 'none' : [...new Set(result.signals.map(s => s.kind))].join(', ')}\n`)
   if (result.passes > 1) {
     process.stdout.write(`  passes         ${String(result.passes)}${result.stoppedEarly ? ` (stopped early: ${result.stopReason})` : ''}\n`)
+  }
+
+  // The advisory reads the file again rather than the in-memory result: the
+  // record this run just appended belongs in its own metric roll-up, and the
+  // roll-up is over *this goal's* runs, which is what the envelope is about.
+  // Proposals cost one judge battery, so they are printed only when the
+  // operator asked for derivation — the flag that means "show me the numbers".
+  if (options.derive) {
+    const all = readRecords(historyPath)
+    const mine = recordsForTask(all.records, taskKey)
+    const advisory = await advisoryFor({ records: mine, malformed: all.malformed, spec, judge })
+    const m = advisory.metrics
+    process.stdout.write(`\n${'─'.repeat(72)}\nmetrics (${String(m.runs)} recorded run(s) of this goal${m.provisional ? ', provisional' : ''})\n${'─'.repeat(72)}\n`)
+    process.stdout.write(`  goal-met rate  ${(m.quality.goalMetRate * 100).toFixed(0)}% first-pass ${(m.quality.firstPassRate * 100).toFixed(0)}%\n`)
+    process.stdout.write(`  steps          p50 ${String(m.speed.steps.p50)} · p95 ${String(m.speed.steps.p95)}\n`)
+    if (m.cost.unpricedSteps > 0) {
+      // The honest reading, never $0.00: a budget that reads low invites the
+      // next run to keep going.
+      process.stdout.write(`  cost           unknown — ${String(m.cost.unpricedSteps)} step(s) reported no usage\n`)
+    } else {
+      process.stdout.write(`  cost           p50 $${m.cost.perRun.p50.toFixed(4)} · p95 $${m.cost.perRun.p95.toFixed(4)}\n`)
+    }
+    if (m.quality.meanJudge !== undefined) {
+      process.stdout.write(`  mean judge     ${m.quality.meanJudge.toFixed(2)} of 3\n`)
+    }
+    process.stdout.write(`  human reviews  ${(m.quality.reviewFraction * 100).toFixed(0)}% of steps\n`)
+    for (const alert of m.alerts) process.stdout.write(`  ⚠ ${alert.severity} ${alert.kind}: ${alert.detail}\n`)
+
+    process.stdout.write(`\n  optimizations${advisory.unavailable === undefined ? '' : ` (unavailable: ${advisory.unavailable})`}\n`)
+    if (advisory.recommendations.length === 0 && advisory.unavailable === undefined) {
+      process.stdout.write(`    · none proposed\n`)
+    }
+    for (const r of advisory.recommendations) {
+      process.stdout.write(`    · [${r.lever}] ${r.current} → ${r.proposed}\n`)
+      process.stdout.write(`      ${r.evidence}${r.confidence === undefined ? '' : ` (confidence ${r.confidence.toFixed(2)})`}\n`)
+    }
   }
 
   return result.outcome === 'goal-met' ? 0 : 1
