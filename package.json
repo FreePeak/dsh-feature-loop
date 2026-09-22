@@ -65,7 +65,9 @@
     "test:integration": "bash test/integration/run.sh"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.2"
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "@openuidev/lang-core": "^0.3.0",
+    "zod": "^4.6.5"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=0.4.0",

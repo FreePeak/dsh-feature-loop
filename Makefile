@@ -186,7 +186,7 @@ check: test typecheck ## Run the test suite and the typecheck
 	@echo "  check passed"
 
 .PHONY: test
-test: ## Run the unit test suite (151 tests, no network)
+test: ## Run the unit test suite (175 tests, no network)
 	@node --experimental-strip-types --test test/*.test.ts 2>&1 | tail -8
 
 .PHONY: typecheck
@@ -218,13 +218,18 @@ typecheck: ## Typecheck src/ (mirrors the CI file list)
 
 # The harness-free import closure, exactly as CI lists it.
 CI_FILES := src/agent-policy.ts src/budget.ts src/cli.ts src/dashboard.ts \
-            src/dashboard-page.ts src/judge.ts src/laya.ts \
-            src/llm.ts src/messages.ts src/prompts.ts src/review.ts src/routing.ts \
+            src/dashboard-page.ts src/explainer.ts src/judge.ts src/laya.ts \
+            src/llm.ts src/messages.ts src/openui-brief.ts src/prompts.ts src/review.ts src/routing.ts \
             src/runner.ts src/signals.ts src/spec.ts src/tools.ts
 
 .PHONY: integration
 integration: ## Run the real-DSH integration spec (needs the harness checkout)
 	@bash test/integration/run.sh "$(DSH_HARNESS)"
+
+.PHONY: e2e-dashboard
+e2e-dashboard: ## Click the real dashboard page in a real browser (needs Playwright + Chromium; opt-in, not part of verify)
+	@node --experimental-strip-types test/e2e-dashboard.mjs allow && \
+	 node --experimental-strip-types test/e2e-dashboard.mjs reject
 
 .PHONY: compose-check
 compose-check: ## Validate the compose file

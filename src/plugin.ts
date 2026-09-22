@@ -37,13 +37,20 @@ import { AttentionRouter, ReviewGate, judgeQuestion } from './review.ts'
 import type { GatePolicy } from './review.ts'
 import { detectSignals } from './signals.ts'
 import type { ReviewSignal, StepObservation } from './signals.ts'
-import { parseDashboardConfig, startDashboard, DashboardState } from './dashboard.ts'
-import type { ApprovalOutcome, ApprovalQuestion, DashboardConfig, DashboardHandle, DashboardSnapshot } from './dashboard.ts'
+import { parseDashboardConfig, pendingIdFor, startDashboard, DashboardState } from './dashboard.ts'
+import type { ApprovalOutcome, ApprovalQuestion, BriefNode, DashboardConfig, DashboardHandle, DashboardSnapshot } from './dashboard.ts'
 import { prepareReview, resolveReversibility } from './agent-policy.ts'
 import { validateSpec } from './spec.ts'
 import type { LoopSpec } from './spec.ts'
 import { NO_JUDGE } from './laya.ts'
 import type { Judge } from './laya.ts'
+import { createChatExplainer, NO_EXPLAINER } from './explainer.ts'
+import type { BriefInput, Explainer } from './explainer.ts'
+import { normalizeBrief } from './openui-brief.ts'
+import { createOnegwClient } from './llm.ts'
+import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { budgetStopText, budgetWarnText, escalationText, reviewText } from './messages.ts'
 
 /**
@@ -112,6 +119,8 @@ export interface FeatureLoopPolicy {
   router: AttentionRouter
   gate: ReviewGate | undefined
   judge: Judge
+  /** The explainer that authors review briefs for dashboard asks. */
+  explainer: Explainer
   /** The step history the detectors read. */
   history: StepObservation[]
   /**
@@ -199,6 +208,11 @@ export interface CreatePolicyOptions {
   spec?: LoopSpec
   /** The judge to score review-worthiness with. Defaults to `NO_JUDGE`. */
   judge?: Judge
+  /**
+   * The explainer that authors review briefs for dashboard asks. Defaults to
+   * `NO_EXPLAINER` — no model call, no brief, today's behaviour exactly.
+   */
+  explainer?: Explainer
   /** Confidence bar for `auto-if-confident` gate policies. */
   confidenceThreshold?: number
   /** Per-tool gate policy overrides, by tool name. */
@@ -249,6 +263,7 @@ export function createPolicy(options: CreatePolicyOptions): FeatureLoopPolicy {
     gate,
     gateMode: options.gateMode ?? 'ask',
     judge: options.judge ?? NO_JUDGE,
+    explainer: options.explainer ?? NO_EXPLAINER,
     history: [],
     pending: undefined,
     lastConfidence: undefined,
@@ -435,22 +450,143 @@ export type GateVerdict =
  * it does today. The harness documents that sibling listener order is not a
  * priority mechanism; the guard is what makes that safe.
  *
+ * When briefs are enabled, the claim also kicks off the explainer
+ * fire-and-forget: the pending id is handed to `requestBrief`, which marks
+ * the card pending and records the normalized brief when the model resolves.
+ * The ask's settle path is never touched — a slow, failed, or late brief
+ * cannot delay or decide the approval.
+ *
  * @param ctx - the cordis context to install into.
  * @param dashboard - the started dashboard whose `answer` drives the claim.
+ * @param requestBrief - invoked with each claimed ask's pending id and
+ *   question; defaults to a no-op when briefs are off.
  * @returns a disposer removing the listener.
  */
-export function attachApprovalAnswerer(ctx: Context, dashboard: DashboardHandle): () => void {
+export function attachApprovalAnswerer(
+  ctx: Context,
+  dashboard: DashboardHandle,
+  requestBrief: (id: string, question: ApprovalQuestion) => void = () => undefined,
+): () => void {
   return ctx.on(
     'approval/request',
-    (question: ApprovalQuestion, next: () => Promise<ApprovalOutcome>) =>
-      dashboard.answer(question, next),
+    (question: ApprovalQuestion, next: () => Promise<ApprovalOutcome>) => {
+      const claimed = dashboard.answer(question, next)
+      // Fire-and-forget deliberately: the brief must never gate the ask.
+      // `answer` registers the pending entry synchronously before returning
+      // the promise, but the entry's id is internal to the dashboard, so the
+      // brief request re-reads the snapshot and matches on the ask's own
+      // fields. A settled-before-brief ask simply matches nothing.
+      void Promise.resolve().then(() => {
+        const id = pendingIdFor(dashboard.pendingSnapshot(), question)
+        if (id !== undefined) requestBrief(id, question)
+      })
+      return claimed
+    },
     { prepend: true },
   )
 }
 
 /**
- * Name of this plugin, as the harness addresses it.
+ * Request a review brief for one claimed ask, fire-and-forget.
+ *
+ * Every exit resolves to a recorded brief or a recorded failure — nothing
+ * here can throw out, hang, or settle the ask. A brief requested for an ask
+ * that settled meanwhile matches nothing and is dropped by the recorder.
+ *
+ * @param args - the dashboard, explainer, pending id, and question.
  */
+export async function requestBrief(args: {
+  dashboard: DashboardHandle
+  explainer: Explainer
+  id: string
+  question: ApprovalQuestion
+}): Promise<void> {
+  const { dashboard, explainer, id, question } = args
+  dashboard.briefs.markBriefPending(id)
+  let code: string | undefined
+  try {
+    code = await explainer.explain(briefInputFor(question), question.signal)
+  } catch {
+    code = undefined
+  }
+  if (code === undefined) {
+    dashboard.briefs.recordBrief(id, undefined)
+    return
+  }
+  const normalized = normalizeBrief(code)
+  const nodes: BriefNode[] | undefined = 'nodes' in normalized ? normalized.nodes : undefined
+  dashboard.briefs.recordBrief(id, nodes)
+}
+
+/**
+ * Build the explainer input from what the ask carries.
+ *
+ * Only the ask's own fields — the approval event carries no tool arguments,
+ * and the brief must never invent them. Run-position context (step, route,
+ * signals) is the plugin's to add when it learns the pending id; today the
+ * input is the ask alone, which is what `briefUserMessage` renders.
+ */
+function briefInputFor(question: ApprovalQuestion): BriefInput {
+  return {
+    toolName: question.toolName,
+    ...question.callId === undefined ? {} : { callId: question.callId },
+    ...question.reason === undefined ? {} : { reason: question.reason },
+  }
+}
+
+/**
+ * Read the gateway key from the DSH credential store, synchronously.
+ *
+ * The CLI's `resolveApiKey` is async; `apply` is not, so this narrow sync
+ * variant exists for the brief path only. Same narrow parse — one key on one
+ * line, no YAML dependency — returning `undefined` when absent so the caller
+ * can fail loudly naming the missing key. `DSH_CREDENTIALS` overrides the
+ * store path (tests point it at nowhere to simulate a keyless machine).
+ *
+ * @returns the key, or `undefined` when the store has neither name.
+ */
+function readCredentialsKey(): string | undefined {
+  let raw: string
+  try {
+    raw = readFileSync(process.env.DSH_CREDENTIALS ?? join(homedir(), '.dsh/.credentials.yaml'), 'utf8')
+  } catch {
+    return undefined
+  }
+  const match = /^\s*(ONEGW_API_KEY|ONEGE_API_KEY):\s*(\S+)\s*$/m.exec(raw)
+  return match?.[2]
+}
+
+/**
+ * Build the brief explainer from the dashboard's `brief:` row, or return
+ * `NO_EXPLAINER` when briefs are off.
+ *
+ * Gateway env resolution is shared with `src/cli.ts`'s `resolveApiKey` shape
+ * (env first, `~/.dsh/.credentials.yaml` second) but not its code: the CLI's
+ * resolver is async and CLI-shaped, and awaiting it here would make `apply`
+ * async, breaking the cordis contract. This synchronous variant reads env
+ * first and the store second, throwing a load-time error naming the missing
+ * key — briefs were explicitly enabled, so silence would be the worse failure.
+ */
+function resolveBriefExplainer(brief: DashboardConfig['brief']): Explainer {
+  if (brief?.enabled !== true || brief.model === undefined) return NO_EXPLAINER
+  const apiKey = process.env.ONEGW_API_KEY ?? process.env.ONEGE_API_KEY ?? readCredentialsKey()
+  if (apiKey === undefined) {
+    throw new Error(
+      'dashboard.brief is enabled but no gateway key was found: set ONEGW_API_KEY '
+      + '(or ONEGE_API_KEY) in the environment, or add it to ~/.dsh/.credentials.yaml',
+    )
+  }
+  return createChatExplainer({
+    llm: createOnegwClient({
+      baseURL: process.env.ONEGE_BASE_URL ?? 'http://127.0.0.1:8080/v1',
+      apiKey,
+      timeoutMs: brief.timeoutMs,
+    }),
+    model: brief.model,
+    maxTokens: brief.maxTokens,
+    timeoutMs: brief.timeoutMs,
+  })
+}
 export const name = 'feature-loop'
 
 /** The services this plugin reads. */
@@ -519,9 +655,34 @@ export function apply(
   const dashboard = options.dashboard?.enabled === true
     ? startDashboard(options.dashboard, state)
     : undefined
+  // The brief's explainer: explicit injection wins (tests, custom transports);
+  // otherwise the dashboard's `brief:` row builds one from the deployment's
+  // gateway env. Anything that fails here — no key, no model — is a loud
+  // load-time error, never a silent missing brief: `resolveBriefExplainer` is
+  // only reached when briefs were explicitly enabled, so failing here is
+  // failing on what the operator asked for. The started server is stopped
+  // before throwing: a load failure must not leak a listening socket.
+  let briefExplainer: Explainer
+  try {
+    briefExplainer = options.explainer
+      ?? (dashboard === undefined
+        ? NO_EXPLAINER
+        : resolveBriefExplainer(options.dashboard?.brief))
+  } catch (error: unknown) {
+    if (dashboard !== undefined) void dashboard.stop()
+    throw error
+  }
   const disposeApproval = dashboard === undefined
     ? undefined
-    : attachApprovalAnswerer(ctx, dashboard)
+    : attachApprovalAnswerer(ctx, dashboard, (id, question) => {
+      const agent = question.agent as Agent | undefined
+      void requestBrief({
+        dashboard,
+        explainer: policyFor(agent).explainer === NO_EXPLAINER ? briefExplainer : policyFor(agent).explainer,
+        id,
+        question,
+      })
+    })
   if (dashboard !== undefined) {
     // Both cleanup paths are kept deliberately: cordis collects `effect`
     // disposers on unload, while SDK/standalone callers that ignore the
@@ -623,6 +784,7 @@ export function apply(
   }
 }
 
-export { detectSignals, parseDashboardConfig, startDashboard, DashboardState }
+export { detectSignals, parseDashboardConfig, pendingIdFor, startDashboard, DashboardState }
 export type { StepObservation }
-export type { ApprovalOutcome, ApprovalQuestion, DashboardConfig, DashboardHandle, DashboardSnapshot }
+export type { ApprovalOutcome, ApprovalQuestion, BriefNode, DashboardConfig, DashboardHandle, DashboardSnapshot }
+export type { BriefConfig, BriefState } from './dashboard.ts'

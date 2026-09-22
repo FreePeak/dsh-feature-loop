@@ -25,7 +25,7 @@ export const DASHBOARD_PAGE = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>feature-loop · HITL approvals</title>
-<style>
+<style nonce="__CSP_NONCE__">
   :root {
     --bg: #0f1115; --panel: #171a21; --border: #262b36; --text: #d7dce5;
     --muted: #8a93a3; --accent: #4c8dff; --ok: #2ea043; --bad: #d1495b;
@@ -95,6 +95,23 @@ export const DASHBOARD_PAGE = `<!doctype html>
   .feed-item .kind.k-gate { color: var(--bad); }
   .sig { font-size: 12px; margin: 3px 0; }
   .sig.critical { color: var(--bad); } .sig.warning { color: var(--warn); }
+  .brief { margin-bottom: 10px; border-left: 3px solid var(--accent);
+           padding-left: 10px; }
+  .brief h3 { margin: 0 0 6px; font-size: 14px; }
+  .brief p { margin: 0 0 6px; font-size: 13px; }
+  .brief .callout { border: 1px solid var(--border); border-radius: 6px;
+           padding: 6px 10px; font-size: 13px; margin-bottom: 6px; }
+  .brief .callout.warning { border-color: var(--warn); }
+  .brief .callout.danger { border-color: var(--bad); }
+  .brief table { border-collapse: collapse; font-size: 12.5px; margin-bottom: 6px; }
+  .brief th, .brief td { border: 1px solid var(--border); padding: 3px 8px;
+           text-align: left; }
+  .brief th { color: var(--muted); font-weight: 600; }
+  .brief pre { background: #10131a; border: 1px solid var(--border);
+           border-radius: 6px; padding: 8px 10px; font-size: 12.5px;
+           overflow: auto; margin: 0 0 6px; }
+  .brief .pending-note, .brief .failed-note { color: var(--muted);
+           font-size: 12.5px; margin-bottom: 10px; }
   #auth {
     display: none; background: #2a1418; border: 1px solid var(--bad);
     color: #f0c4c9; padding: 12px 14px; border-radius: 8px; margin-bottom: 16px;
@@ -140,7 +157,7 @@ export const DASHBOARD_PAGE = `<!doctype html>
     <div id="feed"></div>
   </section>
 </main>
-<script>
+<script nonce="__CSP_NONCE__">
 (function () {
   'use strict';
   var params = new URLSearchParams(location.search);
@@ -195,6 +212,61 @@ export const DASHBOARD_PAGE = `<!doctype html>
     document.getElementById('auth').style.display = on ? 'block' : 'none';
   }
 
+  // The review brief: normalized node data rendered with the DOM, above the
+  // buttons and visually subordinate to them. There is deliberately no
+  // innerHTML anywhere in this path — every string arrives via textContent,
+  // so a model-authored brief cannot inject markup or script no matter what
+  // the explainer emitted. Unknown node kinds are dropped, never guessed.
+  function renderBriefNode(box, n) {
+    if (!n || typeof n.kind !== 'string') return;
+    if (n.kind === 'heading' && typeof n.text === 'string') {
+      box.appendChild(el('h3', null, n.text));
+    } else if (n.kind === 'paragraph' && typeof n.text === 'string') {
+      box.appendChild(el('p', null, n.text));
+    } else if (n.kind === 'callout' && typeof n.text === 'string') {
+      var tone = (n.tone === 'warning' || n.tone === 'danger') ? n.tone : 'info';
+      box.appendChild(el('div', 'callout ' + tone, n.text));
+    } else if (n.kind === 'table' && Array.isArray(n.columns) && Array.isArray(n.rows)) {
+      var table = el('table');
+      var head = el('tr');
+      n.columns.forEach(function (c) {
+        if (typeof c === 'string') head.appendChild(el('th', null, c));
+      });
+      table.appendChild(head);
+      n.rows.forEach(function (r) {
+        if (!Array.isArray(r)) return;
+        var tr = el('tr');
+        r.forEach(function (c) {
+          if (typeof c === 'string') tr.appendChild(el('td', null, c));
+        });
+        table.appendChild(tr);
+      });
+      box.appendChild(table);
+    } else if (n.kind === 'code' && typeof n.code === 'string') {
+      // NEWLINE via String.fromCharCode(10): the page's standing rule is
+      // string concatenation only — no backslash escapes (the outer module
+      // wraps this page in a template literal) and no raw newlines inside
+      // string literals. The same rule bans them in comments, which share
+      // the outer literal.
+      var pre = el('pre', null, (typeof n.language === 'string' && n.language
+        ? n.language + String.fromCharCode(10) : '') + n.code);
+      box.appendChild(pre);
+    }
+  }
+
+  function renderBrief(card, p) {
+    if (!p || p.briefState === 'none' || p.briefState === undefined) return;
+    var box = el('div', 'brief');
+    if (p.briefState === 'pending') {
+      box.appendChild(el('div', 'pending-note', 'Writing review brief…'));
+    } else if (p.briefState === 'failed') {
+      box.appendChild(el('div', 'failed-note', 'Review brief unavailable.'));
+    } else if (p.briefState === 'ready' && Array.isArray(p.brief)) {
+      p.brief.forEach(function (n) { renderBriefNode(box, n); });
+    }
+    card.appendChild(box);
+  }
+
   function renderPending(list) {
     var box = document.getElementById('pending');
     box.textContent = '';
@@ -210,6 +282,7 @@ export const DASHBOARD_PAGE = `<!doctype html>
         ' · waiting ' + age(Date.now() - (p.askedAt || Date.now()));
       card.appendChild(el('div', 'meta', meta));
       if (p.reason) card.appendChild(el('div', 'reason', p.reason));
+      renderBrief(card, p);
       var row = el('div', 'row');
       var allow = el('button', 'allow', 'Allow once');
       allow.addEventListener('click', function () { decide(p.id, 'allowed-once', allow); });

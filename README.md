@@ -5,7 +5,7 @@
 [![CI](https://github.com/FreePeak/dsh-feature-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/FreePeak/dsh-feature-loop/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](.nvmrc)
-[![Tests](https://img.shields.io/badge/tests-151%20passing-brightgreen.svg)](#quick-start)
+[![Tests](https://img.shields.io/badge/tests-175%20passing-brightgreen.svg)](#quick-start)
 
 A **book-shaped policy layer** for bug-fixing and small features: budget
 ceilings, cheap-first routing, a step-level review gate, and a local judge that
@@ -80,7 +80,7 @@ and that is the intended behaviour, not a miss.
 ## Quick start
 
 ```bash
-# 151 tests, no network, no model call — the policy layer is pure
+# 175 tests, no network, no model call — the policy layer is pure
 node --experimental-strip-types --test test/*.test.ts
 
 # the end-to-end demo (needs onegw on :8080 and xiaomi/mimo-v2.5)
@@ -149,9 +149,9 @@ gets reached.
   five outcomes executed in a **real** DSH context (5/5 pass), plus the exact
   string the approval panel renders.
 - **[`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md)** — the approval
-  dashboard: 151 unit + 9 integration green, a live HTTP transcript (page 200,
-  token 401, approve → `allowed-once`, 409, 403), and the one browser click
-  still unverified.
+  dashboard: 175 unit + 11 integration green, a live HTTP transcript (page 200,
+  token 401, approve → `allowed-once`, 409, 403), the browser click verified
+  via `make e2e-dashboard`, and the model-authored OpenUI review brief.
 - **[`docs/VERIFY-E2E-APPROVAL.md`](docs/VERIFY-E2E-APPROVAL.md)** — a real
   browser on the containerised deployment: the panel appears with this plugin's
   reason, **Allow once** writes the file, **Reject** blocks it.
@@ -247,11 +247,15 @@ approval channel — it is strictly more capable without being less safe. Set
 ### The approval dashboard
 
 Besides the composer prompt, the plugin can host its own **loopback web page**
-(`src/dashboard.ts` + `src/dashboard-page.ts`, zero dependencies — Node builtins
-only): pending approval cards carrying the gate's `REVIEW REQUESTED` reason with
+(`src/dashboard.ts` + `src/dashboard-page.ts`, Node builtins only — the two
+OpenUI modules, `src/openui-brief.ts` + `src/explainer.ts`, are the only
+dashboard-adjacent code with dependencies): pending approval cards carrying
+the gate's `REVIEW REQUESTED` reason with
 **Allow once** / **Reject**, the live run state (step vs ceiling, spend, ladder
 route, judge score, signals) over SSE, and an activity feed of gate decisions
-and approval outcomes.
+and approval outcomes. A per-response nonce CSP (`default-src 'none'`,
+`frame-ancestors 'none'`) states the posture: the page runs its own script
+and style and nothing else.
 
 ```yaml
 - id: feature-loop
@@ -263,6 +267,11 @@ and approval outcomes.
       #                        # published as 127.0.0.1:3092 (loopback only)
       # answers: true          # false = observe only, composer keeps answering
       # answerTimeoutMs: 600000   # a pending ask fails closed after this
+      # brief:                 # model-authored review brief (OpenUI), off by default
+      #   enabled: false
+      #   model: xiaomi/mimo-v2.5   # required when enabled
+      #   maxTokens: 1024
+      #   timeoutMs: 15000
 ```
 
 `make up` prints the URL + token (`make dashboard` reprints it): the token is
@@ -276,8 +285,19 @@ Web UI tab is attached — but it *claims* a request only while a dashboard tab
 is actually connected. No tab → it delegates, and the composer answers exactly
 as before this feature existed. Every failure path (last tab closed, ask
 withdrawn, timeout, shutdown) settles the pending ask `unavailable`, which the
-harness maps to a refusal. Verified at every level except the browser click:
+harness maps to a refusal. Verified at every level including the browser click:
 [`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md).
+
+**The review brief is purely advisory.** With `brief.enabled`, each claimed ask
+also kicks off a model call that authors an OpenUI Lang brief
+(`src/openui-brief.ts`: a six-component allowlist — `Stack`, `CardHeader`,
+`TextContent`, `Callout`, `Table`, `CodeBlock` — parsed by
+`@openuidev/lang-core`, normalized to data, rendered with the DOM above the
+buttons). The brief never blocks, delays, or settles the ask: it resolves to a
+card, to "brief unavailable", or to nothing at all, and the buttons stay
+authoritative throughout. The parser itself drops anything outside the
+allowlist (`Button`/`Form` never become nodes), and no HTML passes through —
+rendering uses `textContent` only, so there is no escaping to get wrong.
 
 ---
 
@@ -299,6 +319,10 @@ src/
 
   ── the harness host ──
   plugin.ts      agent/pre-step · agent/request · tools/pre-execute
+  dashboard.ts   the loopback HITL server (brief state + nonce CSP)
+  dashboard-page.ts the page as a string (DOM only, no innerHTML)
+  openui-brief.ts the OpenUI allowlist, prompt, and normalizer
+  explainer.ts   the brief's model call (NO_EXPLAINER by default)
 
   ── the standalone proof: the same policies, no harness ──
   runner.ts      spec → budget → route → judge → review → model → tools
@@ -433,12 +457,10 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 - **The price table is an estimate.** `mimo-v2.5` runs on a subscription plan,
   so marginal cost is near zero; the rates in `cli.ts` are illustrative and
   exist so the ceiling has something to measure against.
-- **The dashboard's rendered page has not been clicked in a real browser.**
-  The server, guard, auth, fail-closed paths and the exact endpoint the
-  buttons call are verified over real HTTP, and both integration surfaces are
-  green (9/9) — but no human has pressed **Allow once** on the page itself.
-  [`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md) records the evidence
-  and the two-minute steps to close it. Related: spend shown on the dashboard
+- **The dashboard's rendered page click is verified via `make e2e-dashboard`**
+  (headless Chromium clicks Allow/Reject against the real page and asserts the
+  ask settles). [`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md) records
+  the transcript. Related: spend shown on the dashboard
   inherits the metering gap above, and a Docker volume seeded before the
   dashboard existed needs `FORCE_REINIT=1` to re-seed its profile.
 
@@ -461,9 +483,13 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 - **Phase 1e — HITL approval dashboard** ✅ optional loopback web surface
   (`src/dashboard.ts` + `src/dashboard-page.ts`): pending cards, live run state
   over SSE, Allow/Reject over HTTP — guarded so a tab-less deployment behaves
-  byte-identically to the composer-only path. 151 unit + 9 integration tests;
-  the one browser click is UNVERIFIED
+  byte-identically to the composer-only path. 175 unit + 11 integration tests;
+  the browser click verified via `make e2e-dashboard`
   ([`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md)).
+- **Phase 1f — OpenUI review briefs** ✅ model-authored brief per ask
+  (`src/openui-brief.ts` + `src/explainer.ts`): OpenUI Lang normalized to a
+  DOM-rendered card above the buttons — purely advisory, never blocking.
+  Disabled by default (`dashboard.brief.enabled`).
 - **Phase 2b — real spend accounting** ⬜ price each settled attempt into
   `LoopBudget` so the cost ceiling is load-bearing (the largest open gap).
 - **Phase 3 — Laya** ⬜ deploy the `systemone` provider in onegw, switch `--judge laya`
