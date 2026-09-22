@@ -1,0 +1,595 @@
+/**
+ * The HITL approval dashboard: a small loopback HTTP server the plugin hosts
+ * so a human can answer feature-loop approval requests from a web page, and
+ * watch the run while they do.
+ *
+ * Two jobs, one seam each:
+ *
+ *   approvals   an `approval/request` answerer (registered by `plugin.ts`
+ *               ahead of every other listener) that claims a request only
+ *               while a dashboard browser tab is connected, and otherwise
+ *               delegates via `next()` — so the stock composer panel remains
+ *               the fallback and a deployment without a dashboard is
+ *               unaffected.
+ *   visibility  a snapshot of run state (step, budget, signals, judge, gate
+ *               decisions) pushed over SSE, fed by the plugin's own hooks.
+ *               Nothing is read from the session log: web-path persistence is
+ *               unproven, and the plugin already computes all of this.
+ *
+ * Security posture, deliberately minimal but not decorative: binds loopback by
+ * default (the same posture `docker/docker-compose.yml` takes), requires a
+ * bearer-equivalent token on every response, and refuses cross-origin POSTs.
+ * A surface that can approve tool calls is RCE-equivalent — `host` accepts
+ * only `127.0.0.1` or `0.0.0.0`, the closed set the harness's own webserver
+ * schema accepts, and `0.0.0.0` is meant for inside a container whose
+ * published port is loopback-only.
+ *
+ * Node builtins only. A new runtime dependency here would be a new attack
+ * surface on the one endpoint that can wave a tool through.
+ *
+ * @module dsh-feature-loop/dashboard
+ */
+
+import { createServer } from 'node:http'
+import type { IncomingMessage, Server, ServerResponse } from 'node:http'
+import { randomBytes, randomUUID, timingSafeEqual, createHash } from 'node:crypto'
+import type { ReviewSignal } from './signals.ts'
+import { DASHBOARD_PAGE } from './dashboard-page.ts'
+
+/**
+ * The outcome vocabulary, mirrored structurally from the harness's
+ * `ApprovalOutcome`. Not imported: this module stays in the harness-free
+ * closure so the CI typecheck job covers it, and the four literals are the
+ * whole contract — a fifth outcome would be a harness change, not a drift to
+ * absorb silently.
+ */
+export type ApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
+
+/** Feed line categories, in the order they read best. */
+export type FeedKind = 'step' | 'signals' | 'judge' | 'route' | 'gate' | 'approval' | 'note'
+
+/** One activity-feed line. */
+export interface FeedEntry {
+  /** Epoch milliseconds. */
+  t: number
+  runId?: string
+  kind: FeedKind
+  text: string
+}
+
+/** One run's live numbers, as the page renders them. */
+export interface RunSnapshot {
+  runId: string
+  step?: number
+  maxSteps?: number
+  spentUSD?: number
+  budgetUSD?: number
+  unpricedSteps?: number
+  judgeScore?: number
+  route?: string
+  signals: ReviewSignal[]
+}
+
+/** One approval waiting for a human. */
+export interface PendingApproval {
+  id: string
+  toolName: string
+  callId?: string
+  reason?: string
+  runId?: string
+  askedAt: number
+}
+
+/** The full state the page consumes — one JSON document per SSE frame. */
+export interface DashboardSnapshot {
+  /** Whether this dashboard claims approvals (false = observe-only). */
+  answers: boolean
+  pending: PendingApproval[]
+  runs: RunSnapshot[]
+  feed: FeedEntry[]
+}
+
+/** Configured under the patch row's `dashboard:` key. All fields optional. */
+export interface DashboardConfig {
+  /** Must be `true` to start the server at all. */
+  enabled?: boolean
+  /** Bind address. Only `127.0.0.1` (default) or `0.0.0.0` (in-container). */
+  host?: string
+  /** Port. Integer 0–65535; 0 asks the OS for a free one (tests use this). */
+  port?: number
+  /** Shared secret for every request. Generated when omitted. */
+  token?: string
+  /**
+   * Whether a connected dashboard *answers* approvals or only observes them.
+   * Defaults to true. Set false to keep the composer as the sole answerer
+   * while still watching the run here.
+   */
+  answers?: boolean
+  /** Fail closed this long after asking: pending asks settle `unavailable`. */
+  answerTimeoutMs?: number
+}
+
+/** Config after validation: every field present and type-correct. */
+export interface ResolvedDashboardConfig {
+  host: string
+  port: number
+  token: string
+  answers: boolean
+  answerTimeoutMs: number
+}
+
+/**
+ * The structural projection of the harness's `ApprovalRequestEvent` the
+ * answerer reads. Structural on purpose — see `ApprovalOutcome` above — but
+ * fields are named exactly as the harness names them, so a rename there fails
+ * this module's integration test rather than passing with `undefined`.
+ */
+export interface ApprovalQuestion {
+  /** The agent being asked for. Present except for agent-less dispatches. */
+  agent?: { readonly id?: unknown } | undefined
+  toolName: string
+  callId?: string
+  reason?: string
+  /** Fires when the ask is withdrawn (turn ended, session stopped). */
+  signal?: AbortSignal
+}
+
+/** Feed lines kept in memory. Old lines fall off; the run state does not. */
+const FEED_LIMIT = 200
+/**
+ * Runs tracked before the oldest is evicted.
+ *
+ * ponytail: keyed by agent id with FIFO eviction — a deployment that cycles
+ * thousands of sessions in one process would drop earlier runs' state. The
+ * upgrade path is a bounded LRU keyed by last-activity; nothing today runs
+ * more than a handful of agents per process, so the ceiling is recorded
+ * rather than engineered.
+ */
+const RUN_LIMIT = 50
+/** Largest approval POST body we will read. */
+const MAX_BODY = 8 * 1024
+/** SSE keep-alive interval, under typical proxy idle timeouts. */
+const KEEPALIVE_MS = 25_000
+
+/** Human labels for the feed, keyed by outcome. */
+const OUTCOME_LABEL: Record<ApprovalOutcome, string> = {
+  'allowed-once': 'approved',
+  rejected: 'rejected',
+  cancelled: 'cancelled',
+  unavailable: 'expired / unavailable',
+}
+
+/** First line of a multi-line reason, truncated — feed lines stay one line. */
+function firstLine(text: string, max = 300): string {
+  const line = text.split('\n', 1)[0] ?? ''
+  return line.length <= max ? line : `${line.slice(0, max - 1)}…`
+}
+
+/**
+ * Validate a dashboard config, naming the first bad field.
+ *
+ * Throws a `TypeError` whose message starts with `dashboard.` — the same
+ * fail-loud-at-load rule `validateSpec` follows for the loop spec: a
+ * misconfigured dashboard must stop the plugin from loading, never degrade
+ * into a silently-unreachable server.
+ *
+ * @param config - the raw `dashboard:` value from the patch row.
+ * @returns the config with defaults applied.
+ */
+export function parseDashboardConfig(config: DashboardConfig = {}): ResolvedDashboardConfig {
+  if (typeof config !== 'object' || config === null || Array.isArray(config)) {
+    throw new TypeError(
+      `dashboard must be a mapping of options, received ${JSON.stringify(config)}`,
+    )
+  }
+  if (config.enabled !== undefined && typeof config.enabled !== 'boolean') {
+    throw new TypeError(`dashboard.enabled must be true or false, received ${JSON.stringify(config.enabled)}`)
+  }
+  const host = config.host ?? '127.0.0.1'
+  if (host !== '127.0.0.1' && host !== '0.0.0.0') {
+    throw new TypeError(
+      'dashboard.host must be "127.0.0.1" (default) or "0.0.0.0" (container-internal only) — '
+      + `the same closed set the harness webserver accepts, received ${JSON.stringify(config.host)}`,
+    )
+  }
+  const port = config.port ?? 8100
+  if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+    throw new TypeError(
+      `dashboard.port must be an integer in [0, 65535] (0 = pick a free port), received ${JSON.stringify(config.port)}`,
+    )
+  }
+  const token = config.token ?? randomBytes(24).toString('hex')
+  if (typeof token !== 'string' || token === '') {
+    throw new TypeError(`dashboard.token must be a non-empty string, received ${JSON.stringify(config.token)}`)
+  }
+  const answers = config.answers ?? true
+  if (typeof answers !== 'boolean') {
+    throw new TypeError(`dashboard.answers must be true or false, received ${JSON.stringify(config.answers)}`)
+  }
+  const answerTimeoutMs = config.answerTimeoutMs ?? 600_000
+  if (!Number.isInteger(answerTimeoutMs) || answerTimeoutMs < 1) {
+    throw new TypeError(
+      `dashboard.answerTimeoutMs must be a positive integer of milliseconds, received ${JSON.stringify(config.answerTimeoutMs)}`,
+    )
+  }
+  return { host, port, token, answers, answerTimeoutMs }
+}
+
+/**
+ * Run state the plugin feeds and the page renders.
+ *
+ * A plain in-memory record — there is no session-log tailing here: web-path
+ * persistence is unproven (see `todo.md`), and the plugin already computes
+ * every one of these numbers at its hooks.
+ */
+export class DashboardState {
+  private readonly runs = new Map<string, RunSnapshot>()
+  private readonly feedList: FeedEntry[] = []
+  private listener: (() => void) | undefined
+
+  /**
+   * Install the single change listener (the server's broadcast). One slot is
+   * enough: one dashboard serves one process.
+   *
+   * @param listener - called after every mutation, or undefined to clear.
+   */
+  onChange(listener: (() => void) | undefined): void {
+    this.listener = listener
+  }
+
+  private changed(): void {
+    this.listener?.()
+  }
+
+  private run(runId: string): RunSnapshot {
+    let record = this.runs.get(runId)
+    if (record === undefined) {
+      record = { runId, signals: [] }
+      this.runs.set(runId, record)
+      // See RUN_LIMIT: FIFO eviction, recorded ceiling rather than engineered.
+      while (this.runs.size > RUN_LIMIT) {
+        const oldest = this.runs.keys().next().value
+        if (oldest === undefined) break
+        this.runs.delete(oldest)
+      }
+    }
+    return record
+  }
+
+  /** Record the step-boundary numbers: ceiling position and spend. */
+  recordStep(runId: string, patch: Omit<RunSnapshot, 'runId' | 'signals'>): void {
+    Object.assign(this.run(runId), patch)
+    this.changed()
+  }
+
+  /** Replace the run's current signals: the detectors recompute them each step. */
+  recordSignals(runId: string, signals: readonly ReviewSignal[]): void {
+    this.run(runId).signals = [...signals]
+    this.changed()
+  }
+
+  /** Record the judge's latest score, when one was spent. */
+  recordJudge(runId: string, score: number): void {
+    this.run(runId).judgeScore = score
+    this.changed()
+  }
+
+  /** Record the route the ladder chose for this step. */
+  recordRoute(runId: string, route: string): void {
+    this.run(runId).route = route
+    this.changed()
+  }
+
+  /**
+   * Append a feed line. Kept separate from the typed recorders so the plugin
+   * can surface notices (review text, ceiling stops) without inventing fields.
+   */
+  note(kind: FeedKind, text: string, runId?: string): void {
+    const entry: FeedEntry = { t: Date.now(), kind, text: firstLine(text), ...runId === undefined ? {} : { runId } }
+    this.feedList.push(entry)
+    while (this.feedList.length > FEED_LIMIT) this.feedList.shift()
+    this.changed()
+  }
+
+  /** A gate decision worth remembering: only blocks, not every auto tool call. */
+  recordGate(runId: string, toolName: string, verdict: 'ask' | 'deny', reason?: string): void {
+    this.note('gate', `${verdict}: ${toolName}${reason === undefined ? '' : ` — ${firstLine(reason, 200)}`}`, runId)
+  }
+
+  /** A read-only copy, safe to serialize. */
+  snapshot(): { runs: RunSnapshot[], feed: FeedEntry[] } {
+    return {
+      runs: [...this.runs.values()].map(run => ({ ...run, signals: [...run.signals] })),
+      feed: [...this.feedList],
+    }
+  }
+}
+
+/** What `startDashboard` hands back. */
+export interface DashboardHandle {
+  /** Base URL once listening; empty until the socket is bound. */
+  readonly url: string
+  readonly token: string
+  /** Resolves when bound; rejects on e.g. EADDRINUSE (logged loudly too). */
+  readonly ready: Promise<void>
+  /**
+   * The `approval/request` answerer. Delegates to `next()` unless a dashboard
+   * client is connected AND `answers` is on — that guard, not listener order,
+   * is what keeps the composer panel as the fallback.
+   *
+   * @param question - the pending ask, structurally projected from the harness.
+   * @param next - the rest of the waterfall.
+   * @returns the outcome the harness maps to allow/deny.
+   */
+  answer(question: ApprovalQuestion, next: () => Promise<ApprovalOutcome>): Promise<ApprovalOutcome>
+  /** Settle every pending ask `unavailable`, close clients and the socket. */
+  stop(): Promise<void>
+}
+
+/** A pending ask, internal form: the settle closure the POST path drives. */
+interface PendingEntry extends PendingApproval {
+  settle(outcome: ApprovalOutcome): void
+}
+
+/**
+ * Start the dashboard server.
+ *
+ * Synchronous by design: `plugin.ts`'s `apply` is synchronous (cordis), so the
+ * handle must exist immediately. Binding happens in the background — `ready`
+ * is the probe, and until it resolves no browser can be connected, which
+ * means `answer` delegates and the composer answers. Fail-safe by construction.
+ *
+ * @param config - the raw `dashboard:` config; validated, throwing on bad fields.
+ * @param state - the run state to serve; one is created when omitted.
+ * @returns the handle.
+ */
+export function startDashboard(
+  config: DashboardConfig = {},
+  state: DashboardState = new DashboardState(),
+): DashboardHandle {
+  const cfg = parseDashboardConfig(config)
+  const pending = new Map<string, PendingEntry>()
+  const clients = new Set<ServerResponse>()
+  let stopped = false
+
+  const snapshot = (): DashboardSnapshot => ({
+    answers: cfg.answers,
+    pending: [...pending.values()].map(({ id, toolName, callId, reason, runId, askedAt }) => ({
+      id, toolName, ...callId === undefined ? {} : { callId },
+      ...reason === undefined ? {} : { reason },
+      ...runId === undefined ? {} : { runId }, askedAt,
+    })),
+    ...state.snapshot(),
+  })
+
+  const broadcast = (): void => {
+    if (clients.size === 0) return
+    const frame = `data: ${JSON.stringify(snapshot())}\n\n`
+    for (const res of clients) res.write(frame)
+  }
+  state.onChange(broadcast)
+
+  const server = createServer((req, res) => {
+    void route(req, res).catch((error: unknown) => {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
+    })
+  })
+
+  /** Constant-time token compare over digests, so length is not a signal. */
+  const tokenMatches = (given: string | undefined): boolean => {
+    if (given === undefined || given === '') return false
+    const a = createHash('sha256').update(given).digest()
+    const b = createHash('sha256').update(cfg.token).digest()
+    return timingSafeEqual(a, b)
+  }
+
+  /** Token from the header everywhere; query also accepted on GETs only. */
+  const authorized = (req: IncomingMessage, url: URL, allowQuery: boolean): boolean => {
+    const header = req.headers['x-dashboard-token']
+    if (tokenMatches(Array.isArray(header) ? header[0] : header)) return true
+    return allowQuery && tokenMatches(url.searchParams.get('token') ?? undefined)
+  }
+
+  const deny = (res: ServerResponse): void => {
+    sendJson(res, 401, { error: 'missing or invalid dashboard token — open the URL printed by make dashboard' })
+  }
+
+  /**
+   * Cross-origin defense in depth for the one state-changing route. The token
+   * already authenticates; this stops a browser that somehow holds it from a
+   * different origin. Non-browser clients (curl) send no Origin and are
+   * judged on the token alone.
+   */
+  const sameOrigin = (req: IncomingMessage): boolean => {
+    const origin = req.headers.origin
+    if (origin === undefined || origin === '') return true
+    return origin === `http://${req.headers.host}` || origin === `https://${req.headers.host}`
+  }
+
+  const readJson = async (req: IncomingMessage): Promise<unknown> => {
+    const chunks: Buffer[] = []
+    let size = 0
+    for await (const chunk of req) {
+      const buf = Buffer.from(chunk as Buffer)
+      size += buf.length
+      if (size > MAX_BODY) throw new Error('body too large')
+      chunks.push(buf)
+    }
+    if (size === 0) return {}
+    try {
+      return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    } catch {
+      throw new Error('body is not valid JSON')
+    }
+  }
+
+  const openSse = (req: IncomingMessage, res: ServerResponse, url: URL): void => {
+    if (!authorized(req, url, true)) return deny(res)
+    res.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+    })
+    res.write('retry: 2000\n\n')
+    res.write(`data: ${JSON.stringify(snapshot())}\n\n`)
+    // Registered before any await: the moment this tab exists, `answer` may
+    // claim requests. That single fact is the whole precedence rule.
+    clients.add(res)
+    const keepalive = setInterval(() => res.write(': ping\n\n'), KEEPALIVE_MS)
+    keepalive.unref()
+    req.on('close', () => {
+      clearInterval(keepalive)
+      clients.delete(res)
+      // Last tab gone: pending asks must not hang the run. Failing closed to
+      // `unavailable` is the seam's own no-answerer behaviour.
+      if (clients.size === 0) {
+        for (const entry of [...pending.values()]) entry.settle('unavailable')
+      }
+    })
+  }
+
+  const approve = async (req: IncomingMessage, res: ServerResponse, id: string): Promise<void> => {
+    if (!authorized(req, new URL('/', 'http://x'), false)) return deny(res)
+    if (!sameOrigin(req)) return sendJson(res, 403, { error: 'cross-origin approval denied' })
+    let body: unknown
+    try {
+      body = await readJson(req)
+    } catch (error: unknown) {
+      return sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) })
+    }
+    const outcome = (body as { outcome?: unknown } | null)?.outcome
+    if (outcome !== 'allowed-once' && outcome !== 'rejected') {
+      return sendJson(res, 400, { error: 'outcome must be "allowed-once" or "rejected"' })
+    }
+    const entry = pending.get(id)
+    // 409, not 404: the request existed; it was settled, expired, or
+    // cancelled. A late click must read as "you were beaten", not "bad url".
+    if (entry === undefined) return sendJson(res, 409, { error: 'no such pending approval (settled, expired, or cancelled)' })
+    entry.settle(outcome)
+    sendJson(res, 200, { ok: true, outcome })
+  }
+
+  const route = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const url = new URL(req.url ?? '/', 'http://placeholder')
+    const method = req.method ?? 'GET'
+    if (method === 'GET' && url.pathname === '/api/events') return openSse(req, res, url)
+    if (method === 'GET' && url.pathname === '/api/state') {
+      if (!authorized(req, url, true)) return deny(res)
+      return sendJson(res, 200, snapshot())
+    }
+    if (method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
+      if (!authorized(req, url, true)) return deny(res)
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(DASHBOARD_PAGE)
+      return
+    }
+    if (method === 'POST' && url.pathname.startsWith('/api/approvals/')) {
+      return approve(req, res, decodeURIComponent(url.pathname.slice('/api/approvals/'.length)))
+    }
+    sendJson(res, 404, { error: 'not found' })
+  }
+
+  server.listen(cfg.port, cfg.host)
+
+  const { promise: ready, resolve: resolveReady, reject: rejectReady } = Promise.withResolvers<void>()
+  server.once('listening', () => {
+    // The greppable line: `make dashboard` finds it in the container log the
+    // same way `make url` finds the harness's own token line.
+    console.log(`feature-loop dashboard: ${handle.url}?token=${cfg.token}`)
+    resolveReady()
+  })
+  server.once('error', (error: Error) => {
+    console.error(`[feature-loop dashboard] FAILED to bind ${cfg.host}:${cfg.port}: ${error.message}`)
+    rejectReady(error)
+  })
+  // Nobody may await `ready` (a headless boot), and an unhandled rejection
+  // would be worse than the logged line above.
+  ready.catch(() => undefined)
+
+  const stop = async (): Promise<void> => {
+    if (stopped) return
+    stopped = true
+    for (const entry of [...pending.values()]) entry.settle('unavailable')
+    state.onChange(undefined)
+    for (const res of clients) res.end()
+    clients.clear()
+    await new Promise<void>(resolve => {
+      server.close(() => resolve())
+      // Sockets with an open SSE response would otherwise hold `close` open.
+      server.closeAllConnections()
+    })
+  }
+
+  const answer = async (
+    question: ApprovalQuestion,
+    next: () => Promise<ApprovalOutcome>,
+  ): Promise<ApprovalOutcome> => {
+    // The guard. Order among answerers is not a priority mechanism (the
+    // harness docs say so), so precedence here is decided by observation:
+    // claim exactly while a tab is watching, delegate otherwise.
+    if (stopped || !cfg.answers || clients.size === 0) return next()
+
+    const rawId = question.agent?.id
+    const runId = typeof rawId === 'string' && rawId !== '' ? rawId : 'agentless'
+    const id = randomUUID()
+    const toolName = question.toolName
+
+    return new Promise<ApprovalOutcome>(resolve => {
+      let settled = false
+      let timer: NodeJS.Timeout | undefined
+
+      const settle = (outcome: ApprovalOutcome, feedText?: string): void => {
+        if (settled) return
+        settled = true
+        pending.delete(id)
+        if (timer !== undefined) clearTimeout(timer)
+        question.signal?.removeEventListener('abort', onAbort)
+        // `note` broadcasts; a second frame here would be the same snapshot.
+        state.note('approval', feedText ?? `${OUTCOME_LABEL[outcome]}: ${toolName}`, runId)
+        resolve(outcome)
+      }
+      const onAbort = (): void => settle('cancelled', `cancelled: ${toolName} (the ask was withdrawn)`)
+
+      pending.set(id, {
+        id,
+        toolName,
+        ...question.callId === undefined ? {} : { callId: question.callId },
+        ...question.reason === undefined ? {} : { reason: question.reason },
+        runId,
+        askedAt: Date.now(),
+        settle: outcome => settle(outcome),
+      })
+      timer = setTimeout(
+        () => settle('unavailable', `expired: ${toolName} — no answer within ${cfg.answerTimeoutMs}ms`),
+        cfg.answerTimeoutMs,
+      )
+      timer.unref?.()
+      question.signal?.addEventListener('abort', onAbort, { once: true })
+      state.note(
+        'approval',
+        `asked: ${toolName}${question.reason === undefined ? '' : ` — ${firstLine(question.reason)}`}`,
+        runId,
+      )
+    })
+  }
+
+  const handle: DashboardHandle = {
+    get url() {
+      const address = server.address()
+      if (address === null || typeof address === 'string') return ''
+      return `http://${cfg.host === '0.0.0.0' ? '127.0.0.1' : cfg.host}:${address.port}/`
+    },
+    get token() {
+      return cfg.token
+    },
+    ready,
+    answer,
+    stop,
+  }
+  return handle
+}
+
+function sendJson(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
+  res.end(JSON.stringify(body))
+}

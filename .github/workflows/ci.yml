@@ -151,6 +151,7 @@ jobs:
             --strict --esModuleInterop --skipLibCheck --isolatedModules \
             --allowImportingTsExtensions \
             src/agent-policy.ts src/budget.ts src/cli.ts \
+            src/dashboard.ts src/dashboard-page.ts \
             src/judge.ts src/laya.ts src/llm.ts src/messages.ts src/prompts.ts \
             src/review.ts src/routing.ts src/runner.ts src/signals.ts src/spec.ts \
             src/tools.ts
