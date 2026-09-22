@@ -53,7 +53,29 @@ export interface Judge {
   score(
     state: string,
     questions: Record<string, SystemOneQuestion>,
-  ): Promise<{ score: number | undefined, error?: string }>
+  ): Promise<JudgeResult>
+}
+
+/**
+ * What one judge call returns.
+ *
+ * `score` is the attention-router path: the 0–3 level for the
+ * `review_worthiness` question, or `undefined` when the engine did not answer
+ * it. The remaining fields are the optimizer battery's ride home: `choice`
+ * and `noul` answers have no numeric score, so without these fields a live
+ * engine's correct `choice`/`noul` answers would arrive at `readAnswer` as an
+ * empty object and be dropped as "no answer". Carrying them is transport, not
+ * policy — `readAnswer` still validates each one against the question asked.
+ */
+export interface JudgeResult {
+  score: number | undefined
+  error?: string
+  /** The `choice` label, when the answered question was a `choice`. */
+  choice?: string
+  /** P(yes) in [0, 1], when the answered question was a `noul`. */
+  probability?: number
+  /** The engine's own confidence, when it reported one. */
+  confidence?: number
 }
 
 /** Configuration for the onegw-backed judge. */
@@ -96,7 +118,7 @@ export class OnegwJudge implements Judge {
   async score(
     state: string,
     questions: Record<string, SystemOneQuestion>,
-  ): Promise<{ score: number | undefined, error?: string }> {
+  ): Promise<JudgeResult> {
     if (this.disabled !== undefined) return { score: undefined, error: this.disabled }
 
     const controller = new AbortController()
@@ -117,13 +139,25 @@ export class OnegwJudge implements Judge {
         return { score: undefined, error: detail }
       }
       const payload = await response.json() as { answers?: Record<string, SystemOneAnswer> }
-      const answer = payload.answers?.review_worthiness
-      if (answer?.score === undefined || !Number.isFinite(answer.score)) {
-        const detail = 'onegw /v1/systemone answered without a numeric review_worthiness score'
+      // Read the answer under the key that was asked, not a fixed one: the
+      // attention router asks `review_worthiness`, the optimizer battery asks
+      // one lever-named question per call (`ladder-rung`, `max-tokens`, …).
+      // A fixed key here meant every battery question "errored" against a live
+      // engine that had answered correctly — verified live 2026-09-23.
+      const keys = Object.keys(questions)
+      const key = keys.length === 1 ? keys[0]! : 'review_worthiness'
+      const answer = key === undefined ? undefined : payload.answers?.[key]
+      if (answer === undefined) {
+        const detail = `onegw /v1/systemone answered without "${key}" — asked [${keys.join(', ')}], got [${Object.keys(payload.answers ?? {}).join(', ')}]`
         this.disabled = detail
         return { score: undefined, error: detail }
       }
-      return { score: answer.score }
+      return {
+        score: typeof answer.score === 'number' && Number.isFinite(answer.score) ? answer.score : undefined,
+        ...answer.probability !== undefined ? { probability: answer.probability } : {},
+        ...answer.choice !== undefined ? { choice: answer.choice } : {},
+        ...answer.confidence !== undefined ? { confidence: answer.confidence } : {},
+      }
     } catch (error: unknown) {
       const detail = error instanceof Error && error.name === 'AbortError'
         ? `judge timed out after ${String(this.config.timeoutMs)}ms (Laya's first cold load can take minutes)`

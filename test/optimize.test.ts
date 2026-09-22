@@ -20,7 +20,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 
 import { NO_JUDGE } from '../src/laya.ts'
-import type { Judge, SystemOneAnswer, SystemOneQuestion } from '../src/laya.ts'
+import type { Judge, JudgeResult, SystemOneQuestion } from '../src/laya.ts'
 import { advisoryFor, defaultHistoryPath, planEnvelope, recordsForTask } from '../src/optimize.ts'
 import { appendRecord, DEFAULT_HISTORY, taskKeyOf } from '../src/runlog.ts'
 import type { RunRecord } from '../src/runlog.ts'
@@ -84,7 +84,7 @@ function withHistory(records: readonly RunRecord[]): string {
 function scoringJudge(score: number): Judge & { calls: number } {
   const judge = {
     calls: 0,
-    score(_state: string, _questions: Record<string, SystemOneQuestion>): Promise<SystemOneAnswer> {
+    score(_state: string, _questions: Record<string, SystemOneQuestion>): Promise<JudgeResult> {
       judge.calls += 1
       return Promise.resolve({ score, confidence: 0.9 })
     },

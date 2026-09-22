@@ -161,8 +161,12 @@ rather than hand-editing it.
 - **The price table is illustrative.** `mimo-v2.5` runs on a subscription, so
   marginal cost is near zero; the rates exist so a ceiling has something to
   measure against.
-- **Laya** (phase 3): deploy the `systemone` provider in onegw, switch
-  `--judge laya`. `src/laya.ts` is written; the demo uses `ChatJudge` instead.
+- **Laya** (phase 3, verified live 2026-09-23): all three primitives + full
+  battery answer via `scripts/laya-sidecar.py` (`~/venvs/laya`, port 8091).
+  Remaining: a `--judge-base-url` flag so the CLI can point at the sidecar
+  (onegw's `:8080` has no systemone provider), and calibration — base
+  checkpoints discriminate routine-vs-dangerous by only +0.056, matching the
+  JEV doc's near-chance warning.
 - **The Dockerfile pins `dsh@0.1.7-alpha.1`** because the `latest` tag is broken
   upstream. Revisit when that is fixed.
 
@@ -194,5 +198,5 @@ rather than hand-editing it.
 - **Do not edit `~/.dsh/settings.yaml`** without asking — use a private
   `DSH_HOME` (`docs/RUNBOOK-SERVER.md` §2.6).
 - **Never disturb ports 3081 / 3097 / 3099** if the user's GUI is running.
-- **Verify before claiming.** `238/238` + `tsc --noEmit` + the integration test
+- **Verify before claiming.** `239/239` + `tsc --noEmit` + the integration test
   (9/9) is the floor.

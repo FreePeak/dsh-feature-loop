@@ -16,7 +16,7 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 
-import type { Judge, SystemOneAnswer, SystemOneQuestion } from '../src/laya.ts'
+import type { Judge, JudgeResult, SystemOneAnswer, SystemOneQuestion } from '../src/laya.ts'
 import { NO_JUDGE } from '../src/laya.ts'
 import type { RunRecord } from '../src/runlog.ts'
 import {
@@ -51,14 +51,14 @@ function scriptedJudge(script: readonly Scripted[]): Judge & { calls: number; ke
       if ('throws' in item) throw new Error(item.throws)
       if ('error' in item) return { score: undefined, error: item.error }
       const answer = item.answer
-      // `Judge` declares { score, error }; the live gateway may also carry the
-      // other SystemOneAnswer fields. The fake widens the same way the module
-      // reads defensively, via a cast the interface's literals would reject.
-      const out: Record<string, unknown> = { score: answer.score }
+      // `JudgeResult` carries every field a live answer may hold; the fake
+      // passes them through verbatim so each assertion pins what `readAnswer`
+      // does with a real shape, not a narrowed one.
+      const out: JudgeResult = { score: answer.score }
       if (answer.probability !== undefined) out.probability = answer.probability
       if (answer.choice !== undefined) out.choice = answer.choice
       if (answer.confidence !== undefined) out.confidence = answer.confidence
-      return out as unknown as { score: number | undefined, error?: string }
+      return out
     },
   }
   return judge as Judge & { calls: number, keys: string[][] }
@@ -215,7 +215,7 @@ test('a throwing judge fails toward no advice, not partial advice', async () => 
 
 test('an out-of-range score is REJECTED — never clamped — and the rest still return', async () => {
   const judge = scriptedJudge([
-    { error: 'choice primitive not deployed' },
+    { error: 'choice primitive failed' },
     { answer: { score: 7, confidence: 0.9 } }, // 7 is not a level this scale has
     { answer: { probability: 0.9, confidence: 0.87 } },
     { answer: { score: 2, confidence: 0.86 } },
@@ -237,10 +237,13 @@ test('an out-of-range score is REJECTED — never clamped — and the rest still
 })
 
 test('a failing choice/noul call drops only that question; score questions still answer', async () => {
+  // The error strings are historical: choice/noul now answer live (verified
+  // 2026-09-23), but a future engine that fails one primitive must still not
+  // take the other six down — so the drop-and-continue rule keeps its test.
   const judge = scriptedJudge([
-    { error: 'choice primitive UNVERIFIED until Laya ships' },
+    { error: 'choice primitive failed' },
     { answer: { score: 0, confidence: 0.9 } },
-    { error: 'noul primitive UNVERIFIED until Laya ships' },
+    { error: 'noul primitive failed' },
     { answer: { score: 3, confidence: 0.8 } },
     { answer: { score: 3, confidence: 0.7 } },
     { answer: { score: 3, confidence: 0.6 } },
@@ -379,4 +382,26 @@ test('unpriced steps in the state are flagged loudly, not averaged away', () => 
   assert.match(state, /WARNING: unpriced steps/)
   assert.match(state, /unpriced steps 5/)
   assert.match(state, /suppressed rather than believed/)
+})
+
+test('an in-range float score rounds to the nearest level — verified live against Laya', async () => {
+  // Live Laya answers score questions with expected levels (0.89, 1.41…), not
+  // integers. Rounding is NOT clamping: the value already lies on the 0–3
+  // scale, and the nearest level is what the rubric means by it. Out-of-range
+  // stays rejected (see the score-7 test above); this is the in-band half.
+  const judge = scriptedJudge([
+    { error: 'choice not asked here' },
+    { answer: { score: 0.89, confidence: 0.9 } }, // → 1: right-sized, skipped
+    { answer: { probability: 0.9, confidence: 0.87 } },
+    { answer: { score: 2.4, confidence: 0.86 } }, // → 2: proposes
+    { answer: { score: 3, confidence: 0.85 } },
+    { answer: { score: 0, confidence: 0.84 } },
+    { answer: { score: 3, confidence: 0.83 } },
+  ])
+  const { recommendations, unavailable } = await proposeOptimizations(judge, RECORDS, SPEC)
+  const levers = recommendations.map(r => r.lever)
+  // 0.89 rounds to 1 (right-sized → skip); 2.4 rounds to 2 (grinding → propose).
+  assert.ok(!levers.includes('max-tokens'), `0.89 → 1 is right-sized, skipped; got ${levers.join(', ')}`)
+  assert.ok(levers.includes('step-ceiling'), `2.4 → 2 proposes; got ${levers.join(', ')}`)
+  assert.equal(unavailable, undefined)
 })

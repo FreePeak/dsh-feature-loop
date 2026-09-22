@@ -420,9 +420,17 @@ classification, so it has three implementations behind one interface:
 
 | Judge | Cost | Latency | Status |
 |---|---|---|---|
-| `OnegwJudge` (Laya) | $0, local | ~73 ms warm | client ready; **Laya is not deployed in onegw here** |
+| `OnegwJudge` (Laya) | $0, local | ~1–4 s cold-ish, <200 ms warm* | client ready; **verified live 2026-09-23** against a local sidecar (`scripts/laya-sidecar.py`, `~/venvs/laya`, port 8091) — all three primitives answer, full battery returns recommendations |
 | `ChatJudge` | metered | ~10–40 s | **what the demo uses** |
 | `NO_JUDGE` | $0 | 0 | detectors-only, a supported mode |
+
+\* Laya-sidecar timings measured on this machine: first predict ~7 s (cold weights), then ~0.9–4 s per call warm — far above the JEV doc's 73 ms (that figure is raw forward-pass; ours includes HTTP + routing + a cold-ish process). Still 10× cheaper in wall-clock than a chat judge, and $0.
+
+The demo uses `ChatJudge` with `xiaomi/mimo-v2.5` because no `systemone` provider
+is configured in `~/.onegw/onegw.toml`. To point the demo at local Laya instead,
+run the sidecar and override the judge base URL (the CLI's `--judge laya` still
+defaults to onegw's `:8080`, which has no systemone provider — that wiring is
+a separate, smaller change: a `--judge-base-url` flag or env var).
 
 The demo uses `ChatJudge` with `xiaomi/mimo-v2.5` because no `systemone` provider
 is configured in `~/.onegw/onegw.toml`. Two measured facts argue for Laya beyond
@@ -434,9 +442,10 @@ cost:
    2048, and the error message names the cause instead of saying "no digit".
 2. **It is miscalibrated.** Asked about a routine `read_file` with no detector
    fired, it answered `SCORE=3` — the top of the scale. A purpose-built decision
-   engine is the right tool; a general chat model is a fallback.
-
-To use Laya once deployed: `--judge laya`.
+   engine is the right tool; a general chat model is a fallback. Live Laya
+   scored the same shape 1.409 vs 1.465 for routine-vs-dangerous — directionally
+   right but near-chance, matching the JEV doc's warning that base checkpoints
+   need specialisation before their levels drive policy.
 
 ---
 
@@ -576,7 +585,7 @@ Two genuine bugs were found in the fork while it existed, both now moot:
   the CLI derives envelopes and prints metrics + proposals (`--derive`), the
   plugin records one history line per closed turn and feeds Metrics from the
   file (`optimize.history`); proposals stay CLI-only so the hot path stays cheap.
-- **Phase 3 — Laya** ⬜ deploy the `systemone` provider in onegw, switch `--judge laya`
+- **Phase 3 — Laya** ✅ verified live 2026-09-23 (all three primitives + full battery via `scripts/laya-sidecar.py`); remaining: a `--judge-base-url` flag so the CLI can point at the sidecar without onegw, and calibration before levels drive policy (routine-vs-dangerous discriminated by only +0.056)
 
 ### Verifying the whole thing
 

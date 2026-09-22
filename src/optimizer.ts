@@ -22,9 +22,11 @@
  *    (judge.ts's rule: "clamping would turn a confused judge into a confident
  *    one").
  * 3. A `choice`/`noul` call that errors DROPS that question and continues
- *    with the rest: `laya.ts` declares those primitives but they are
- *    UNVERIFIED against the live gateway (Laya is not deployed yet), so
- *    nothing here hard-depends on them.
+ *    with the rest. All three primitives are verified live against local Laya
+ *    (2026-09-23: `choice` picked the right tool label, `noul` returned a
+ *    P(yes), `score` returned expected levels) — but the rule stays, because
+ *    a future engine that cannot answer one primitive must not take the other
+ *    six down with it.
  * 4. No confidence from the engine → the recommendation sorts to the END and
  *    says so in its evidence.
  * 5. Cost levers (`ladder-rung`, `max-tokens`, `tool-result-size`) are
@@ -41,7 +43,7 @@
  * @module dsh-feature-loop/optimizer
  */
 
-import type { Judge, SystemOneAnswer, SystemOneQuestion } from './laya.ts'
+import type { Judge, JudgeResult, SystemOneAnswer, SystemOneQuestion } from './laya.ts'
 import type { RunRecord } from './runlog.ts'
 
 /** One dial the loop actually has. Every question in the battery maps to exactly one. */
@@ -527,12 +529,14 @@ const BATTERY: readonly BatteryEntry[] = [
  * ------------------------------------------------------------------ */
 
 /**
- * What a live gateway might hand back, beyond `Judge`'s declared
- * `{ score, error }` contract. `laya.ts` documents all four `SystemOneAnswer`
- * fields for one System One answer, so an engine (or a scripted test judge)
- * may legitimately carry them; reading them through optional fields is how we
- * never hard-depend on the UNVERIFIED `choice`/`noul` primitives while still
- * accepting them when they arrive.
+ * What a live gateway might hand back, on top of `Judge`'s declared contract.
+ *
+ * `JudgeResult` already carries `score`/`choice`/`probability`/`confidence`,
+ * so a live engine's answers arrive typed. This wider shape stays because an
+ * engine — or a scripted test judge — may ALSO nest the whole per-question
+ * `answers` map the gateway returns (the battery asks one lever-named question
+ * per call, and the gateway answers under that key); `readAnswer` prefers the
+ * asked lever's entry and falls back to the flat fields.
  */
 interface WideResult {
   score?: number
@@ -572,7 +576,7 @@ type ReadOutcome =
  * abort the battery — except when EVERY question errors, which
  * `proposeOptimizations` reports as the judge being unavailable.
  */
-function readAnswer(entry: BatteryEntry, result: { score: number | undefined, error?: string }): ReadOutcome {
+function readAnswer(entry: BatteryEntry, result: JudgeResult): ReadOutcome {
   const wide = result as unknown as WideResult
   const candidate = wide.answers?.[entry.lever] ?? pickAnswerFields(wide)
   const hasField = candidate.score !== undefined || candidate.probability !== undefined
@@ -584,7 +588,7 @@ function readAnswer(entry: BatteryEntry, result: { score: number | undefined, er
     case 'score': {
       const s = candidate.score
       if (typeof s !== 'number' || !Number.isFinite(s)) return { skip: 'no numeric score in the answer' }
-      if (!isBookScore(s)) {
+      if (s < 0 || s > 3) {
         // REJECT, not clamp. judge.ts's parseScore refused out-of-range values
         // for the same reason, stated there as: "silently clamping it would
         // turn a confused judge into a confident one." A 7 means the judge is
@@ -592,7 +596,14 @@ function readAnswer(entry: BatteryEntry, result: { score: number | undefined, er
         // would be the worst advice in the file.
         return { skip: `score ${String(s)} is outside 0–3 — rejected, not clamped (see judge.ts parseScore)` }
       }
-      return { answer: candidate, confidence: engineConfidence(candidate) }
+      // ROUND, not reject, inside the band. A live non-autoregressive engine
+      // answers score questions with an expected level (0.89, 1.41…), not an
+      // integer — rejecting every float would reject every real answer while
+      // the scripted tests' integers sailed through. Rounding is NOT clamping:
+      // the value already lies on the scale, and the nearest level is what the
+      // rubric means by it. Verified live 2026-09-23: Laya's 0.89 → 1.
+      const level = Math.round(s)
+      return { answer: { ...candidate, score: level }, confidence: engineConfidence(candidate) }
     }
     case 'choice': {
       const labels = entry.labels ?? []
@@ -892,7 +903,7 @@ export async function proposeOptimizations(
   const skips: { lever: Lever; detail: string }[] = []
 
   for (const entry of entries) {
-    let result: { score: number | undefined, error?: string }
+    let result: JudgeResult
     try {
       result = await judge.score(state, { [entry.lever]: entry.question })
     } catch (error) {
