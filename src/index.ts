@@ -85,15 +85,13 @@ export interface Config {
    */
   dashboard?: DashboardConfig
   /**
-   * The refinement-loop knobs (`loops`, `derive`, `history`, `judge`,
-   * `totalBudgetUSD`). Omitted means no refinement — today's behaviour,
-   * exactly.
-   *
-   * Validated field-by-field at load by `parseOptimizeConfig` even though
-   * nothing consumes it yet: a typo must fail when the plugin loads, not the
-   * day the refinement wiring lands. The wiring itself belongs to a later
-   * phase — deliberately not forwarded to `applyFeatureLoop` here, so the
-   * validation is live without inventing behaviour nothing reads.
+   * The optimization block (`loops`, `derive`, `history`, `judge`,
+   * `totalBudgetUSD`). The block is validated at load and forwarded to the
+   * plugin, which uses it for exactly what a deployed loop can use: `derive`
+   * and `history` drive the run-history recording and the dashboard's Metrics
+   * payload, while `loops`/`totalBudgetUSD` are accepted but intentionally not
+   * consumed by any hook — iteration belongs to the caller (the CLI's
+   * `runRefined`), not to a step waterfall. See `OptimizePolicyOptions`.
    */
   optimize?: OptimizeConfig
 }
@@ -130,14 +128,16 @@ export function apply(ctx: Context, config: Config = {}): (() => void) | void {
   // Fail at load, before any listener registers — the same rule as the spec
   // and the dashboard block: a misconfigured optimize band stops the plugin
   // from loading; it never degrades into a refinement loop nobody meant to
-  // start, and it is validated even though nothing consumes the block yet.
-  if (config.optimize !== undefined) parseOptimizeConfig(config.optimize)
+  // start. The parsed block is forwarded so the plugin can record history and
+  // feed the dashboard's Metrics panel from it.
+  const optimize = config.optimize === undefined ? undefined : parseOptimizeConfig(config.optimize)
   return applyFeatureLoop(ctx, {
     spec: config.spec,
     confidenceThreshold: config.confidenceThreshold,
     gatePolicies: config.gatePolicies,
     gateMode: config.gateMode,
     dashboard: config.dashboard,
+    optimize,
     router: {
       ...(config.reviewBudget === undefined ? {} : { reviewBudget: config.reviewBudget }),
       ...(config.judgeThreshold === undefined ? {} : { judgeThreshold: config.judgeThreshold }),

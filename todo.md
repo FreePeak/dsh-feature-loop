@@ -182,6 +182,7 @@ rather than hand-editing it.
 | Setup guide independently QA'd; all 9 failures fixed | `QA-FINAL.md` |
 | Panel rendering is covered by the harness itself | `VERIFY-PANEL-EVIDENCE.md` |
 | HITL approval dashboard: guard, fail-closed, auth, POST path | `VERIFY-DASHBOARD.md` — 194 unit + 11/11 integration + live HTTP transcript + browser click verified via `make e2e-dashboard` |
+| Optimize composition wired both ways: CLI derives + advises, plugin records + rolls up | `src/optimize.ts` + `test/optimize.test.ts` + plugin turn-end wiring; proposals stay CLI-only |
 
 ---
 
@@ -193,5 +194,5 @@ rather than hand-editing it.
 - **Do not edit `~/.dsh/settings.yaml`** without asking — use a private
   `DSH_HOME` (`docs/RUNBOOK-SERVER.md` §2.6).
 - **Never disturb ports 3081 / 3097 / 3099** if the user's GUI is running.
-- **Verify before claiming.** `151/151` + `tsc --noEmit` + the integration test
+- **Verify before claiming.** `238/238` + `tsc --noEmit` + the integration test
   (9/9) is the floor.

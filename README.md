@@ -288,20 +288,40 @@ the field and the 3–10 band):
 - id: feature-loop
   config:
     optimize:
-      loops: 3              # refinement passes, integer 3–10
-      derive: true          # envelopes from run history, not hand-set numbers
-      # history: .feature-loop/runs.jsonl   # override the history path
-      # judge: chat         # none | chat | laya — who scores across passes
-      # totalBudgetUSD: 3.00  # refinement budget; default derived × loops × 0.6
+      loops: 3              # refinement passes, integer 3–10 (CLI `runRefined` only)
+      derive: true          # accepted; the CLI's `--derive` derives envelopes, the plugin records the history they come from
+      history: .feature-loop/runs.jsonl   # run-history file: the plugin appends one line per closed turn and feeds Metrics from it
+      # judge: chat         # none | chat | laya — who scores across passes (CLI only)
+      # totalBudgetUSD: 3.00  # refinement budget; default derived × loops × 0.6 (CLI only)
 ```
 
-Every run appends one line to `.feature-loop/runs.jsonl` (JSONL, Node builtins
-only); the envelope (`maxSteps`, `costBudgetUSD`, success command) is derived
-from the P95 of that history with +30% headroom, and the dashboard gains
-**Metrics** (cost / speed / quality tiles with baselines and alerts) and
-**Optimizations** (one copy-ready card per proposal). Proposals are display
-only — applying one means copying its snippet by hand; there is deliberately
-no endpoint that lets the judge loosen its own ceilings.
+Two halves, split where they belong:
+
+- **The CLI derives and advises.** Every CLI run appends one line to the
+  history file (JSONL, Node builtins only). With `--derive`, the next run's
+  envelope (`maxSteps`, `costBudgetUSD`) is the P95 of *this goal's* recorded
+  runs plus 30% headroom — an explicit `--max-steps`/`--budget` is a pin and is
+  never overridden, and the configured budget is a cap the derivation may
+  tighten but never raise. The run then prints its Metrics roll-up and the
+  judge's proposals. With too little history (under five usable runs) nothing
+  is applied — a floor is not a measurement. Every number's provenance is
+  printed.
+- **The plugin records and rolls up.** On `session/event` `turn/end` — the
+  exactly-once run seam, which a pre-step reject also closes through — the
+  plugin appends one record built from metered numbers only (budget snapshot
+  for steps/cost/unpriced steps, `latencyKind: 'round-trip'`), then refreshes
+  the dashboard's **Metrics** panel from the file. The judge battery is
+  deliberately NOT asked on this path: one hot-path event must stay cheap, so
+  **Optimizations** proposals stay a CLI affair until a cheaper cadence exists.
+  Records are written whether or not the dashboard page is up, so a headless
+  deployment with `history:` still learns.
+
+Proposals are display only — applying one means copying its snippet by hand;
+there is deliberately no endpoint that lets the judge loosen its own ceilings.
+`loops`/`totalBudgetUSD` are validated at load but consumed only by the CLI's
+`runRefined`: iteration belongs to the caller, not to a step waterfall, so a
+plugin config that granted passes from inside a hook would be a timeout wearing
+a feature hat.
 
 **The guard is the safety property.** The dashboard's answerer is registered
 ahead of every other `approval/request` listener — required, because the
@@ -552,7 +572,10 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 - **Phase 2c — Laya-guided optimization** ✅ `optimize:` block, run history,
   derived envelopes, metrics, Laya-as-advisor proposals (display only),
   refinement passes with the book's < 0.05 stop rule, and SSE metrics +
-  recommendations on the dashboard snapshot.
+  recommendations on the dashboard snapshot. Composition is wired both ways:
+  the CLI derives envelopes and prints metrics + proposals (`--derive`), the
+  plugin records one history line per closed turn and feeds Metrics from the
+  file (`optimize.history`); proposals stay CLI-only so the hot path stays cheap.
 - **Phase 3 — Laya** ⬜ deploy the `systemone` provider in onegw, switch `--judge laya`
 
 ### Verifying the whole thing
