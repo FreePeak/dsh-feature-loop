@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **De-forked.** The package no longer vendors `@deepseek-ai/dsh-agent-loop`.
+  Nine copied files (~3,064 lines) and the whole fork-maintenance apparatus —
+  `scripts/sync-upstream.sh`, `upstream.lock`, `cordis.patch.yml`, and the
+  `FORK-DELTA` marker convention — were removed and replaced by
+  `src/plugin.ts` (368 lines) hosting the same policies on the harness's own
+  extension points: `agent/pre-step`, `agent/request`, `tools/pre-execute`.
+  Rationale, per-file line counts and acceptance criteria: `docs/PRD.md`.
+
+### Fixed
+
+- **The review gate now denies before dispatch.** The fork consulted its gate
+  from a vendored copy of `executeToolCalls`, so a gate-raised review arrived
+  *one step late*, after the tool had already run. Hosting the gate on
+  `tools/pre-execute` — which returns a first-class `PreToolDecision`
+  (`allow`/`deny`/`ask`) — denies the call before it is dispatched. This closes
+  the defect the fork filed as an unfinished refinement.
+
 ### Added
 
 - Standard open-source community documents: `LICENSE` (MIT),

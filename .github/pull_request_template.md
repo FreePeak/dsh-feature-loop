@@ -4,8 +4,8 @@ this repository is the target: what changed, why, what it replaced, and the bugs
 found on the way — each with its mechanism, not just its symptom.
 
 CI runs the test suite and the harness-free typecheck on Node 22. The plugin path
-(`src/agent.ts`, `src/index.ts`) is not typechecked in CI and the demo is not run
-there at all, so say in Notes what you checked by hand.
+(`src/plugin.ts`) is not typechecked in CI and the demo is not run there at all,
+so say in Notes what you checked by hand.
 -->
 
 ## Summary
@@ -26,7 +26,7 @@ mechanism: a reviewer should be able to see why it was invisible.
 - [ ] `node --experimental-strip-types --test test/*.test.ts` passes (126 tests)
 - [ ] `pnpm typecheck` — or `tsc --noEmit` by path — is clean
 - [ ] No new dependencies, or the one added is justified below. The policy layer is deliberately stdlib-only.
-- [ ] Every edit inside a vendored file is marked `FORK-DELTA(n):` on its own line, and `bash scripts/sync-upstream.sh` still applies cleanly
+- [ ] No file is vendored from `deepseek-harness`; new policy hangs off a harness event in `src/plugin.ts`
 - [ ] New or changed thresholds cite their provenance in `BOOK_THRESHOLDS`, or say why they are a guard rather than a playbook number
 - [ ] Non-trivial logic leaves one runnable test behind — one that fails if the logic breaks
 - [ ] `README.md` and `CHANGELOG.md` updated if behaviour, ceilings or the review rate changed

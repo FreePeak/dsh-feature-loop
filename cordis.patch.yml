@@ -1,57 +1,79 @@
-# Fork of @deepseek-ai/dsh-agent-loop: book-shaped budget, routing, review.
+# The feature-loop plugin's patch layer.
 #
-# Replaces the upstream agent-loop row with our own, which carries the
-# 8-dimension spec, step/cost ceilings, cheap-first routing, and the
-# attention router. When the spec is omitted, the upstream behaviour is
-# reproduced exactly — no ceilings, one route — which is what keeps
-# this fork comparable against its parent for the parity harness.
+# Applied after the profile's own bundles, this inserts ONE row: the plugin
+# itself. It does not disable or replace the harness's agent loop — that is the
+# whole point of the de-fork. The loop keeps running upstream's implementation,
+# and these policies hang off its published extension points:
+#
+#   agent/pre-step     step and cost ceilings, the detectors, the judge, the gate
+#   agent/request      the cheap-first ladder
+#   tools/pre-execute  the reversibility gate, denying BEFORE dispatch
+#
+# With `spec` omitted the row loads and does nothing, which makes it safe to add
+# to a profile before you have decided on a budget. Supplying `spec` turns the
+# policies on; `validateSpec` rejects an incomplete one at load, naming every
+# missing dimension rather than failing halfway through a run.
 
-# 1. Disable upstream's agent-loop — same id, same type, different behaviour.
-- id: agent-loop
-  disabled: true
-
-# 2. Insert our own, which owns the same AgentFactory slot.
 - insert:
-    - id: agent-loop
+    - id: feature-loop
       name: '@freepeak/dsh-feature-loop'
       config:
-        agents: []
-        # Example spec — uncomment and adapt for your project:
+        # The attention router. Both optional; defaults shown.
+        reviewBudget: 0.10      # ask the human about <10% of steps
+        judgeThreshold: 2       # judge score (0-3) that earns a look
+
+        # Per-tool gate overrides, by tool name. A tool absent here falls back to
+        # its reversibility class from the spec's `actuator`, and an
+        # UNCLASSIFIED tool is `irreversible` — the fail-closed direction.
+        gatePolicies:
+          read_file: auto
+          list_files: auto
+          run_tests: auto
+          edit_file: auto-if-confident
+          write_file: auto-if-confident
+
+        # ────────────────────────────────────────────────────────────────────
+        # The 8-dimension spec. Uncomment to switch the policies ON.
         #
+        # All eight dimensions are required and validated at load:
+        #   goal · sensor · controller · actuator · feedback · termination
+        #   maxSteps · costBudgetUSD  (plus `prices`, without which the cost
+        #   ceiling measures against an unknown price and silently reads zero)
+        # ────────────────────────────────────────────────────────────────────
         # spec:
-        #   goal: "the failing test in auth.spec.ts passes and no other test breaks"
+        #   goal: "the failing test in demo/test passes and no other test breaks"
         #   sensor: ["repo files", "test output"]
+        #
         #   controller:
         #     ladder:
-        #       - model: deepseek-v4-flash   # cheap — most steps live here
-        #       - model: deepseek-v4-pro     # strong — only when flash fails
+        #       - provider: deepseek-official
+        #         model: deepseek-v4-flash    # cheap — most steps live here
+        #       - provider: deepseek-official
+        #         model: deepseek-v4-pro      # strong — only on evidence
         #     stepsPerRung: 5
         #     escalateAfterFailures: 2
+        #
         #   actuator:
-        #     read: read
-        #     edit: reversible-write
+        #     read_file: read
+        #     list_files: read
         #     run_tests: read
+        #     edit_file: reversible-write
+        #     write_file: irreversible
+        #
         #   feedback: "all tests pass, and the diff is the smallest that achieves it"
+        #
         #   termination:
         #     successCommand: "npm test"
         #     guards: ["error-cascade", "tool-cycle"]
+        #
         #   maxSteps: 15
-        #   costBudgetUSD: 1.0
+        #   costBudgetUSD: 1.00
+        #
         #   prices:
         #     deepseek-official/deepseek-v4-flash:
         #       inputPerMTok: 0.14
         #       outputPerMTok: 0.28
         #       cacheReadPerMTok: 0.014
         #     deepseek-official/deepseek-v4-pro:
-        #       inputPerMTok: 2.5
-        #       outputPerMTok: 10.0
-        #
-        # judge:
-        #   baseURL: "http://127.0.0.1:8080"
-        #   model: "laya"
-        #   timeoutMs: 3000
-        #
-        # review:
-        #   confidenceThreshold: 0.7
-        #   judgeThreshold: 2
-        #   reviewBudget: 0.10
+        #       inputPerMTok: 2.50
+        #       outputPerMTok: 10.00

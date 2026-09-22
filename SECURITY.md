@@ -108,9 +108,8 @@ consulting the ceiling is a bug worth reporting, not only a cost problem.
 The `demo/` directory is a fixture. It contains a deliberately planted bug (a
 nearest-rank off-by-one in `demo/src/latency-window.ts`) and its own test suite,
 some of which is expected to fail until the loop fixes the bug. Its code is not
-shipped — `package.json` publishes only `lib/`, the generated types, and
-`cordis.patch.yml`. Do not report the planted bug, or anything else in `demo/`,
-as a vulnerability.
+shipped — `package.json` publishes only `lib/` and the generated types. Do not
+report the planted bug, or anything else in `demo/`, as a vulnerability.
 
 ## Known limits that are not vulnerabilities
 

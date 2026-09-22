@@ -16,21 +16,20 @@
 #
 # `test` needs none of that: the suite is dependency-free, and this job runs it
 # on a checkout with no node_modules at all. That is deliberate and worth
-# keeping. `src/messages.ts` holds the notice *text* and imports nothing;
-# `src/notices.ts` wraps that text for the harness. While both lived in one file,
-# `src/runner.ts` inherited `@deepseek-ai/dsh-llm` through it, and the suite
-# needed a harness package installed before it would run — the purity claim was
-# false and CI had to work around it. Keep the split.
+# keeping. `src/messages.ts` holds the notice *text* and imports nothing, which
+# is what keeps the suite runnable with nothing installed. `src/runner.ts` must
+# never import a harness package directly or through a helper — that is what
+# would break this job, not the plugin's own imports.
 #
 # `typecheck` deliberately does not run `tsc -p tsconfig.json`. `tsconfig.json`
-# includes all of `src`, and eight of those files import `@deepseek-ai/dsh-*` or
+# includes all of `src`, and `src/plugin.ts` imports `@deepseek-ai/dsh-*` and
 # `@deepseek-ai/cordis` at versions CI cannot resolve, so a project-wide run dies
 # with TS2307 on those imports (and TS2318 on the global `Disposable` type)
 # before any real type checking happens — verified. The job instead typechecks
-# the thirteen files whose import closure is harness-free, using the same
-# compiler options as `tsconfig.json`. `src/agent.ts`, `src/index.ts` and
-# `src/notices.ts` — the plugin path — are therefore NOT typechecked here; they
-# are covered locally, against the prebuilt harness packages in the maintainer's
+# the files whose import closure is harness-free, using the same compiler options
+# as `tsconfig.json`. `src/plugin.ts` — the only harness-coupled module left
+# since the fork was removed — is therefore NOT typechecked here; it is covered
+# locally, against the prebuilt harness packages in the maintainer's
 # node_modules. See the README's "Known limits".
 #
 # ---------------------------------------------------------------------------
@@ -131,10 +130,13 @@ jobs:
       # --typeRoots points into the scratch prefix: @types/node is not, and must
       # not be, a dependency of this repository.
       #
-      # The list is the import closure with no `@deepseek-ai/*` in it. The eight
-      # files left out — agent.ts, assistant-stream.ts, inbox.ts, index.ts,
-      # invariant.ts, notices.ts, runtime-context.ts, tool-calls.ts — cannot be
-      # checked until the harness packages are resolvable in CI. Add a new pure
+      # The list is the import closure with no `@deepseek-ai/*` in it, plus
+      # src/plugin.ts, which does import the harness — see the note below.
+      #
+      # Since the fork was removed, src/ holds exactly one harness-coupled
+      # module (`plugin.ts`) instead of eight. It is still excluded here for the
+      # same reason as before: the harness packages are not resolvable in CI.
+      # It is covered locally against the prebuilt packages. Add a new pure
       # module to this list; a module that gains a harness import must leave it.
       - name: tsc --noEmit
         run: |
@@ -143,7 +145,7 @@ jobs:
             --strict --esModuleInterop --skipLibCheck --isolatedModules \
             --allowImportingTsExtensions \
             --typeRoots "$RUNNER_TEMP/ts/node_modules/@types" \
-            src/agent-policy.ts src/budget.ts src/cli.ts src/constants.ts \
+            src/agent-policy.ts src/budget.ts src/cli.ts \
             src/judge.ts src/laya.ts src/llm.ts src/messages.ts src/prompts.ts \
             src/review.ts src/routing.ts src/runner.ts src/signals.ts src/spec.ts \
             src/tools.ts
