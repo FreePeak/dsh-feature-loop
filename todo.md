@@ -11,48 +11,45 @@ on purpose.
 
 ## P0 — Not yet committed (do this first)
 
-**All of this session's work is uncommitted.** `origin/main` is `ea48b03`; the
-working tree has 9 modified files and 18 new paths. If this machine is lost, so
-is the approval feature, the Docker path, the runbook, and the install fix.
+**The approval + Docker work IS committed and pushed** (`04326cd`, `2f93906` on
+`feat/human-approval-and-docker`, **PR #9 open**, `origin/main` still `ea48b03`).
+
+**The approval dashboard from this session is NOT.** 13 paths (9 modified + 4
+new) hold the whole feature — server, page, wiring, tests, deployment config,
+docs. If this machine is lost, so is it.
 
 ```bash
 cd dsh-feature-loop
 git log --oneline origin/main -1     # ea48b03
-git status --short | wc -l           # 27
+git status --short | wc -l           # 13
 ```
 
 The uncommitted set:
 
-- **modified:** `.github/workflows/ci.yml`, `README.md`, `cordis.patch.yml`,
-  `docs/PRD.md`, `docs/SETUP.md`, `package.json`, `src/cli.ts`, `src/index.ts`,
-  `src/plugin.ts`
-- **new:** `HANDOFF.md`, `todo.md`, `Makefile`, `.dockerignore`, `.npmrc`, `docker/` (6 files),
-  `test/plugin-approval.test.ts`, `test/integration/` (3 files),
-  `docs/RUNBOOK-SERVER.md` and 8 other `docs/` files
+- **modified:** `.github/workflows/ci.yml`, `Makefile`, `README.md`,
+  `cordis.patch.yml`, `docker/docker-compose.yml`, `docker/profile.patch.yml`,
+  `src/index.ts`, `src/plugin.ts`, `test/integration/plugin-in-dsh.spec.ts`
+- **new:** `src/dashboard.ts`, `src/dashboard-page.ts`,
+  `test/dashboard.test.ts`, `docs/VERIFY-DASHBOARD.md`
 
-Plan, matching what PR #8 did:
+Plan:
 
-1. `git checkout -b feat/human-approval-and-docker origin/main` — branch **off
-   origin/main**. Confirm the base before committing; a stale base is what
-   nearly produced a reverting PR last time.
-2. Stage all paths. Confirm `lib/` and `node_modules/` are **not** staged
-   (`lib/` is gitignored; `.dockerignore` is not a substitute guard).
-3. Re-run before committing: `make verify` (compose-check + 133 tests +
-   typecheck + the 5/5 integration spec).
-4. Commit, push, open a PR, wait for CI (both `test` and `typecheck` run on the
-   self-hosted runner; `gitStream.cm` shows `skipping` and is not a merge gate),
-   then merge.
-5. **Call out two changes in the PR body that go beyond the approval feature:**
-   - `src/cli.ts` — the gateway key lookup accepted only `ONEGE_API_KEY` while
-     the DSH store records `ONEGW_API_KEY`, so `demo/run.sh` failed while
-     claiming the key was absent from a file that contained it.
-   - `package.json` — devDependencies pinned unpublished harness *workspace*
-     versions, so **`pnpm install` could not succeed at all**. Affects anyone
-     installing this repo.
+1. Re-run the floor first: `make verify` (compose-check + 151 tests +
+   typecheck + the 9/9 integration spec) — already green this session, re-run
+   before committing.
+2. Commit on the SAME branch (`feat/human-approval-and-docker`) so PR #9 gains
+   the dashboard; push; wait for CI (both jobs on the self-hosted runner;
+   `gitStream.cm` shows `skipping` and is not a merge gate).
+3. In the PR body: the dashboard is a new opt-in surface (`dashboard:` config),
+   loopback + token; a tab-less deployment behaves byte-identically to the
+   composer-only path (4 new integration probes prove it). The one open item:
+   the rendered page's button click in a real browser
+   (`docs/VERIFY-DASHBOARD.md`) — record it as UNVERIFIED until someone does it.
 
-Also decide: Dependabot PRs #3-#7 are open. #3 and #4 (Actions bumps) are low
-risk. #5, #6, #7 (tsdown, zod, typescript — all major) are **not** proven safe by
-green CI, because `src/plugin.ts` is excluded from the CI typecheck job.
+Older carry-overs, still true: Dependabot PRs #3-#7 are open. #3 and #4
+(Actions bumps) are low risk. #5, #6, #7 (tsdown, zod, typescript — all major)
+are **not** proven safe by green CI, because `src/plugin.ts` is excluded from
+the CI typecheck job.
 
 ## P0 — A human should click the panel by hand
 
@@ -64,6 +61,39 @@ chooser.
 
 Either click it yourself, or decide the automated proof is sufficient and record
 that decision here. If the UI confuses you, that confusion is a real finding.
+
+## P0 — A human should click the DASHBOARD's Allow once by hand
+
+Same shape as the section above, for the new surface: server, guard, auth,
+fail-closed paths, and the exact endpoint the buttons call are verified over
+real HTTP, but no browser has executed the page's own JavaScript. The
+two-minute script (bring-up + three checks) is in
+[`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md); record the outcome
+there.
+
+## P1 — Docker: isolated data mount (sessions, …)
+
+Give the container a **new, separate volume** for its data (sessions, logs,
+profile state) instead of sharing/`dsh-fl-data` semantics — an isolated mount
+so feature-loop data can be reset, backed up, or reused independently.
+Touches `docker/docker-compose.yml` (named volume + `name:` pin, per the
+existing `dsh-fl-data` lesson), `Makefile` (`VOLUME`, `clean`, `ports`
+messaging), and `docker/README.md`. Keep the loopback-only posture and the
+`FORCE_REINIT` re-seed story coherent when the mount point changes.
+
+## P1 — Model routing: `execution` (executor) and `planning` (planner) from onegw
+
+The seeded ladder in `docker/profile.patch.yml` is single-rung
+(`onegw/opencode/deepseek-v4.1-flash`). Split it into the two roles:
+
+- **executor** → the `execution` model from onegw
+- **planner** → the `planning` model from onegw
+
+Confirm the exact model ids against the gateway config before editing, update
+the `prices:` keys to match, and decide where role-splitting belongs
+(`spec.controller.ladder` vs a harness `model-selection` concern — see the P2
+routing item below). Acceptance: a containerised run visibly routes the two
+roles, and the cost ceiling still prices what actually runs.
 
 ## P1 — Meter real spend into `LoopBudget.spend()`
 
@@ -146,6 +176,7 @@ rather than hand-editing it.
 | `pnpm install` works on a clean clone | `package.json` + `.npmrc`; `QA-FINAL.md` row 1 |
 | Setup guide independently QA'd; all 9 failures fixed | `QA-FINAL.md` |
 | Panel rendering is covered by the harness itself | `VERIFY-PANEL-EVIDENCE.md` |
+| HITL approval dashboard: guard, fail-closed, auth, POST path | `VERIFY-DASHBOARD.md` — 151 unit + 9/9 integration + live HTTP transcript (one browser click still UNVERIFIED) |
 
 ---
 
@@ -157,5 +188,5 @@ rather than hand-editing it.
 - **Do not edit `~/.dsh/settings.yaml`** without asking — use a private
   `DSH_HOME` (`docs/RUNBOOK-SERVER.md` §2.6).
 - **Never disturb ports 3081 / 3097 / 3099** if the user's GUI is running.
-- **Verify before claiming.** `133/133` + `tsc --noEmit` + the integration test is
-  the floor.
+- **Verify before claiming.** `151/151` + `tsc --noEmit` + the integration test
+  (9/9) is the floor.

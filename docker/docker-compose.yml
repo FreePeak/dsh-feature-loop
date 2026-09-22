@@ -27,6 +27,10 @@ services:
       # network"), and publishing to 127.0.0.1 on the host keeps that same
       # posture: the UI is reachable from this machine and nowhere else.
       - "127.0.0.1:${DSH_HOST_PORT:-3090}:8099"
+      # The HITL approval dashboard (container-internal 8100, see
+      # docker/profile.patch.yml). Same loopback-only posture as the UI —
+      # this surface can wave tool calls through, so it never publishes wider.
+      - "127.0.0.1:${DSH_DASHBOARD_PORT:-3092}:8100"
 
     environment:
       # The gateway key. Referenced by name from settings.yaml (`apiKeyEnv`), so

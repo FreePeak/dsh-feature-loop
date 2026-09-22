@@ -50,6 +50,24 @@
         gateMode: ask
 
         # ────────────────────────────────────────────────────────────────────
+        # The HITL approval dashboard: a loopback web page that answers this
+        # loop's approval requests and shows the run live (step, spend, gate
+        # decisions). Omitted here = no server; the composer panel stays the
+        # only channel, exactly as before the dashboard existed.
+        #
+        # Uncomment to run it in this (non-container) profile. Defaults shown:
+        # binds 127.0.0.1 only, token is generated per start and printed as
+        # `feature-loop dashboard: http://…/?token=…` in the log.
+        #
+        # dashboard:
+        #   enabled: true
+        #   host: 127.0.0.1     # the only accepted values are 127.0.0.1 / 0.0.0.0
+        #   port: 8100
+        #   answers: true       # false = observe only; composer keeps answering
+        #   answerTimeoutMs: 600000   # ask fails closed to `unavailable` after this
+        # ────────────────────────────────────────────────────────────────────
+
+        # ────────────────────────────────────────────────────────────────────
         # The 8-dimension spec. Uncomment to switch the policies ON.
         #
         # All eight dimensions are required and validated at load:

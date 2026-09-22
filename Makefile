@@ -28,6 +28,9 @@ COMPOSE      ?= docker compose -f docker/docker-compose.yml
 SERVICE      ?= dsh-feature-loop
 VOLUME       ?= dsh-fl-data
 HOST_PORT    ?= 3090
+# The HITL approval dashboard's published host port (compose maps it to the
+# container's 8100). 3092 sits clear of the protected ports and of 3090/3091.
+DASHBOARD_PORT ?= 3092
 DSH_HARNESS  ?= $(HOME)/work/harvey/freepeak/deepseek-harness
 CREDENTIALS  ?= $(HOME)/.dsh/.credentials.yaml
 
@@ -65,7 +68,7 @@ help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN {FS = ":.*?## "}; {printf "    \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 	@echo
-	@echo "  variables: HOST_PORT=$(HOST_PORT)  SERVICE=$(SERVICE)  VOLUME=$(VOLUME)"
+	@echo "  variables: HOST_PORT=$(HOST_PORT)  DASHBOARD_PORT=$(DASHBOARD_PORT)  SERVICE=$(SERVICE)  VOLUME=$(VOLUME)"
 	@echo "             DSH_HARNESS=$(DSH_HARNESS)"
 	@echo
 	@echo "  protected ports (never touched by these targets): $(PROTECTED_PORTS)"
@@ -94,6 +97,7 @@ up: ## Start the container detached, then print the URL and token
 	  if [ "$$code" = "401" ] || [ "$$code" = "200" ]; then \
 	    echo "  up (HTTP $$code)"; \
 	    $(MAKE) --no-print-directory url; \
+	    $(MAKE) --no-print-directory dashboard; \
 	  else \
 	    echo "  ! the UI did not answer on :$(HOST_PORT) (last code: $$code)"; \
 	    echo "    logs:"; $(COMPOSE) logs --tail 30; exit 1; \
@@ -138,6 +142,21 @@ url: ## Print the UI URL including its token
 	    echo "  (the token rotates on every boot)"; \
 	  fi
 
+.PHONY: dashboard
+dashboard: ## Print the approval dashboard URL including its token
+	@# Mirrors `url`: the container logs ONE `feature-loop dashboard:` line on
+	@# bind, carrying the generated token. The line's URL is the CONTAINER's
+	@# view (127.0.0.1:8100); from the host it is the published loopback port.
+	@line=$$(docker logs $(SERVICE) 2>/dev/null | grep -oE 'feature-loop dashboard: http://[^ ]+' | tail -1); \
+	  token=$$(printf '%s' "$$line" | grep -oE 'token=[A-Za-z0-9_-]+' | cut -d= -f2); \
+	  if [ -z "$$token" ]; then \
+	    echo "  no dashboard line yet — dashboard disabled, or the profile was seeded before"; \
+	    echo "  it existed (re-seed with: FORCE_REINIT=1 make up), or try: make logs"; \
+	  else \
+	    echo "  open: http://127.0.0.1:$(DASHBOARD_PORT)/?token=$$token"; \
+	    echo "  (loopback only; the token rotates on every boot)"; \
+	  fi
+
 .PHONY: health
 health: ## Show container status and the HTTP probe
 	@docker ps -a --filter "name=^$(SERVICE)$$" --format '  {{.Names}}  {{.Status}}  {{.Image}}' || true
@@ -167,7 +186,7 @@ check: test typecheck ## Run the test suite and the typecheck
 	@echo "  check passed"
 
 .PHONY: test
-test: ## Run the unit test suite (133 tests, no network)
+test: ## Run the unit test suite (151 tests, no network)
 	@node --experimental-strip-types --test test/*.test.ts 2>&1 | tail -8
 
 .PHONY: typecheck
@@ -198,7 +217,8 @@ typecheck: ## Typecheck src/ (mirrors the CI file list)
 	  fi
 
 # The harness-free import closure, exactly as CI lists it.
-CI_FILES := src/agent-policy.ts src/budget.ts src/cli.ts src/judge.ts src/laya.ts \
+CI_FILES := src/agent-policy.ts src/budget.ts src/cli.ts src/dashboard.ts \
+            src/dashboard-page.ts src/judge.ts src/laya.ts \
             src/llm.ts src/messages.ts src/prompts.ts src/review.ts src/routing.ts \
             src/runner.ts src/signals.ts src/spec.ts src/tools.ts
 
@@ -217,7 +237,7 @@ verify: compose-check check integration ## Everything CI runs, plus the integrat
 # ── safety ─────────────────────────────────────────────────────────────────
 .PHONY: ports
 ports: ## Show which of the protected ports are in use (do not disturb them)
-	@for p in $(PROTECTED_PORTS) 3090; do \
+	@for p in $(PROTECTED_PORTS) 3090 $(DASHBOARD_PORT); do \
 	  code=$$(curl -s -o /dev/null -m 2 -w '%{http_code}' http://127.0.0.1:$$p/ || true); \
 	  if [ "$$code" = "000" ] || [ -z "$$code" ]; then echo "  $$p  free"; \
 	  else echo "  $$p  in use (HTTP $$code)"; fi; \

@@ -15,6 +15,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { apply as applyFeatureLoop } from './plugin.ts'
 import type { CreatePolicyOptions, FeatureLoopPolicy } from './plugin.ts'
+import type { DashboardConfig } from './dashboard.ts'
 
 export {
   apply as applyListeners,
@@ -69,6 +70,16 @@ export interface Config {
    *            runs where no human is watching.
    */
   gateMode?: 'ask' | 'deny'
+  /**
+   * The HITL approval dashboard: a loopback web page for answering this loop's
+   * approval requests and watching the run. Omitted (or `enabled` not `true`)
+   * means no server starts — the composer panel remains the only channel,
+   * exactly as before this feature existed.
+   *
+   * Validated field-by-field by `parseDashboardConfig` even when disabled, so
+   * a typo fails at load rather than when someone flips `enabled` on.
+   */
+  dashboard?: DashboardConfig
 }
 
 /**
@@ -77,7 +88,8 @@ export interface Config {
  * `spec` is deliberately `z.any()`: it is validated far more strictly by
  * `validateSpec` inside `createPolicy`, which names the missing dimensions. A
  * second, weaker schema here would produce a worse error message for the same
- * mistake.
+ * mistake. `dashboard` follows the same rule: `parseDashboardConfig` names the
+ * bad field, and runs even when the dashboard is disabled.
  */
 export const Config: z<Config> = z.object({
   spec: z.any(),
@@ -86,6 +98,7 @@ export const Config: z<Config> = z.object({
   judgeThreshold: z.number(),
   gatePolicies: z.any(),
   gateMode: z.union([z.const('ask'), z.const('deny')]),
+  dashboard: z.any(),
 }) as unknown as z<Config>
 
 /**
@@ -93,14 +106,16 @@ export const Config: z<Config> = z.object({
  *
  * @param ctx - the cordis context to install into.
  * @param config - the deployment's configuration from the patch row.
- * @returns nothing; cordis owns disposal of the registered listeners.
+ * @returns the disposer cordis calls on unload (stops the dashboard too), or
+ * nothing when cordis collects the listener disposers itself.
  */
-export function apply(ctx: Context, config: Config = {}): void {
-  applyFeatureLoop(ctx, {
+export function apply(ctx: Context, config: Config = {}): (() => void) | void {
+  return applyFeatureLoop(ctx, {
     spec: config.spec,
     confidenceThreshold: config.confidenceThreshold,
     gatePolicies: config.gatePolicies,
     gateMode: config.gateMode,
+    dashboard: config.dashboard,
     router: {
       ...(config.reviewBudget === undefined ? {} : { reviewBudget: config.reviewBudget }),
       ...(config.judgeThreshold === undefined ? {} : { judgeThreshold: config.judgeThreshold }),

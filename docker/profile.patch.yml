@@ -33,6 +33,15 @@
       grep: auto
       edit: auto-if-confident
       write: auto-if-confident
+    # The HITL approval dashboard. Inside the container it binds 0.0.0.0 so the
+    # published port can reach it — compose publishes 127.0.0.1:${DSH_DASHBOARD_PORT}
+    # on the host, so the posture stays loopback-only end to end. The token is
+    # generated at start; `make dashboard` rebuilds the URL from the log line.
+    dashboard:
+      enabled: true
+      host: 0.0.0.0
+      port: 8100
+      answers: true
     spec:
       goal: "the failing test passes and no other test breaks"
       sensor: ["repo files", "test output"]

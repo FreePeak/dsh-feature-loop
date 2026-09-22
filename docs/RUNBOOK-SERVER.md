@@ -41,6 +41,8 @@ Work down this list. Each row is an observation, not a claim.
 | 6 | Click **Allow once** | The tool runs, the transcript shows the edit result, and the run continues |
 | 7 | (Optional) Run it again and click **Reject** | The model is told a human refused; no write happens |
 | 8 | Look for `spawn_teammate` / `send_message` / `team_task_*` | Agent Teams is live alongside the loop |
+| 9 | *(Optional — dashboard)* Uncomment the `dashboard:` block in the profile's `cordis.patch.yml`, restart, then `grep 'feature-loop dashboard:' <log>` | A second URL line, `…/?token=…`; opening it serves the approval dashboard page (HTTP 200) |
+| 10 | *(Optional — dashboard)* While a gated step is pending and a dashboard tab is open | The pending card appears on the dashboard; **Allow once** there releases the tool and the composer prompt clears. With **no** dashboard tab, row 5–7 behave exactly as before |
 
 **If row 5 does not happen, in order of likelihood:**
 
@@ -52,6 +54,12 @@ Work down this list. Each row is an observation, not a claim.
    — the panel still appears, but the reason says `always-approve`.
 3. The feature-loop row has no `spec`, so the policies are off entirely — check
    `--dump-config` (§1 step 3).
+
+Rows 9–10 (the approval dashboard) are optional and additive: the dashboard
+claims an ask only while one of its tabs is open, so skipping it changes
+nothing about rows 5–7. What has and has not been verified about it — including
+the one browser click still outstanding — is in
+[`VERIFY-DASHBOARD.md`](VERIFY-DASHBOARD.md).
 
 ### The panel's rendering is already covered by the harness
 
