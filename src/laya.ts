@@ -106,9 +106,9 @@ export interface JudgeResult {
 /** Configuration for the System-One judge client. */
 export interface OnegwJudgeConfig {
   /**
-   * Base URL of a System One provider. The default in the CLI is the local
-   * Laya sidecar (`http://127.0.0.1:8091`). A gateway that forwards the same
-   * contract (onegw, hosted Jev) works by changing only this field.
+   * Base URL of a System One provider. Swap local Laya (`http://127.0.0.1:8091`)
+   * for hosted Jev/TypeSafe by changing only this field (CLI:
+   * `--judge-base-url` / `LAYA_BASE_URL` | `SYSTEMONE_BASE_URL` | `JEV_BASE_URL`).
    */
   baseURL: string
   /** Model alias the provider routes to — `laya`, `laya-multilingual`, or a combo. */

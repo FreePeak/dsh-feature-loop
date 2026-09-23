@@ -47,15 +47,14 @@ interface Options {
   judge: 'none' | 'chat' | 'laya'
   judgeModel: string
   /**
-   * Where the Laya judge lives. Defaults to the local containerised sidecar
-   * at `http://127.0.0.1:8091` — the same System One / Jev / TypeSafe wire,
-   * not the actor's gateway. onegw's `:8080` has no systemone provider, so
-   * `--judge laya` against the actor URL fails every call and latches off.
-   * Split out rather than shared because pointing the whole CLI at `:8091`
-   * would break the actor. Treat Laya like any other decision provider:
-   * change `baseURL` (or `LAYA_BASE_URL`), never the client code.
+   * System One / Jev / TypeSafe provider base URL (not the actor gateway).
+   * Defaults: `LAYA_BASE_URL` → `SYSTEMONE_BASE_URL` → `JEV_BASE_URL` →
+   * `http://127.0.0.1:8091` (local Laya container). Point at hosted Jev the
+   * same way — only this URL (and the model alias) change.
    */
   judgeBaseURL: string
+  /** Model alias the System One provider routes to (`laya`, hosted Jev id, …). */
+  systemOneModel: string
   reviewBudget: number
   auto: boolean
   maxTokens: number
@@ -99,7 +98,11 @@ const USAGE = `dsh-feature-loop — run the loop against a repository
   --max-steps <n>     step ceiling for the run                (default: 15)
   --judge <kind>      none | chat | laya                      (default: chat)
   --judge-model <id>  model the chat judge uses               (default: xiaomi/mimo-v2.5)
-  --judge-base-url <u> Laya sidecar URL (default: http://127.0.0.1:8091)
+  --judge-base-url <u> System One provider URL (Laya/Jev/TypeSafe)
+                      default: $LAYA_BASE_URL | $SYSTEMONE_BASE_URL |
+                               $JEV_BASE_URL | http://127.0.0.1:8091
+  --systemone-model <id> System One model alias               (default: laya;
+                      override with $LAYA_MODEL / $SYSTEMONE_MODEL)
   --review-budget <f> fraction of steps a human may be asked  (default: 0.10)
   --max-tokens <n>    per-step output cap                     (default: 4096)
   --loops <n>         refinement passes, integer 3–10 (default: 1)
@@ -121,6 +124,22 @@ a derivation may tighten it but never raise it. With too little history (under
 five usable runs) nothing is applied — a floor is not a measurement.
 `
 
+
+/**
+ * Resolve the System One provider base URL.
+ *
+ * Same client for local Laya, hosted Jev, or any TypeSafe-compatible gateway:
+ * only the URL changes. Prefer the most specific env name first.
+ */
+function resolveSystemOneBaseURL(): string {
+  return (
+    process.env.LAYA_BASE_URL
+    ?? process.env.SYSTEMONE_BASE_URL
+    ?? process.env.JEV_BASE_URL
+    ?? 'http://127.0.0.1:8091'
+  )
+}
+
 /** Parse argv into options, rejecting unknown flags loudly. */
 function parseArgs(argv: string[]): Options | 'help' {
   const options: Options = {
@@ -134,7 +153,8 @@ function parseArgs(argv: string[]): Options | 'help' {
     maxSteps: 15,
     judge: 'chat',
     judgeModel: 'xiaomi/mimo-v2.5',
-    judgeBaseURL: process.env.LAYA_BASE_URL ?? 'http://127.0.0.1:8091',
+    judgeBaseURL: resolveSystemOneBaseURL(),
+    systemOneModel: process.env.LAYA_MODEL ?? process.env.SYSTEMONE_MODEL ?? 'laya',
     reviewBudget: 0.1,
     auto: false,
     maxTokens: 4096,
@@ -165,6 +185,7 @@ function parseArgs(argv: string[]): Options | 'help' {
       case '--judge': options.judge = value(i, arg) as Options['judge']; i += 1; break
       case '--judge-model': options.judgeModel = value(i, arg); i += 1; break
       case '--judge-base-url': options.judgeBaseURL = value(i, arg); i += 1; break
+      case '--systemone-model': options.systemOneModel = value(i, arg); i += 1; break
       case '--review-budget': options.reviewBudget = Number(value(i, arg)); i += 1; break
       case '--max-tokens': options.maxTokens = Number(value(i, arg)); i += 1; break
       case '--loops': {
@@ -260,8 +281,12 @@ function buildJudge(options: Options, apiKey: string, baseURL: string): { judge:
   if (options.judge === 'none') return { judge: NO_JUDGE, label: 'none (detectors only)' }
   if (options.judge === 'laya') {
     return {
-      judge: new OnegwJudge({ baseURL: options.judgeBaseURL, model: 'laya', timeoutMs: 30000 }),
-      label: `laya (local sidecar, ${options.judgeBaseURL}/v1/systemone)`,
+      judge: new OnegwJudge({
+        baseURL: options.judgeBaseURL,
+        model: options.systemOneModel,
+        timeoutMs: 30000,
+      }),
+      label: `systemone (${options.systemOneModel} @ ${options.judgeBaseURL}/v1/systemone)`,
     }
   }
   return {

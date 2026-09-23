@@ -261,5 +261,5 @@ end). Regenerate rather than hand-edit on future changes.
 - **Do not edit `~/.dsh/settings.yaml`** without asking — use a private
   `DSH_HOME` (`docs/RUNBOOK-SERVER.md` §2.6).
 - **Never disturb ports 3081 / 3097 / 3099** if the user's GUI is running.
-- **Verify before claiming.** unit tests + `tsc --noEmit` + the integration test
+- **Verify before claiming.** `296/296` + `tsc --noEmit` + the integration test
   (9/9) is the floor.

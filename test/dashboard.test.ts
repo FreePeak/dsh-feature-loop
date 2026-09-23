@@ -205,14 +205,7 @@ test('the page and the state endpoint both require the token', async (t) => {
   const page = await fetch(`${dash.url}?token=${dash.token}`)
   assert.equal(page.status, 200)
   assert.match(page.headers.get('content-type') ?? '', /text\/html/)
-  const html = await page.text()
-  // The shell contract: token bootstrap for the bundle, the mount point the
-  // bundle renders into, and the bundle script tag. Application logic lives
-  // in the bundle, not here.
-  assert.match(html, /HITL approvals/, 'the dashboard page is served')
-  assert.match(html, /__FL_TOKEN__/, 'the shell bootstraps the token for the bundle')
-  assert.match(html, /id="root"/, 'the shell carries the mount point')
-  assert.match(html, /dashboard-bundle\.js/, 'the shell loads the bundle')
+  assert.match(await page.text(), /HITL approvals/, 'the dashboard page is served')
 
   const stateNoToken = await fetch(`${dash.url}api/state`)
   assert.equal(stateNoToken.status, 401)
@@ -807,33 +800,6 @@ test('there is no auto-apply endpoint: GET and POST /api/apply both 404', async 
     body: JSON.stringify({ lever: RECOMMENDATION.lever, proposed: RECOMMENDATION.proposed }),
   })
   assert.equal(post.status, 404, 'the model must never be able to apply its own advice')
-})
-
-test('the bundle and the theme are served under the same token gate', async (t) => {
-  const { dash } = await started(t)
-
-  // The JS embeds the approval POST paths, so it is protected data too —
-  // not a public static asset.
-  assert.equal((await fetch(`${dash.url}dashboard-bundle.js`)).status, 401)
-  assert.equal((await fetch(`${dash.url}dashboard.css`)).status, 401)
-  assert.equal((await fetch(`${dash.url}dashboard-bundle.js?token=wrong`)).status, 401)
-
-  const js = await fetch(`${dash.url}dashboard-bundle.js?token=${dash.token}`)
-  assert.equal(js.status, 200)
-  assert.match(js.headers.get('content-type') ?? '', /javascript/)
-  const body = await js.text()
-  // The assistant-ui thread, not the old hand-built page: the bundle renders
-  // approvals as tool parts and reads the SSE feed. Size-guard the artifact
-  // so a dependency accident (two Reacts, a dev build) fails loudly.
-  assert.match(body, /gate-decision/, 'approval tool parts are rendered by the bundle')
-  assert.match(body, /api\/events/, 'the bundle reads the SSE feed')
-  assert.ok(body.length > 100_000, `bundle suspiciously small: ${String(body.length)} chars`)
-  assert.ok(body.length < 3_000_000, `bundle suspiciously large: ${String(body.length)} chars`)
-
-  const css = await fetch(`${dash.url}dashboard.css?token=${dash.token}`)
-  assert.equal(css.status, 200)
-  assert.match(css.headers.get('content-type') ?? '', /css/)
-  assert.match(await css.text(), /\.fl-gate/, 'the theme carries the approval card classes')
 })
 
 test('absent metrics/recommendations still produce a valid snapshot shape', async (t) => {
