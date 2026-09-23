@@ -16,7 +16,7 @@
  *                     call. A brief that cannot be produced is a missing brief,
  *                     never a stuck approval.
  *   never authoritative the returned string is OpenUI Lang for display only.
- *                     It is normalized by `openui-brief.ts` before it reaches
+ *                     It is normalized by `brief.ts` before it reaches
  *                     the page, and nothing in this module can settle an ask.
  *
  * ponytail: the brief's model call is not metered by `LoopBudget` — the
@@ -29,7 +29,7 @@
  */
 
 import type { LlmClient } from './llm.ts'
-import { briefSystemPrompt } from './openui-brief.ts'
+import { briefSystemPrompt } from './brief.ts'
 
 /** What the explainer may say about a pending ask. */
 export interface BriefInput {

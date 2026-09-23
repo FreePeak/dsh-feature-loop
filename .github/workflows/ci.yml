@@ -101,14 +101,15 @@ jobs:
       # proves these files are dependency-free. They are listed explicitly, the
       # same way the typecheck job lists its `src/` inputs — and a test that
       # gains a harness import (`test/plugin-approval.test.ts` already has one,
-      # through `src/plugin.ts`) or a dependency import (`test/dashboard.test.ts`
-      # through `src/dashboard.ts`'s siblings, `test/openui-brief.test.ts` and
-      # `test/explainer.test.ts` through `lang-core`/`zod`) must leave this list,
-      # exactly as `src/plugin.ts` leaves the typecheck list. They run locally
-      # via `make test`, against the installed dependencies.
+      # through `src/plugin.ts`) or a dependency import must leave this list,
+      # exactly as `src/plugin.ts` leaves the typecheck list. `test/dashboard.test.ts`,
+      # `test/assistant-ui.test.ts` and `test/explainer.test.ts` run locally via
+      # `make test`; `test/approval-bridge.test.ts` and `test/brief.test.ts` are
+      # pure and run here.
       - name: Run the test suite
         run: node --experimental-strip-types --test \
-          test/agent-policy.test.ts test/budget.test.ts test/judge.test.ts \
+          test/agent-policy.test.ts test/approval-bridge.test.ts \
+          test/budget.test.ts test/judge.test.ts \
           test/policy.test.ts test/runner.test.ts test/tools.test.ts
 
   typecheck:
@@ -130,10 +131,11 @@ jobs:
       # by the deployment, and `.npmrc` disables peer auto-installation (some
       # transitive peers, like `@deepseek-ai/dsh-type-meta`, are unpublished).
       # So the install is three packages: typescript, @types/node, tsdown.
-      # `OPENUI_TELEMETRY_DISABLED=1` opts out of `@openuidev/lang-core`'s
-      # install-time telemetry: the CI machine's builds must not phone home.
+      # No telemetry opt-out is needed any more: the OpenUI dependency that
+      # shipped an install-time ping is gone. `@assistant-ui/react` pulls
+      # `assistant-cloud` but the bundle build asserts it tree-shakes out.
       - name: Install dev tooling
-        run: OPENUI_TELEMETRY_DISABLED=1 npm install --no-audit --no-fund
+        run: npm install --no-audit --no-fund
 
       # Files are listed explicitly rather than using tsconfig.json, and every
       # option below mirrors it: target ES2024, NodeNext module and resolution,
@@ -148,9 +150,11 @@ jobs:
       # the two harness-coupled modules are typechecked locally instead, against
       # the prebuilt packages from a harness checkout. Add a new pure module to
       # this list; a module that gains a harness import must leave it.
-      # src/openui-brief.ts and src/explainer.ts are the two new pure modules:
-      # their only third-party imports are `@openuidev/lang-core` and `zod`,
-      # both real dependencies installed by the step above.
+      # src/brief.ts, src/approval-bridge.ts and src/explainer.ts are the pure
+      # additions: `brief.ts` and `approval-bridge.ts` import nothing at all
+      # (which is why their tests run in the no-install job above), and
+      # `explainer.ts` imports only this repo's own modules plus the LLM
+      # transport type.
       - name: tsc --noEmit
         run: |
           npx tsc --noEmit \
@@ -158,8 +162,9 @@ jobs:
             --strict --esModuleInterop --skipLibCheck --isolatedModules \
             --allowImportingTsExtensions \
             src/agent-policy.ts src/budget.ts src/cli.ts \
+            src/approval-bridge.ts src/brief.ts \
             src/dashboard.ts src/dashboard-page.ts src/explainer.ts \
             src/judge.ts src/laya.ts src/llm.ts src/messages.ts \
-            src/openui-brief.ts src/prompts.ts \
+            src/prompts.ts \
             src/review.ts src/routing.ts src/runner.ts src/signals.ts src/spec.ts \
             src/tools.ts

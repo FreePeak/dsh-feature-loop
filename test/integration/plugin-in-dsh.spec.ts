@@ -507,7 +507,9 @@ describe('feature-loop gate inside a real DSH pipeline', () => {
       explainer: {
         explain: async (input: unknown) => {
           seen.push(input)
-          return 'root = Stack([h])\nh = CardHeader("write_file")'
+          // Plain prose now: there is no model-authored component language
+          // after the move to assistant-ui.
+          return '# write_file\n\nTouches one file.'
         },
       },
     })
@@ -534,7 +536,10 @@ describe('feature-loop gate inside a real DSH pipeline', () => {
         if (attempt === 399) throw new Error('brief never reached ready')
       }
       const ready = await apiState(dashboard!)
-      expect(ready.pending[0]?.brief).toEqual([{ kind: 'heading', text: 'write_file' }])
+      expect(ready.pending[0]?.brief).toEqual([
+        { kind: 'heading', text: 'write_file' },
+        { kind: 'paragraph', text: 'Touches one file.' },
+      ])
 
       const res = await postDecision(dashboard!, pending[0]!.id, 'allowed-once')
       expect(res.status).toBe(200)

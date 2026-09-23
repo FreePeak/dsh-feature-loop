@@ -592,10 +592,16 @@ test('the brief lifecycle rides the SSE frame without touching the ask', async (
   const marking = await getState(dash)
   assert.equal(marking.pending[0]?.briefState, 'pending')
 
-  dash.briefs.recordBrief(id, [{ kind: 'heading', text: 'write_file' }])
+  dash.briefs.recordBrief(id, [
+    { kind: 'heading', text: 'write_file' },
+    { kind: 'list', items: ['touches one file'] },
+  ])
   const ready = await getState(dash)
   assert.equal(ready.pending[0]?.briefState, 'ready')
-  assert.deepEqual(ready.pending[0]?.brief, [{ kind: 'heading', text: 'write_file' }])
+  assert.deepEqual(ready.pending[0]?.brief, [
+    { kind: 'heading', text: 'write_file' },
+    { kind: 'list', items: ['touches one file'] },
+  ])
 
   // The ask itself is untouched: the human still decides, by POST as ever.
   const res = await post(dash, id, 'allowed-once', { token: dash.token })

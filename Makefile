@@ -219,12 +219,16 @@ typecheck: ## Typecheck src/ (mirrors the CI file list)
 # The harness-free import closure, exactly as CI lists it.
 CI_FILES := src/agent-policy.ts src/budget.ts src/cli.ts src/dashboard.ts \
             src/dashboard-page.ts src/explainer.ts src/judge.ts src/laya.ts \
-            src/llm.ts src/messages.ts src/openui-brief.ts src/prompts.ts src/review.ts src/routing.ts \
+            src/llm.ts src/messages.ts src/brief.ts src/approval-bridge.ts src/prompts.ts src/review.ts src/routing.ts \
             src/runner.ts src/signals.ts src/spec.ts src/tools.ts
 
 .PHONY: integration
 integration: ## Run the real-DSH integration spec (needs the harness checkout)
 	@bash test/integration/run.sh "$(DSH_HARNESS)"
+
+.PHONY: dashboard-bundle
+dashboard-bundle: ## Rebuild the vendored assistant-ui bundle into assets/ (commit the result)
+	@node web/build.mjs
 
 .PHONY: e2e-dashboard
 e2e-dashboard: ## Click the real dashboard page in a real browser (needs Playwright + Chromium; opt-in, not part of verify)

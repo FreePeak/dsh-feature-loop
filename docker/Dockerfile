@@ -40,8 +40,9 @@ FROM node:22-slim AS plugin-build
 WORKDIR /build
 
 COPY package.json package-lock.json* .npmrc ./
-# lang-core's postinstall sends install telemetry; the image build opts out.
-RUN OPENUI_TELEMETRY_DISABLED=1 npm install --no-audit --no-fund
+# No telemetry opt-out needed: the OpenUI dependency that shipped an
+# install-time ping is gone from the manifest.
+RUN npm install --no-audit --no-fund
 
 COPY src ./src
 COPY tsconfig.json cordis.patch.yml ./

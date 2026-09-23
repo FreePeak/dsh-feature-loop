@@ -86,7 +86,7 @@ properties of the design, not of the smoke:
 - `cordis.patch.yml` carries the commented `dashboard:` block for non-Docker
   profiles.
 
-## Browser click — VERIFIED 2026-09-23 via `make e2e-dashboard`
+## Browser click — VERIFIED via `make e2e-dashboard`
 
 `test/e2e-dashboard.mjs` (opt-in, not part of `make verify` — it needs a
 browser) drives the real page in headless Chromium via Playwright: it opens
@@ -104,6 +104,39 @@ $ node --experimental-strip-types test/e2e-dashboard.mjs reject
 feature-loop dashboard: http://127.0.0.1:55370/?token=bb2f666978c5a702567c52cad0bc2e6f16b3b0b3376514c3
 e2e-dashboard (rejected): the Reject click resolved the ask rejected
 ```
+
+## Re-verified on assistant-ui (this branch)
+
+The UI moved from OpenUI to [assistant-ui](https://github.com/assistant-ui/assistant-ui),
+so the browser claim was re-established against the new shell rather than
+inherited. `make verify` is green at **194 unit + 11 integration**, and
+`make e2e-dashboard` passes both directions repeatedly:
+
+```
+$ node --experimental-strip-types test/e2e-dashboard.mjs allow
+e2e-dashboard (allowed-once): the Allow once click resolved the ask allowed-once
+$ node --experimental-strip-types test/e2e-dashboard.mjs reject
+e2e-dashboard (rejected): the Reject click resolved the ask rejected
+```
+
+What changed in the mechanism, and why it is still the same guarantee: the
+approval card is now rendered by assistant-ui's `MessagePrimitive.Parts` with a
+`tools.Override` component, and the click reaches the server through
+`onRespondToToolApproval` → `src/approval-bridge.ts` →
+`POST /api/approvals/:id`. The endpoint, token check, cross-origin refusal, and
+fail-closed paths are unchanged and still covered by the unit and integration
+suites. The bridge is pure and is asserted in CI's no-install job.
+
+Measured properties of the served artifact (checked by
+`test/assistant-ui.test.ts` and enforced at build time by `web/build.mjs`):
+
+| Property | Value |
+|---|---|
+| `dashboard.js` | ~470 KB (~142 KB gzipped) |
+| `dashboard.css` | ~106 KB (~11 KB gzipped) |
+| telemetry / `assistant-cloud` in bundle | **absent** (build refuses otherwise) |
+| URLs in bundle | 1 (`https://react.dev`) |
+| assets served without a token | yes (they hold no secret; page + API still 401) |
 
 Two honest limits on this evidence: the browser is headless Chromium, not a
 human's mouse — and the ask is synthetic (`startDashboard` + `answer`

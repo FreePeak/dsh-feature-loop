@@ -33,8 +33,52 @@
 import { createServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import { randomBytes, randomUUID, timingSafeEqual, createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { ReviewSignal } from './signals.ts'
 import { DASHBOARD_PAGE } from './dashboard-page.ts'
+
+/**
+ * The vendored dashboard bundle and stylesheets, read once at startup.
+ *
+ * These are build artifacts committed under `assets/assistant-ui/`
+ * (`make dashboard-bundle`), not files this module generates. The published
+ * payload ships them (`package.json` `files`) and the server reads them from
+ * disk here. Two candidate paths are tried because the plugin loads the
+ * *built* `lib/index.mjs` in production while the tests run TS straight from
+ * `src/`: the assets sit two directories up from `src/`, but only one up
+ * from `lib/`. A miss is a hard error naming the fix rather than a 404 the
+ * operator would have to diagnose from a blank page.
+ */
+function readBundleAsset(name: string): Buffer {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const tried: string[] = []
+  for (const base of [here, join(here, '..')]) {
+    const candidate = join(base, 'assets/assistant-ui', name)
+    tried.push(candidate)
+    try {
+      return readFileSync(candidate)
+    } catch {
+      /* try the next layout */
+    }
+  }
+  throw new Error(
+    `dashboard bundle asset missing: ${name} (tried ${tried.join(', ')}) — `
+    + 'rebuild with `make dashboard-bundle`',
+  )
+}
+
+const BUNDLE_JS = readBundleAsset('dashboard.js')
+const BUNDLE_SHELL_CSS = readBundleAsset('shell.css')
+const BUNDLE_UI_CSS = readBundleAsset('dashboard.css')
+
+/** The only three files the page may load, by exact path. */
+const ASSETS: Record<string, { body: Buffer, contentType: string }> = {
+  '/assets/dashboard.js': { body: BUNDLE_JS, contentType: 'text/javascript; charset=utf-8' },
+  '/assets/shell.css': { body: BUNDLE_SHELL_CSS, contentType: 'text/css; charset=utf-8' },
+  '/assets/dashboard.css': { body: BUNDLE_UI_CSS, contentType: 'text/css; charset=utf-8' },
+}
 
 /**
  * The outcome vocabulary, mirrored structurally from the harness's
@@ -73,16 +117,15 @@ export interface RunSnapshot {
 /**
  * One normalized review-brief node: data only, no HTML, strings only.
  *
- * Structural mirror of `BriefNode` in `openui-brief.ts`, kept in this module
- * so `dashboard.ts` stays dependency-free (the CI test job runs with no
- * `node_modules`, and `lang-core` is a real dependency). The two shapes must
- * stay identical; `recordBrief` in `DashboardState` takes the structural form.
+ * Structural mirror of `BriefNode` in `brief.ts`, kept in this module so
+ * `dashboard.ts` stays dependency-free (CI's test job runs with no
+ * `node_modules`). The two shapes must stay identical; `recordBrief` in
+ * `DashboardState` takes the structural form.
  */
 export type BriefNode =
   | { kind: 'heading', text: string }
   | { kind: 'paragraph', text: string }
-  | { kind: 'callout', tone: 'info' | 'warning' | 'danger', text: string }
-  | { kind: 'table', columns: string[], rows: string[][] }
+  | { kind: 'list', items: string[] }
   | { kind: 'code', language: string, code: string }
 
 /** The review brief's lifecycle on one pending ask. */
@@ -625,6 +668,29 @@ export function startDashboard(
     sendJson(res, 200, { ok: true, outcome })
   }
 
+  /**
+   * Serve one vendored asset.
+   *
+   * Deliberately **unauthenticated**. The page's `<link>` and `<script>` tags
+   * are issued by the browser with no header and no query string, so a token
+   * check here would 401 the page's own stylesheets. Nothing secret is in
+   * these files — the token and the run state travel in the authed page and
+   * `/api/*` responses — and the server is loopback-bound, so the exposure is
+   * a local process reading a stylesheet. The set is a closed allowlist: no
+   * path from the request is ever joined onto a directory, so `/assets/../..`
+   * cannot reach anything.
+   */
+  const serveAsset = (res: ServerResponse, pathname: string): void => {
+    const asset = ASSETS[pathname]
+    if (asset === undefined) return sendJson(res, 404, { error: 'no such asset' })
+    res.writeHead(200, {
+      'content-type': asset.contentType,
+      'cache-control': 'no-store',
+      'content-security-policy': "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    })
+    res.end(asset.body)
+  }
+
   const route = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const url = new URL(req.url ?? '/', 'http://placeholder')
     const method = req.method ?? 'GET'
@@ -635,19 +701,21 @@ export function startDashboard(
     }
     if (method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
       if (!authorized(req, url, true)) return deny(res)
-      // Per-response nonce: the page is one static string with exactly one
-      // <style> and one <script>, so one nonce covers both. A fresh value per
-      // response means a leaked page source cannot bless a later injection —
-      // there is no later injection anyway (the brief carries data, not HTML),
-      // but the CSP then states the posture rather than implying it.
+      // Per-response nonce covering the page's two <link>s and its one inline
+      // bootstrap script. The vendored bundle cannot carry a nonce (it is a
+      // static file), so `script-src` names it explicitly as `'self'` — the
+      // page may run its own script and nothing else.
       const nonce = randomBytes(16).toString('base64')
       res.writeHead(200, {
         'content-type': 'text/html; charset=utf-8',
         'cache-control': 'no-store',
-        'content-security-policy': `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+        'content-security-policy': `default-src 'none'; script-src 'nonce-${nonce}' 'self'; style-src 'nonce-${nonce}' 'self'; connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
       })
       res.end(DASHBOARD_PAGE.replaceAll('__CSP_NONCE__', nonce))
       return
+    }
+    if (method === 'GET' && url.pathname.startsWith('/assets/')) {
+      return serveAsset(res, url.pathname)
     }
     if (method === 'POST' && url.pathname.startsWith('/api/approvals/')) {
       return approve(req, res, decodeURIComponent(url.pathname.slice('/api/approvals/'.length)))
