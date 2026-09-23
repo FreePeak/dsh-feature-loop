@@ -1,0 +1,121 @@
+# Release pipeline for @freepeak/dsh-feature-loop.
+#
+# On every push to main: compute the next semantic version from the commits
+# since the last `v*` tag, bump package.json, tag, push, and create a GitHub
+# release with generated notes. `workflow_dispatch` re-evaluates the tip of
+# main (also the retry path if a run failed after pushing its tag).
+#
+# Bump rules — conventional-commit subjects; anything unrecognised is a patch:
+#   feat!: / BREAKING CHANGE:  major   (minor while 0.x — semver 0.y.z)
+#   feat:                      minor
+#   fix:, docs:, everything else → patch
+#
+# Runs on GitHub-hosted ubuntu-latest, NOT the self-hosted runner: this job
+# holds `contents: write` and must never execute on the maintainer's box.
+#
+# Design notes, both load-bearing:
+#  - The compute step checks out `origin/main` tip, not the event SHA. A run
+#    queued behind another release then sees the first run's tag, finds zero
+#    unreleased commits, and no-ops instead of racing it to the same version.
+#  - A push made with the default GITHUB_TOKEN does not re-trigger workflows,
+#    so the version-bump commit cannot loop back into this workflow.
+#
+# If branch protection rejects github-actions[bot], the run fails at the
+# `git push` step: allow the bot to bypass, or point the push at a PAT.
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Two quick merges queue rather than race on tags and version numbers.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: semantic version + GitHub release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # 0: full history + tags — `git describe` and `rev-list ..TAG..` need both.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Compute next version
+        id: ver
+        run: |
+          set -euo pipefail
+
+          git checkout -B main origin/main
+
+          current=$(node -p "require('./package.json').version")
+          last_tag=$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || true)
+
+          skip=false
+          version=""
+
+          if [ -z "$last_tag" ]; then
+            # First release: no v* tag exists yet, so ship package.json as-is.
+            version="$current"
+          elif [ "$(git rev-list --count "$last_tag..HEAD")" -eq 0 ]; then
+            # Already released (a queued duplicate run, or an empty push).
+            skip=true
+          else
+            subjects=$(git log --format='%s' "$last_tag..HEAD")
+            body=$(git log --format='%B' "$last_tag..HEAD")
+
+            bump="patch"
+            if printf '%s\n' "$subjects" | grep -qE '^feat(\([^)]*\))?:'; then
+              bump=minor
+            fi
+            # Breaking: `type(scope)!:` in a subject, or a BREAKING CHANGE
+            # footer anywhere in the bodies. At 0.x semver calls for a minor.
+            if printf '%s\n' "$subjects" | grep -qE '^[a-zA-Z]+(\([^)]*\))?!:' \
+              || printf '%s\n' "$body" | grep -qE '^BREAKING[ -]CHANGE'; then
+              if [ "${current%%.*}" -ge 1 ]; then
+                bump=major
+              else
+                bump=minor
+              fi
+            fi
+
+            version=$(npm version "$bump" --no-git-tag-version)
+            version=${version#v}
+          fi
+
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release: skip=$skip version=${version:-n/a}"
+
+      - name: Commit bump, tag, GitHub release
+        if: steps.ver.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # First run leaves the version unchanged: nothing to commit, just tag.
+          if ! git diff --quiet -- package.json; then
+            git add package.json
+            git commit -m "chore(release): v$VERSION"
+          fi
+
+          git tag -a "v$VERSION" -m "release v$VERSION"
+          git push origin HEAD:main "refs/tags/v$VERSION"
+          gh release create "v$VERSION" --title "v$VERSION" --generate-notes
