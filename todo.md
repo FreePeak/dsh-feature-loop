@@ -73,6 +73,11 @@ there.
 
 ## P1 — Docker: isolated data mount (sessions, …)
 
+Status: **done** — `docker-compose.yml` mounts `dsh-data:/data` (profile,
+sessions, settings) plus `dsh-fl-data:/data/.feature-loop` (run history);
+`make clean` resets history only, `make clean-all` resets everything;
+`docker/README.md` documents the split. `make compose-check` valid.
+
 Give the container a **new, separate volume** for its data (sessions, logs,
 profile state) instead of sharing/`dsh-fl-data` semantics — an isolated mount
 so feature-loop data can be reset, backed up, or reused independently.
@@ -89,11 +94,12 @@ The seeded ladder in `docker/profile.patch.yml` is single-rung
 - **executor** → the `execution` model from onegw
 - **planner** → the `planning` model from onegw
 
-Confirm the exact model ids against the gateway config before editing, update
-the `prices:` keys to match, and decide where role-splitting belongs
-(`spec.controller.ladder` vs a harness `model-selection` concern — see the P2
-routing item below). Acceptance: a containerised run visibly routes the two
-roles, and the cost ceiling still prices what actually runs.
+Status: **done (config)** — ladder is now `onegw/execution` →
+`onegw/planning` (both verified live in `/v1/models`), prices keyed to match.
+Role-splitting stays in `spec.controller.ladder` (see P2 routing note:
+harness `model-selection` is the mechanism, the ladder is the policy).
+Remaining: a containerised run visibly routing both roles under load —
+UNVERIFIED (needs a task that stalls the cheap tier).
 
 ## P1 — Meter real spend into `LoopBudget.spend()`
 
@@ -108,6 +114,60 @@ roles, and the cost ceiling still prices what actually runs.
 
 Acceptance: a run with a deliberately tiny `costBudgetUSD` stops on cost, and a
 test asserts spend is non-zero after a priced attempt.
+
+Status: **done on `dsh/loop-optimize`** — `plugin.ts` drains settled
+`assistant/message` events into `budget.spend()` from both hooks (cursor-deduped),
+`runner.ts` prices every model result and times the call, and
+`test/budget.test.ts` asserts a priced attempt costs $0.168, not zero.
+
+## P1 — LLM reasons → Laya decides → LLM acts (dynamic quality questions)
+
+Status: **done** — `src/questioner.ts` (validate/parse/author, 9 tests),
+`--judge-base-url`/`SYSTEMONE_BASE_URL` split in `src/cli.ts` (default
+`http://127.0.0.1:8091`), `questioner` seam in `LoopRunnerOptions`
+(`src/runner.ts`, actor `lastAssistant` as reasoning, silent fallback to
+`judgeQuestion`). Live: authored `risk` score question → Laya `1.15`;
+full demo run `--judge laya` goal-met in 10 steps.
+
+Today the questions Laya answers are **fixed in code**: `judgeQuestion()` in
+`src/review.ts` (one hardcoded `review_worthiness` score rubric) and the
+optimizer `BATTERY` in `src/optimizer.ts` (seven authored questions). The loop
+never asks the acting LLM what *it* is unsure about. The wanted loop, per step
+(or per pass):
+
+1. **LLM reasons** — the actor's own reasoning text + detector signals + goal.
+2. **Questioner builds 1–3 typed `SystemOneQuestion`s** (`score`/`choice`/`noul`)
+   from that reasoning — new small module (e.g. `src/questioner.ts`), one LLM
+   call with a strict output contract, shape-validated before sending (Laya
+   500s on malformed questions; `score` needs a `criteria` ladder).
+3. **Laya decides** — direct `POST /v1/systemone` to the local sidecar
+   (see transport note below), answers feed the router/actor.
+4. **LLM acts** — `score` → review threshold as today; `choice` → ladder/tool
+   hint; `noul` P(yes) → gate threshold. The mapping must be explicit, one
+   function, tested — not vibes.
+
+**Transport note — Laya is the containerised sidecar on `:8091`.** Treat it
+like Jev / TypeSafe: same System One wire, different base URL. Health
+`GET /health` → `{"ok": true, "model": "laya", "loaded": ["english"]}`.
+Ops: `cd ~/.local/share/laya-sidecar && docker compose up -d` (colima VM ≥ 4 GB).
+Point the judge at `http://127.0.0.1:8091`, not onegw's `:8080`.
+
+Status: **done** — judge URL split (`--judge-base-url` / `SYSTEMONE_BASE_URL`,
+default `:8091`); score criteria are ordered arrays (maps lose ladder
+labels); `noul` wire field maps onto `JudgeResult.probability`; questioner
+authors 1–3 typed questions per judged step with silent fallback to
+`judgeQuestion`. Live: array score → human legend; noul → probability.
+
+Rules that already exist and still apply: judge outage → detectors-only, never
+fail-closed (`laya.ts` rule 2); out-of-range scores rejected, in-range floats
+rounded (`optimizer.ts`, verified live); no `/api/apply` — decisions advise,
+the human (or the loop's own gate) acts.
+
+Acceptance: a CLI run with `--judge laya --judge-base-url
+http://127.0.0.1:8091` shows questioner-authored Laya decisions in the
+transcript; the same run with the sidecar killed completes detectors-only.
+Live checks against `:8091` are recorded by hand, never asserted in CI
+(no network in CI).
 
 ## P1 — Test the plugin's wiring
 
@@ -136,6 +196,13 @@ gap: "the approval was recorded" is currently unproven for the UI.
 
 ## P2 — Resolve `routing.ts` against `model-selection`
 
+Status: **done (documented)** — `src/routing.ts` module doc now records the
+decision: harness `model-selection` is the mechanism (mutable per-agent
+selection + prompt assembly), the ladder is the policy (cheap-first
+escalation with rung/reason/ceiling evidence). The plugin feeds policy into
+the mechanism via `agent/request` overrides; collapsing would lose the
+standalone runner and priced escalation evidence. Distinct layers, one seam.
+
 `src/routing.ts`'s `ModelLadder` overlaps the harness's
 `packages/core/agent/src/model-selection.ts`, which already swaps provider/model
 mid-run through `agent/request`. Retained deliberately — it drives the standalone
@@ -145,9 +212,10 @@ genuinely distinct.
 
 ## P2 — `demo/` transcript drift
 
-`demo/TRANSCRIPT.txt` and the README's example output predate several changes.
-Two review strings had already drifted (now fixed). Regenerate the transcript
-rather than hand-editing it.
+Status: **done** — `demo/TRANSCRIPT.txt` regenerated from a live
+`--judge laya` run (goal-met, 10 steps, Laya float scores like
+`review-worthiness 0.6261/3` proving the questioner→Laya→LLM loop end to
+end). Regenerate rather than hand-edit on future changes.
 
 ## P3 — Deliberately deferred
 
@@ -156,8 +224,12 @@ rather than hand-editing it.
 - **The price table is illustrative.** `mimo-v2.5` runs on a subscription, so
   marginal cost is near zero; the rates exist so a ceiling has something to
   measure against.
-- **Laya** (phase 3): deploy the `systemone` provider in onegw, switch
-  `--judge laya`. `src/laya.ts` is written; the demo uses `ChatJudge` instead.
+- **Laya** (phase 3, verified live 2026-09-23): all three primitives + full
+  battery answer via `scripts/laya-sidecar.py` (`~/venvs/laya`, port 8091).
+  Remaining: a `--judge-base-url` flag so the CLI can point at the sidecar
+  (onegw's `:8080` has no systemone provider), and calibration — base
+  checkpoints discriminate routine-vs-dangerous by only +0.056, matching the
+  JEV doc's near-chance warning.
 - **The Dockerfile pins `dsh@0.1.7-alpha.1`** because the `latest` tag is broken
   upstream. Revisit when that is fixed.
 
@@ -177,6 +249,7 @@ rather than hand-editing it.
 | Setup guide independently QA'd; all 9 failures fixed | `QA-FINAL.md` |
 | Panel rendering is covered by the harness itself | `VERIFY-PANEL-EVIDENCE.md` |
 | HITL approval dashboard: guard, fail-closed, auth, POST path | `VERIFY-DASHBOARD.md` — 194 unit + 11/11 integration + live HTTP transcript + browser click verified via `make e2e-dashboard` |
+| Optimize composition wired both ways: CLI derives + advises, plugin records + rolls up | `src/optimize.ts` + `test/optimize.test.ts` + plugin turn-end wiring; proposals stay CLI-only |
 
 ---
 
@@ -188,5 +261,5 @@ rather than hand-editing it.
 - **Do not edit `~/.dsh/settings.yaml`** without asking — use a private
   `DSH_HOME` (`docs/RUNBOOK-SERVER.md` §2.6).
 - **Never disturb ports 3081 / 3097 / 3099** if the user's GUI is running.
-- **Verify before claiming.** `151/151` + `tsc --noEmit` + the integration test
+- **Verify before claiming.** `296/296` + `tsc --noEmit` + the integration test
   (9/9) is the floor.

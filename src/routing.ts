@@ -12,6 +12,17 @@
  * routing decision is pure, so it is testable on its own and cannot be changed
  * by a harness upgrade.
  *
+ * Relation to the harness's `model-selection` (`@deepseek-ai/dsh-agent`):
+ * that module is the *mechanism* — a mutable per-agent selection coupled to
+ * prompt assembly and request routing, with durable switch notices. This
+ * module is the *policy* — cheap-first escalation on steps, failures, and
+ * per-step cost. The plugin feeds policy decisions into the mechanism via
+ * `agent/request` overrides (`routeForStep` in `plugin.ts`); it never writes
+ * the harness selection directly. Collapsing onto `model-selection` would
+ * mean giving up the standalone runner (which has no harness) and the
+ * spec-level escalation evidence (rung, reason, ceiling) the budget prices
+ * against. Distinct layers, one seam — deliberately kept.
+ *
  * @module dsh-feature-loop/routing
  */
 

@@ -32,6 +32,15 @@ export interface StepObservation {
   /** What this step cost. */
   costUSD: number
   /**
+   * Wall-clock of the model call that produced this step, in milliseconds.
+   *
+   * The speed axis, kept beside cost so a run can be tuned on both: a step
+   * that is cheap but slow is a different problem from one that is fast and
+   * burns the budget. Absent means the transport timed nothing — the same
+   * "absent is not zero" rule the other optional fields follow.
+   */
+  latencyMs?: number
+  /**
    * The phase rubric's score for this step, when the spec defines one. Absent
    * means "not scored", which is not the same as zero.
    */

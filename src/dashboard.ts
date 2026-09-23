@@ -37,6 +37,11 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ReviewSignal } from './signals.ts'
+// Type-only on purpose: the measurement modules are authored concurrently by
+// other seams, and type-only imports are erased at runtime, so this module
+// neither loads nor requires their code — it only renders their shapes.
+import type { MetricsSummary } from './metrics.ts'
+import type { Recommendation } from './optimizer.ts'
 import { DASHBOARD_PAGE } from './dashboard-page.ts'
 
 /**
@@ -157,11 +162,27 @@ export interface DashboardSnapshot {
   pending: PendingApproval[]
   runs: RunSnapshot[]
   feed: FeedEntry[]
+  /**
+   * The aggregated measurement roll-up, once `metrics.ts` has produced one.
+   * Optional because absence is meaningful: a deployment that has measured
+   * nothing serves no `metrics` key at all, and the page renders nothing —
+   * an absent summary must never read as a wall of honest-looking zeros.
+   */
+  metrics?: MetricsSummary
+  /**
+   * Optimizer suggestions, display-only. There is deliberately no server
+   * route that can apply one (see `route` in `startDashboard`): applying a
+   * recommendation is a human copying a config snippet, by hand.
+   */
+  recommendations?: Recommendation[]
 }
 
 /** Configured under the patch row's `dashboard:` key. All fields optional. */
 export interface DashboardConfig {
-  /** Must be `true` to start the server at all. */
+  /**
+   * Set `false` to start no server. Defaults to on: omitting the block starts
+   * the page on 127.0.0.1:8100 with a per-start token.
+   */
   enabled?: boolean
   /** Bind address. Only `127.0.0.1` (default) or `0.0.0.0` (in-container). */
   host?: string
@@ -356,6 +377,8 @@ function parseBriefConfig(brief: BriefConfig | undefined): ResolvedDashboardConf
 export class DashboardState {
   private readonly runs = new Map<string, RunSnapshot>()
   private readonly feedList: FeedEntry[] = []
+  private metricsSummary: MetricsSummary | undefined
+  private recommendationList: Recommendation[] | undefined
   private listener: (() => void) | undefined
 
   /**
@@ -427,11 +450,45 @@ export class DashboardState {
     this.note('gate', `${verdict}: ${toolName}${reason === undefined ? '' : ` — ${firstLine(reason, 200)}`}`, runId)
   }
 
+  /**
+   * Replace the measurement roll-up. Replacement, not merge: the plugin feeds
+   * a freshly computed summary per roll-up, and merging two would invent
+   * numbers neither computation actually produced.
+   *
+   * @param summary - the latest `MetricsSummary`, or a fresh recomputation.
+   */
+  setMetrics(summary: MetricsSummary): void {
+    this.metricsSummary = summary
+    this.changed()
+  }
+
+  /**
+   * Replace the optimizer's recommendations. The page shows these read-only —
+   * there is no apply affordance anywhere in this server (see `route`), so
+   * this setter moves display state, never config state.
+   *
+   * @param list - the current recommendation list; copied, so later mutation
+   *   by the optimizer cannot rewrite a frame already served.
+   */
+  setRecommendations(list: readonly Recommendation[]): void {
+    this.recommendationList = [...list]
+    this.changed()
+  }
+
   /** A read-only copy, safe to serialize. */
-  snapshot(): { runs: RunSnapshot[], feed: FeedEntry[] } {
+  snapshot(): {
+    runs: RunSnapshot[]
+    feed: FeedEntry[]
+    metrics?: MetricsSummary
+    recommendations?: Recommendation[]
+  } {
     return {
       runs: [...this.runs.values()].map(run => ({ ...run, signals: [...run.signals] })),
       feed: [...this.feedList],
+      // Absent stays absent: the spread omits the key entirely, so a frame
+      // without metrics means "none produced", never "all zero".
+      ...this.metricsSummary === undefined ? {} : { metrics: this.metricsSummary },
+      ...this.recommendationList === undefined ? {} : { recommendations: [...this.recommendationList] },
     }
   }
 }
@@ -720,6 +777,14 @@ export function startDashboard(
     if (method === 'POST' && url.pathname.startsWith('/api/approvals/')) {
       return approve(req, res, decodeURIComponent(url.pathname.slice('/api/approvals/'.length)))
     }
+    // Deliberately NO `POST /api/apply` — and no GET for it either. Applying
+    // a recommendation means a human copying its config snippet into their
+    // config by hand. An endpoint that let this server apply optimizer output
+    // would let the small local model that produced it loosen its own
+    // ceilings (budget, maxSteps, timeouts) with no human in the loop — the
+    // exact mutation this HITL seam exists to force through a person. The
+    // 404 below is the feature. If you are tempted to "helpfully" add
+    // `/api/apply`, add a test proving it 404s instead (the suite has one).
     sendJson(res, 404, { error: 'not found' })
   }
 

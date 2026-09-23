@@ -52,12 +52,11 @@
         # ────────────────────────────────────────────────────────────────────
         # The HITL approval dashboard: a loopback web page that answers this
         # loop's approval requests and shows the run live (step, spend, gate
-        # decisions). Omitted here = no server; the composer panel stays the
-        # only channel, exactly as before the dashboard existed.
-        #
-        # Uncomment to run it in this (non-container) profile. Defaults shown:
-        # binds 127.0.0.1 only, token is generated per start and printed as
+        # decisions, Metrics). Enabled by default — binds 127.0.0.1 only, and
+        # the token is generated per start and printed as
         # `feature-loop dashboard: http://…/?token=…` in the log.
+        # Set `enabled: false` to go back to the composer panel as the only
+        # channel, exactly as before the dashboard existed.
         #
         # dashboard:
         #   enabled: true
@@ -70,6 +69,21 @@
         #     model: xiaomi/mimo-v2.5  # required when enabled: the model to ask
         #     maxTokens: 1024   # cap on the brief's own output
         #     timeoutMs: 15000  # per-brief deadline; expiry = no brief, never a hang
+        # ────────────────────────────────────────────────────────────────────
+
+        # ────────────────────────────────────────────────────────────────────
+        # Optimization: measured history (Laya-guided optimization).
+        # On by default: every closed turn appends one JSONL line, and the
+        # dashboard's Metrics panel rolls the file up. `loops`/`totalBudgetUSD`
+        # are validated at load but consumed only by the CLI's `runRefined` —
+        # iteration belongs to the caller, not to a step waterfall.
+        #
+        # optimize:
+        #   history: .feature-loop/runs.jsonl   # run-history file: appended per closed turn, read for Metrics
+        #   loops: 3              # refinement passes, integer 3–10 (CLI only; validated at load)
+        #   derive: true          # accepted; the CLI's `--derive` derives envelopes, the plugin records the history they come from
+        #   judge: chat           # none | chat | laya — who scores across passes (CLI only)
+        #   totalBudgetUSD: 3.00  # refinement budget; default is derived × loops × 0.6 (CLI only)
         # ────────────────────────────────────────────────────────────────────
 
         # ────────────────────────────────────────────────────────────────────

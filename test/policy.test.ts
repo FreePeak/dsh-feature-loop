@@ -229,7 +229,8 @@ test('a nonsensical review budget is refused at construction', () => {
 test('the judge question is a score on the 0-3 scale, not a request for prose', () => {
   const q = judgeQuestion('edit src/auth.ts (12 lines)', [])
   assert.equal(q.questions.review_worthiness.type, 'score')
-  assert.equal(Object.keys(q.questions.review_worthiness.criteria ?? {}).length, 4)
+  // Ordered array — Laya/Jev keep the labels as the legend.
+  assert.equal(q.questions.review_worthiness.criteria?.length, 4)
   assert.match(q.state, /Detectors: none fired/)
 })
 

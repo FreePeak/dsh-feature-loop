@@ -5,7 +5,7 @@
 [![CI](https://github.com/FreePeak/dsh-feature-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/FreePeak/dsh-feature-loop/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](.nvmrc)
-[![Tests](https://img.shields.io/badge/tests-194%20passing-brightgreen.svg)](#quick-start)
+[![Tests](https://img.shields.io/badge/tests-296%20passing-brightgreen.svg)](#quick-start)
 
 A **book-shaped policy layer** for bug-fixing and small features: budget
 ceilings, cheap-first routing, a step-level review gate, and a local judge that
@@ -80,7 +80,7 @@ and that is the intended behaviour, not a miss.
 ## Quick start
 
 ```bash
-# 194 tests, no network, no model call — the policy layer is pure
+# 296 tests, no network, no model call — the policy layer is pure
 node --experimental-strip-types --test test/*.test.ts
 
 # the end-to-end demo (needs onegw on :8080 and xiaomi/mimo-v2.5)
@@ -278,6 +278,51 @@ and style and nothing else.
 generated per boot and required on every request. An existing Docker volume
 seeded before this feature needs `FORCE_REINIT=1 make up` to pick the row up.
 
+### The optimize block — refinement passes from measured history
+
+`optimize:` sits beside the spec and changes nothing when omitted. When present
+it is validated at load (a `loops: 30` stops the plugin from loading, naming
+the field and the 3–10 band):
+
+```yaml
+- id: feature-loop
+  config:
+    optimize:
+      loops: 3              # refinement passes, integer 3–10 (CLI `runRefined` only)
+      derive: true          # accepted; the CLI's `--derive` derives envelopes, the plugin records the history they come from
+      history: .feature-loop/runs.jsonl   # run-history file: the plugin appends one line per closed turn and feeds Metrics from it
+      # judge: chat         # none | chat | laya — who scores across passes (CLI only)
+      # totalBudgetUSD: 3.00  # refinement budget; default derived × loops × 0.6 (CLI only)
+```
+
+Two halves, split where they belong:
+
+- **The CLI derives and advises.** Every CLI run appends one line to the
+  history file (JSONL, Node builtins only). With `--derive`, the next run's
+  envelope (`maxSteps`, `costBudgetUSD`) is the P95 of *this goal's* recorded
+  runs plus 30% headroom — an explicit `--max-steps`/`--budget` is a pin and is
+  never overridden, and the configured budget is a cap the derivation may
+  tighten but never raise. The run then prints its Metrics roll-up and the
+  judge's proposals. With too little history (under five usable runs) nothing
+  is applied — a floor is not a measurement. Every number's provenance is
+  printed.
+- **The plugin records and rolls up.** On `session/event` `turn/end` — the
+  exactly-once run seam, which a pre-step reject also closes through — the
+  plugin appends one record built from metered numbers only (budget snapshot
+  for steps/cost/unpriced steps, `latencyKind: 'round-trip'`), then refreshes
+  the dashboard's **Metrics** panel from the file. The judge battery is
+  deliberately NOT asked on this path: one hot-path event must stay cheap, so
+  **Optimizations** proposals stay a CLI affair until a cheaper cadence exists.
+  Records are written whether or not the dashboard page is up, so a headless
+  deployment with `history:` still learns.
+
+Proposals are display only — applying one means copying its snippet by hand;
+there is deliberately no endpoint that lets the judge loosen its own ceilings.
+`loops`/`totalBudgetUSD` are validated at load but consumed only by the CLI's
+`runRefined`: iteration belongs to the caller, not to a step waterfall, so a
+plugin config that granted passes from inside a hook would be a timeout wearing
+a feature hat.
+
 **The guard is the safety property.** The dashboard's answerer is registered
 ahead of every other `approval/request` listener — required, because the
 harness's remote forwarder holds the request without calling `next()` while a
@@ -339,7 +384,8 @@ src/
   review.ts      reversibility gate + attention router (<10% budget)
   agent-policy.ts the plugin agent's decisions, extracted so they are testable
   judge.ts       chat judge (works anywhere)
-  laya.ts        Laya judge via onegw /v1/systemone (the intended production path)
+  laya.ts        Laya judge via System One / Jev (local sidecar :8091 by default)
+  questioner.ts  LLM→Laya→LLM: actor uncertainty → typed questions → Laya decides
   messages.ts    notice text; imports nothing, which keeps the test suite runnable
   prompts.ts     BUG_FIX_PROMPT / FEATURE_PROMPT / REFACTOR_PROMPT
 
@@ -375,9 +421,24 @@ classification, so it has three implementations behind one interface:
 
 | Judge | Cost | Latency | Status |
 |---|---|---|---|
-| `OnegwJudge` (Laya) | $0, local | ~73 ms warm | client ready; **Laya is not deployed in onegw here** |
+| `OnegwJudge` (Laya) | $0, local | ~1–4 s cold-ish, <200 ms warm* | client ready; **verified live 2026-09-23** against a local sidecar (`scripts/laya-sidecar.py`, `~/venvs/laya`, port 8091) — all three primitives answer, full battery returns recommendations |
 | `ChatJudge` | metered | ~10–40 s | **what the demo uses** |
 | `NO_JUDGE` | $0 | 0 | detectors-only, a supported mode |
+
+\* Laya-sidecar timings measured on this machine: first predict ~7 s (cold weights), then ~0.9–4 s per call warm — far above the JEV doc's 73 ms (that figure is raw forward-pass; ours includes HTTP + routing + a cold-ish process). Still 10× cheaper in wall-clock than a chat judge, and $0.
+
+To point the demo at local Laya (the containerised sidecar on `:8091`, same
+System One / Jev / TypeSafe wire):
+
+```bash
+bash demo/run.sh --judge laya --judge-base-url http://127.0.0.1:8091
+# or: SYSTEMONE_BASE_URL=http://127.0.0.1:8091 bash demo/run.sh --judge laya
+```
+
+`--judge laya` defaults the judge base URL to `http://127.0.0.1:8091` (override
+with `--judge-base-url` / `SYSTEMONE_BASE_URL`). The actor still talks to onegw;
+only the judge URL splits. Score criteria go as ordered arrays so Laya keeps
+the human labels; `noul` answers map onto `probability`.
 
 The demo uses `ChatJudge` with `xiaomi/mimo-v2.5` because no `systemone` provider
 is configured in `~/.onegw/onegw.toml`. Two measured facts argue for Laya beyond
@@ -389,9 +450,10 @@ cost:
    2048, and the error message names the cause instead of saying "no digit".
 2. **It is miscalibrated.** Asked about a routine `read_file` with no detector
    fired, it answered `SCORE=3` — the top of the scale. A purpose-built decision
-   engine is the right tool; a general chat model is a fallback.
-
-To use Laya once deployed: `--judge laya`.
+   engine is the right tool; a general chat model is a fallback. Live Laya
+   scored the same shape 1.409 vs 1.465 for routine-vs-dangerous — directionally
+   right but near-chance, matching the JEV doc's warning that base checkpoints
+   need specialisation before their levels drive policy.
 
 ---
 
@@ -443,11 +505,11 @@ Two genuine bugs were found in the fork while it existed, both now moot:
   packages; the same handshake is covered by the integration suite
   (`test/integration/plugin-in-dsh.spec.ts`), which is where the plugin's
   behaviour is exercised against the real harness.
-- **Spend is observed, not metered by the plugin.** `LoopBudget.spend()` must be
-  called with real usage for the cost ceiling to mean anything; the plugin
-  currently reads spend from the budget snapshot rather than pricing each settled
-  attempt. **This is the largest correctness gap** and is Phase 2b work.
-  `maxSteps` is the only ceiling that is trustworthy today.
+- **Spend is metered on both paths.** `runner.ts` prices every model result into
+  `LoopBudget`, and the plugin drains settled `assistant/message` events into
+  `spend()` from both hooks (cursor-deduped, `assistant/attempt` retries still
+  unpriced — marked `ponytail:` at the call site). The cost ceiling is
+  load-bearing: a run with a deliberately tiny `costBudgetUSD` stops on cost.
 - **The approval prompt depends on the session's permission preset, and the
   user's settings win.** A fresh session's approval policy comes from
   `permission.defaultPreset` in `~/.dsh/settings.yaml`, which
@@ -521,14 +583,22 @@ Two genuine bugs were found in the fork while it existed, both now moot:
   (`web/app.tsx`, vendored as `assets/assistant-ui/`); approvals ride
   `ToolCallMessagePart.approval` and `onRespondToToolApproval`, mapped by the
   pure `src/approval-bridge.ts` onto the existing guarded endpoint.
-- **Phase 2b — real spend accounting** ⬜ price each settled attempt into
-  `LoopBudget` so the cost ceiling is load-bearing (the largest open gap).
-- **Phase 3 — Laya** ⬜ deploy the `systemone` provider in onegw, switch `--judge laya`
+- **Phase 2b — real spend accounting** ✅ `runner.ts` prices every model result;
+  the plugin drains settled attempts from both hooks. The cost ceiling stops
+  runs; `test/budget.test.ts` asserts spend is non-zero after a priced attempt.
+- **Phase 2c — Laya-guided optimization** ✅ `optimize:` block, run history,
+  derived envelopes, metrics, Laya-as-advisor proposals (display only),
+  refinement passes with the book's < 0.05 stop rule, and SSE metrics +
+  recommendations on the dashboard snapshot. Composition is wired both ways:
+  the CLI derives envelopes and prints metrics + proposals (`--derive`), the
+  plugin records one history line per closed turn and feeds Metrics from the
+  file (`optimize.history`); proposals stay CLI-only so the hot path stays cheap.
+- **Phase 3 — Laya** ✅ verified live 2026-09-23 (all three primitives + full battery via `scripts/laya-sidecar.py`); remaining: a `--judge-base-url` flag so the CLI can point at the sidecar without onegw, and calibration before levels drive policy (routine-vs-dangerous discriminated by only +0.056)
 
 ### Verifying the whole thing
 
 ```bash
-node --experimental-strip-types --test test/*.test.ts   # 194 pass
+node --experimental-strip-types --test test/*.test.ts   # 296 pass
 pnpm test:integration                                   # 9 pass, in the real harness
 tsc --noEmit                                            # clean
 bash demo/run.sh                                        # goal-met

@@ -38,6 +38,7 @@ import type { ReviewSignal, StepObservation } from './signals.ts'
 import { AttentionRouter, ReviewGate, judgeQuestion } from './review.ts'
 import type { GatePolicy, ReviewDecision, RouterConfig } from './review.ts'
 import type { Judge } from './laya.ts'
+import type { SystemOneQuestion } from './laya.ts'
 import { NO_JUDGE } from './laya.ts'
 import { describeEnvelope, validateSpec } from './spec.ts'
 import type { LoopSpec } from './spec.ts'
@@ -112,6 +113,29 @@ export interface LoopRunnerOptions {
   checkSuccess?: () => Promise<{ ok: boolean, output: string }>
   /** Model call budget per step, passed through to the gateway. */
   maxTokensPerStep?: number
+  /**
+   * Question author for the judge call. Receives the step summary, the
+   * signals, and a fallback supplier for the fixed `judgeQuestion`; returns
+   * the state and questions to score. Omitted means the fixed question —
+   * the questioner (`questioner.ts`, LLM-authored per-step questions) is
+   * opt-in because it costs a metered chat call per step where it runs.
+   */
+  questioner?: (
+    summary: string,
+    signals: readonly ReviewSignal[],
+    fallback: () => { state: string, questions: Record<string, SystemOneQuestion> },
+  ) => Promise<{ state: string, questions: Record<string, SystemOneQuestion> }>
+  /**
+   * Evidence from a previous refinement pass, delivered as a plugin-sourced
+   * user notice on the opening turn.
+   *
+   * The one seam pass N+1 needs into pass N: cost, steps, judge scores, the
+   * weakest dimension, the failing check output. It is a *message*, not a
+   * config change — proposals stay proposals-only, and the book's
+   * Self-Correction-with-Reflection pattern is exactly this: the same loop,
+   * re-run with its own prior evidence in context.
+   */
+  passNotice?: string
   /**
    * How many times the model may stop without the success condition holding
    * before the run is called `model-stop`. Default 2.
@@ -225,7 +249,12 @@ export async function runLoop(options: LoopRunnerOptions): Promise<LoopRunResult
 
   const messages: LlmMessage[] = [
     { role: 'system', content: buildSystemPrompt(spec, options.phase) },
-    { role: 'user', content: `Begin. ${spec.goal}` },
+    {
+      role: 'user',
+      content: options.passNotice === undefined
+        ? `Begin. ${spec.goal}`
+        : `Begin. ${spec.goal}\n\n[refinement evidence from the previous pass]\n${options.passNotice}`,
+    },
   ]
 
   const history: StepObservation[] = []
@@ -297,7 +326,18 @@ export async function runLoop(options: LoopRunnerOptions): Promise<LoopRunResult
       const summary = history.at(-1) === undefined
         ? 'the run has just started'
         : `the last step called ${history.at(-1)!.tool ?? 'no tool'} and ${history.at(-1)!.error === true ? 'failed' : 'succeeded'}`
-      const question = judgeQuestion(summary, signals)
+      // LLM reasons → Laya decides: when the actor said something this step,
+      // the questioner turns its reasoning into typed questions instead of
+      // asking the fixed rubric. `lastAssistant` is the actor's own words —
+      // empty on step 1 (nothing said yet) and after tool-only steps, in
+      // which case the questioner gets the summary and behaves like the
+      // fixed question with more context. Falls back to `judgeQuestion`
+      // silently — generation is an optimisation, and the fallback is the
+      // observable behaviour.
+      const reasoning = lastAssistant.trim() === '' ? summary : lastAssistant
+      const question = options.questioner === undefined
+        ? judgeQuestion(summary, signals)
+        : await options.questioner(reasoning, signals, () => judgeQuestion(summary, signals))
       const answer = await judge.score(question.state, question.questions)
       judgeScore = answer.score
       emit({ kind: 'judge', step, score: answer.score, ...answer.error === undefined ? {} : { error: answer.error } })
@@ -320,6 +360,12 @@ export async function runLoop(options: LoopRunnerOptions): Promise<LoopRunResult
 
     // 6. The model call.
     let result
+    // Round-trip timing, not model timing: this spans dispatch to the settled
+    // response — gateway queueing and transport retries included — which is
+    // runlog's `latencyKind: 'round-trip'`. The runner has no seam that
+    // isolates pure model time, and a figure labelled otherwise would be a
+    // proxy dressed up as a measurement.
+    const callStartedAt = performance.now()
     try {
       result = await options.llm.complete({
         model: decision.route.provider === undefined
@@ -340,6 +386,9 @@ export async function runLoop(options: LoopRunnerOptions): Promise<LoopRunResult
       outcome = 'error'
       break
     }
+    // Recorded on the step's observations below: the loop's history is where
+    // the speed axis becomes visible to the detectors and to the run record.
+    const latencyMs = performance.now() - callStartedAt
 
     lastStepUSD = budget.spend(decision.route.provider ?? 'default', decision.route.model, result.usage)
     spentUSD = budget.snapshot().spentUSD
@@ -385,14 +434,14 @@ export async function runLoop(options: LoopRunnerOptions): Promise<LoopRunResult
           tool_call_id: call.id,
           content: `Unknown tool "${call.function.name}". Available: ${[...toolsByName.keys()].join(', ')}`,
         })
-        history.push({ index: step, tool: call.function.name, argsKey: '', error: true, costUSD: 0 })
+        history.push({ index: step, tool: call.function.name, argsKey: '', error: true, costUSD: 0, latencyMs })
         continue
       }
 
       const parsed = parseArgs(call.function.arguments)
       if (!parsed.ok) {
         messages.push({ role: 'tool', tool_call_id: call.id, content: `Bad arguments: ${parsed.error}` })
-        history.push({ index: step, tool: tool.name, argsKey: '', error: true, costUSD: 0 })
+        history.push({ index: step, tool: tool.name, argsKey: '', error: true, costUSD: 0, latencyMs })
         continue
       }
 
@@ -429,6 +478,7 @@ export async function runLoop(options: LoopRunnerOptions): Promise<LoopRunResult
         argsKey: canonicalArgs(parsed.args),
         error: !toolResult.ok,
         costUSD: 0,
+        latencyMs,
       })
       emit({
         kind: 'tool',

@@ -104,13 +104,16 @@ jobs:
       # through `src/plugin.ts`) or a dependency import must leave this list,
       # exactly as `src/plugin.ts` leaves the typecheck list. `test/dashboard.test.ts`,
       # `test/assistant-ui.test.ts` and `test/explainer.test.ts` run locally via
-      # `make test`; `test/approval-bridge.test.ts` and `test/brief.test.ts` are
-      # pure and run here.
+      # `make test`; `test/approval-bridge.test.ts`, `test/brief.test.ts`, and
+      # `test/questioner.test.ts` are pure and run here.
       - name: Run the test suite
         run: node --experimental-strip-types --test \
           test/agent-policy.test.ts test/approval-bridge.test.ts \
-          test/budget.test.ts test/judge.test.ts \
-          test/policy.test.ts test/runner.test.ts test/tools.test.ts
+          test/budget.test.ts test/envelope.test.ts test/judge.test.ts \
+          test/metrics.test.ts test/optimize.test.ts test/optimizer.test.ts \
+          test/questioner.test.ts \
+          test/policy.test.ts test/refine.test.ts test/runlog.test.ts \
+          test/runner.test.ts test/tools.test.ts
 
   typecheck:
     name: typecheck (self-hosted, harness-free src/ modules)
@@ -140,8 +143,9 @@ jobs:
       # Files are listed explicitly rather than using tsconfig.json, and every
       # option below mirrors it: target ES2024, NodeNext module and resolution,
       # strict, esModuleInterop, skipLibCheck, isolatedModules,
-      # allowImportingTsExtensions, noEmit. `rootDir`/`outDir`/`declaration`/
-      # `composite` are moot under --noEmit and are left out.
+      # allowImportingTsExtensions, jsx react-jsx, noEmit.
+      # `rootDir`/`outDir`/`declaration`/`composite` are moot under --noEmit
+      # and are left out.
       #
       # The list is the import closure with no `@deepseek-ai/*` in it.
       # src/plugin.ts and src/index.ts import the harness, and those packages are
@@ -154,7 +158,8 @@ jobs:
       # additions: `brief.ts` and `approval-bridge.ts` import nothing at all
       # (which is why their tests run in the no-install job above), and
       # `explainer.ts` imports only this repo's own modules plus the LLM
-      # transport type.
+      # transport type. `src/questioner.ts` is pure (LLM reason → Laya decide →
+      # LLM act) and is listed with the other harness-free modules.
       - name: tsc --noEmit
         run: |
           npx tsc --noEmit \
@@ -163,8 +168,9 @@ jobs:
             --allowImportingTsExtensions \
             src/agent-policy.ts src/budget.ts src/cli.ts \
             src/approval-bridge.ts src/brief.ts \
-            src/dashboard.ts src/dashboard-page.ts src/explainer.ts \
+            src/dashboard.ts src/dashboard-page.ts src/envelope.ts src/explainer.ts \
             src/judge.ts src/laya.ts src/llm.ts src/messages.ts \
-            src/prompts.ts \
-            src/review.ts src/routing.ts src/runner.ts src/signals.ts src/spec.ts \
+            src/metrics.ts src/optimize.ts src/optimizer.ts src/prompts.ts \
+            src/questioner.ts src/refine.ts \
+            src/review.ts src/routing.ts src/runlog.ts src/runner.ts src/signals.ts src/spec.ts \
             src/tools.ts

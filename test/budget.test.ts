@@ -180,3 +180,22 @@ test('a run of entirely unpriced steps reports zero spend but a full unpriced co
   // And the step ceiling still applies, so an unpriced run is still bounded.
   assert.equal(budget.verdict(11).kind, 'stop')
 })
+
+test('spend is non-zero after a priced attempt — the acceptance for the metering gap', () => {
+  // The PRD's own acceptance criterion: `costBudgetUSD` used to measure zero
+  // because nothing ever called `spend()` with real usage. This asserts the
+  // number the cost ceiling runs on actually moves when an attempt is priced.
+  const budget = new LoopBudget({ maxSteps: 5, costBudgetUSD: 1, prices: PRICES })
+  const usd = budget.spend(
+    'deepseek',
+    'deepseek-v4-flash',
+    { inputTokens: 1_000_000, outputTokens: 100_000, reasoningTokens: 50_000 },
+  )
+  // 0.14 input + 0.028 output = 0.168. The 50k reasoning tokens ride inside
+  // outputTokens — they must not be billed a second time.
+  assert.ok(usd > 0, `a priced attempt must cost something, got ${String(usd)}`)
+  assert.ok(Math.abs(usd - 0.168) < 1e-9, `expected 0.168, got ${String(usd)}`)
+  const snapshot = budget.snapshot()
+  assert.ok(snapshot.spentUSD > 0, 'spentUSD must leave zero — this is the gap the metering fix closes')
+  assert.equal(snapshot.unpricedSteps, 0)
+})

@@ -13,6 +13,11 @@ import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 
 import { createChatJudge, parseScore } from '../src/judge.ts'
+import {
+  normaliseAnswer,
+  scoreCriteria,
+  wireQuestion,
+} from '../src/laya.ts'
 import type { LlmClient, LlmResult } from '../src/llm.ts'
 import { judgeQuestion } from '../src/review.ts'
 
@@ -161,4 +166,47 @@ test('a missing question is reported rather than answered with a guess', async (
   const result = await judge.score('state', {})
   assert.equal(result.score, undefined)
   assert.match(result.error ?? '', /no review_worthiness question/)
+})
+
+// --- Laya / System One wire helpers (no network) ---
+
+test('scoreCriteria turns a numeric-key map into an ordered label array', () => {
+  assert.deepEqual(
+    scoreCriteria({ '2': 'stop', '0': 'routine', '1': 'risky' }),
+    ['routine', 'risky', 'stop'],
+  )
+  assert.deepEqual(scoreCriteria(['a', 'b']), ['a', 'b'])
+  assert.equal(scoreCriteria(undefined), undefined)
+})
+
+test('wireQuestion normalises score maps; leaves choice maps alone', () => {
+  const score = wireQuestion({
+    type: 'score',
+    instructions: 'x',
+    criteria: { '0': 'low', '1': 'high' },
+  })
+  assert.deepEqual(score.criteria, ['low', 'high'])
+
+  const choice = wireQuestion({
+    type: 'choice',
+    instructions: 'x',
+    criteria: { edit: 'change code', test: 'run tests' },
+  })
+  assert.deepEqual(choice.criteria, { edit: 'change code', test: 'run tests' })
+})
+
+test('normaliseAnswer maps the wire `noul` field onto probability', () => {
+  assert.deepEqual(normaliseAnswer({ noul: 0.42, confidence: 0.9 }), {
+    probability: 0.42,
+    confidence: 0.9,
+  })
+  assert.deepEqual(normaliseAnswer({ probability: 0.1, confidence: 0.5 }), {
+    probability: 0.1,
+    confidence: 0.5,
+  })
+  assert.deepEqual(normaliseAnswer({ score: 1.5, confidence: 0.2 }), {
+    score: 1.5,
+    confidence: 0.2,
+  })
+  assert.equal(normaliseAnswer(undefined), undefined)
 })

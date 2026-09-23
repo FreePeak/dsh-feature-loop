@@ -36,7 +36,8 @@ docker compose -f docker/docker-compose.yml logs -f   # the URL + token
 | `make dashboard` | Print the approval dashboard's URL + token (loopback, port 3092) |
 | `make health` | Container status, the HTTP probe, and the published binding |
 | `make shell` | Shell inside the container |
-| `make clean` | **Destructive**: removes the container **and** the volume (asks to confirm) |
+| `make clean` | **Destructive**: removes the container **and the loop history** (asks to confirm). Sessions survive |
+| `make clean-all` | **Fully destructive**: container, history, sessions, settings, profile |
 | `make rmi` | Remove the image |
 | `make ports` | Which of 3081/3097/3099/3090 are in use — read-only, never disturbs them |
 
@@ -44,9 +45,16 @@ Checks that need no container: `make check` (tests + typecheck), `make test`,
 `make typecheck`, `make integration`, `make compose-check`, and `make verify`
 (all of it).
 
-The volume is named **`dsh-fl-data`** — pinned with `name:` in the compose file,
-because compose would otherwise prefix it with the directory name (`docker_`),
-and then `make clean` and this document would name a volume that does not exist.
+Two volumes, split by blast radius — both pinned with `name:` in the compose
+file, because compose would otherwise prefix them with the directory name
+(`docker_`), and then `make clean` and this document would name volumes that
+do not exist:
+
+- **`dsh-data`** (`/data`): profile, settings, sessions, logs. Survives
+  `make clean`.
+- **`dsh-fl-data`** (`/data/.feature-loop`): the loop's run history
+  (`runs.jsonl`). `make clean` removes this one only — metrics reset without
+  touching sessions. `make clean-all` removes both.
 
 Open `http://127.0.0.1:3090/?token=...` — host port **3090** maps to the
 container's relay port **8099**, which forwards to the UI on `127.0.0.1:3099`

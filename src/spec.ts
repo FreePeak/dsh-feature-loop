@@ -163,3 +163,101 @@ export function describeEnvelope(spec: LoopSpec): string {
   const rungs = spec.controller.ladder.map(r => r.model).join(' → ')
   return `<= ${String(spec.maxSteps)} steps, <= $${spec.costBudgetUSD.toFixed(2)}, routes ${rungs}`
 }
+
+/**
+ * The optimization block: refinement knobs that sit *beside* the spec, not
+ * inside it.
+ *
+ * Deliberately separate from {@link LoopSpec}: the eight dimensions describe
+ * ONE run — what done means, what it may cost — while `optimize` describes
+ * what happens *across* runs (re-running a task with feedback from the last
+ * attempt). Folding it into the spec would make every existing valid spec
+ * incomplete overnight, which would be a breaking config change for a feature
+ * most deployments never turn on. An absent block must change nothing.
+ */
+export interface OptimizeConfig {
+  /**
+   * Refinement passes over one task, an integer in {@link LOOPS_RANGE}.
+   *
+   * The band is enforced at load, not at run time: below 3 a "trend" across
+   * passes is two samples, and above 10 the refinement bill and wall-clock
+   * dwarf the single run being improved — at that point the task wants a
+   * rethink, not another pass. Validating early means a typo like `30` stops
+   * the plugin from loading instead of quietly launching a runaway loop.
+   */
+  loops?: number
+  /** Derive an envelope (step/cost expectations) from history before running. */
+  derive?: boolean
+  /** Run-history file the envelope and metrics are derived from. */
+  history?: string
+  /** Which judge scores artifacts across passes. `none` disables scoring. */
+  judge?: 'none' | 'chat' | 'laya'
+  /** Dollars the whole refinement (all passes) may spend, per task. */
+  totalBudgetUSD?: number
+}
+
+/** The accepted band for `optimize.loops` — one source of truth for config and CLI. */
+export const LOOPS_RANGE = { min: 3, max: 10 } as const
+
+/**
+ * Validate one `loops` count against {@link LOOPS_RANGE}.
+ *
+ * Shared by the config loader and the CLI flag so the two can never drift
+ * apart: a band enforced in two places is a band that will eventually be
+ * enforced in only one of them.
+ *
+ * @param value - the candidate count, as parsed.
+ * @param field - the field name for the error message (`optimize.loops` from
+ *   the config path, `--loops` from argv), so the reader knows where to fix it.
+ * @returns the same value, for chaining.
+ * @throws TypeError naming the field and the accepted band — the fail-at-load
+ *   rule `validateSpec` and `parseDashboardConfig` already follow.
+ */
+export function parseLoops(value: number, field: string): number {
+  if (!Number.isInteger(value) || value < LOOPS_RANGE.min || value > LOOPS_RANGE.max) {
+    throw new TypeError(
+      `${field} must be an integer in [${String(LOOPS_RANGE.min)}, ${String(LOOPS_RANGE.max)}], `
+      + `received ${String(value)} — see optimize.loops in the config catalog for the accepted band`,
+    )
+  }
+  return value
+}
+
+/**
+ * Validate the `optimize` block, naming the first bad field.
+ *
+ * Mirrors `parseDashboardConfig` exactly: a `TypeError` whose message starts
+ * with the field path, thrown even for fields nobody is using yet. A typo in
+ * `judge` must stop the plugin from loading the day someone enables the block,
+ * never surface as an unexplained no-op mid-run.
+ *
+ * @param config - the raw `optimize:` value from the patch row; absent means
+ *   today's behaviour, exactly.
+ * @returns the same block, for chaining.
+ * @throws TypeError naming the first bad field.
+ */
+export function parseOptimizeConfig(config: OptimizeConfig = {}): OptimizeConfig {
+  if (typeof config !== 'object' || config === null || Array.isArray(config)) {
+    throw new TypeError(`optimize must be a mapping of options, received ${JSON.stringify(config)}`)
+  }
+  if (config.loops !== undefined) parseLoops(config.loops, 'optimize.loops')
+  if (config.derive !== undefined && typeof config.derive !== 'boolean') {
+    throw new TypeError(`optimize.derive must be true or false, received ${JSON.stringify(config.derive)}`)
+  }
+  if (config.history !== undefined && (typeof config.history !== 'string' || config.history.trim() === '')) {
+    throw new TypeError(`optimize.history must be a non-empty path string, received ${JSON.stringify(config.history)}`)
+  }
+  if (config.judge !== undefined && config.judge !== 'none' && config.judge !== 'chat' && config.judge !== 'laya') {
+    throw new TypeError(
+      `optimize.judge must be "none", "chat" or "laya", received ${JSON.stringify(config.judge)}`,
+    )
+  }
+  if (config.totalBudgetUSD !== undefined
+    && (!Number.isFinite(config.totalBudgetUSD) || config.totalBudgetUSD <= 0)) {
+    throw new TypeError(
+      `optimize.totalBudgetUSD must be > 0, received ${String(config.totalBudgetUSD)} — `
+      + 'an unlimited refinement budget is not a budget',
+    )
+  }
+  return config
+}

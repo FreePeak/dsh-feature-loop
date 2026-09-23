@@ -16,6 +16,8 @@ import z from '@deepseek-ai/schemastery'
 import { apply as applyFeatureLoop } from './plugin.ts'
 import type { CreatePolicyOptions, FeatureLoopPolicy } from './plugin.ts'
 import type { DashboardConfig } from './dashboard.ts'
+import { parseOptimizeConfig } from './spec.ts'
+import type { OptimizeConfig } from './spec.ts'
 
 export {
   apply as applyListeners,
@@ -72,9 +74,10 @@ export interface Config {
   gateMode?: 'ask' | 'deny'
   /**
    * The HITL approval dashboard: a loopback web page for answering this loop's
-   * approval requests and watching the run. Omitted (or `enabled` not `true`)
-   * means no server starts — the composer panel remains the only channel,
-   * exactly as before this feature existed.
+   * approval requests and watching the run. On by default — omitting the block
+   * starts the page on 127.0.0.1:8100 with a per-start token. Set
+   * `enabled: false` for no server (the composer panel remains the only
+   * channel), or `answers: false` to watch without answering.
    *
    * Validated field-by-field by `parseDashboardConfig` even when disabled, so
    * a typo fails at load rather than when someone flips `enabled` on. Set
@@ -82,6 +85,16 @@ export interface Config {
    * review brief per ask, rendered above the Allow/Reject buttons.
    */
   dashboard?: DashboardConfig
+  /**
+   * The optimization block (`loops`, `derive`, `history`, `judge`,
+   * `totalBudgetUSD`). The block is validated at load and forwarded to the
+   * plugin, which uses it for exactly what a deployed loop can use: `derive`
+   * and `history` drive the run-history recording and the dashboard's Metrics
+   * payload, while `loops`/`totalBudgetUSD` are accepted but intentionally not
+   * consumed by any hook — iteration belongs to the caller (the CLI's
+   * `runRefined`), not to a step waterfall. See `OptimizePolicyOptions`.
+   */
+  optimize?: OptimizeConfig
 }
 
 /**
@@ -101,6 +114,7 @@ export const Config: z<Config> = z.object({
   gatePolicies: z.any(),
   gateMode: z.union([z.const('ask'), z.const('deny')]),
   dashboard: z.any(),
+  optimize: z.any(),
 }) as unknown as z<Config>
 
 /**
@@ -112,12 +126,19 @@ export const Config: z<Config> = z.object({
  * nothing when cordis collects the listener disposers itself.
  */
 export function apply(ctx: Context, config: Config = {}): (() => void) | void {
+  // Fail at load, before any listener registers — the same rule as the spec
+  // and the dashboard block: a misconfigured optimize band stops the plugin
+  // from loading; it never degrades into a refinement loop nobody meant to
+  // start. The parsed block is forwarded so the plugin can record history and
+  // feed the dashboard's Metrics panel from it.
+  const optimize = config.optimize === undefined ? undefined : parseOptimizeConfig(config.optimize)
   return applyFeatureLoop(ctx, {
     spec: config.spec,
     confidenceThreshold: config.confidenceThreshold,
     gatePolicies: config.gatePolicies,
     gateMode: config.gateMode,
     dashboard: config.dashboard,
+    optimize,
     router: {
       ...(config.reviewBudget === undefined ? {} : { reviewBudget: config.reviewBudget }),
       ...(config.judgeThreshold === undefined ? {} : { judgeThreshold: config.judgeThreshold }),

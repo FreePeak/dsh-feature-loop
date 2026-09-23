@@ -46,8 +46,14 @@
       goal: "the failing test passes and no other test breaks"
       sensor: ["repo files", "test output"]
       controller:
+        # Two roles, not one rung: `execution` does the work (cheap-first),
+        # `planning` takes over when the cheap tier stalls. These are onegw
+        # role aliases (verified live against /v1/models), not provider/model
+        # pairs — the gateway resolves them. `stepsPerRung: 5` means the
+        # executor gets 5 steps before the ladder even considers climbing.
         ladder:
-          - { provider: onegw, model: opencode/deepseek-v4.1-flash }
+          - { provider: onegw, model: execution }
+          - { provider: onegw, model: planning }
         stepsPerRung: 5
         escalateAfterFailures: 2
       actuator:
@@ -63,8 +69,22 @@
         guards: ["error-cascade", "tool-cycle"]
       maxSteps: 12
       costBudgetUSD: 1.00
+      # Prices keyed by the ladder's route keys (`provider/model`). Role
+      # aliases price identically — execution and planning are routing names
+      # for the same gateway account, so the marginal rates match until
+      # onegw publishes per-role pricing.
       prices:
-        onegw/opencode/deepseek-v4.1-flash:
+        onegw/execution:
           inputPerMTok: 0.14
           outputPerMTok: 0.28
           cacheReadPerMTok: 0.014
+        onegw/planning:
+          inputPerMTok: 0.14
+          outputPerMTok: 0.28
+          cacheReadPerMTok: 0.014
+    # Run history + Metrics, on by default. Every closed turn appends one
+    # JSONL line; the dashboard's Metrics panel rolls the file up. Records
+    # are evidence, never control — a failed append is a feed line, not a
+    # failed turn. Loopback-only end to end (the file lives in the volume).
+    optimize:
+      history: .feature-loop/runs.jsonl

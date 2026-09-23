@@ -26,7 +26,11 @@ SHELL := /bin/bash
 # ── configuration ──────────────────────────────────────────────────────────
 COMPOSE      ?= docker compose -f docker/docker-compose.yml
 SERVICE      ?= dsh-feature-loop
+# The loop's own data (run history). Sessions/settings live in `dsh-data` and
+# survive `make clean` — only metrics reset. `DATA_VOLUME` keeps the old
+# `VOLUME` name working for callers that set it.
 VOLUME       ?= dsh-fl-data
+DATA_VOLUME  ?= dsh-data
 HOST_PORT    ?= 3090
 # The HITL approval dashboard's published host port (compose maps it to the
 # container's 8100). 3092 sits clear of the protected ports and of 3090/3091.
@@ -104,10 +108,10 @@ up: ## Start the container detached, then print the URL and token
 	  fi
 
 .PHONY: down
-down: ## Stop and remove the container (the named volume, and sessions, survive)
+down: ## Stop and remove the container (both volumes survive: sessions AND history)
 	@$(COMPOSE) down 2>/dev/null || true
 	@docker rm -f $(SERVICE) >/dev/null 2>&1 || true
-	@echo "  down — sessions kept in volume '$(VOLUME)'"
+	@echo "  down — sessions in '$(DATA_VOLUME)', history in '$(VOLUME)'"
 
 .PHONY: restart
 restart: ## Restart the container (re-reads its environment)
@@ -170,11 +174,20 @@ shell: ## Open a shell inside the running container
 
 # ── destructive ────────────────────────────────────────────────────────────
 .PHONY: clean
-clean: ## Remove the container AND the volume (deletes sessions and settings)
-	@echo "  this deletes volume '$(VOLUME)': all sessions, settings, the seeded profile"
+clean: ## Remove the container AND the loop history (sessions/settings survive)
+	@echo "  this deletes volume '$(VOLUME)': the run history only."
+	@echo "  sessions, settings and the seeded profile in '$(DATA_VOLUME)' survive."
+	@read -r -p "  type 'yes' to continue: " ok; [ "$$ok" = "yes" ] || { echo "  aborted"; exit 1; }
+	@docker rm -f $(SERVICE) >/dev/null 2>&1 || true
+	@docker volume rm $(VOLUME) >/dev/null 2>&1 || true
+	@echo "  clean (history reset; sessions kept)"
+
+.PHONY: clean-all
+clean-all: ## Remove container, history AND sessions/settings (full reset)
+	@echo "  this deletes '$(VOLUME)' (history) and '$(DATA_VOLUME)' (sessions, settings, profile)"
 	@read -r -p "  type 'yes' to continue: " ok; [ "$$ok" = "yes" ] || { echo "  aborted"; exit 1; }
 	@$(COMPOSE) down -v
-	@echo "  clean"
+	@echo "  clean-all"
 
 .PHONY: rmi
 rmi: ## Remove the container image
@@ -186,7 +199,7 @@ check: test typecheck ## Run the test suite and the typecheck
 	@echo "  check passed"
 
 .PHONY: test
-test: ## Run the unit test suite (175 tests, no network)
+test: ## Run the unit test suite (no network)
 	@node --experimental-strip-types --test test/*.test.ts 2>&1 | tail -8
 
 .PHONY: typecheck
@@ -218,8 +231,10 @@ typecheck: ## Typecheck src/ (mirrors the CI file list)
 
 # The harness-free import closure, exactly as CI lists it.
 CI_FILES := src/agent-policy.ts src/budget.ts src/cli.ts src/dashboard.ts \
-            src/dashboard-page.ts src/explainer.ts src/judge.ts src/laya.ts \
-            src/llm.ts src/messages.ts src/brief.ts src/approval-bridge.ts src/prompts.ts src/review.ts src/routing.ts \
+            src/dashboard-page.ts src/envelope.ts src/explainer.ts src/judge.ts src/laya.ts \
+            src/llm.ts src/messages.ts src/metrics.ts src/optimize.ts src/optimizer.ts \
+            src/brief.ts src/approval-bridge.ts src/prompts.ts src/questioner.ts \
+            src/refine.ts src/review.ts src/routing.ts src/runlog.ts \
             src/runner.ts src/signals.ts src/spec.ts src/tools.ts
 
 .PHONY: integration
