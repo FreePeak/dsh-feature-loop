@@ -59,68 +59,33 @@ build.
 
 ## HITL ops dashboard
 
-The approval surface is a **page inside the DSH web UI** — the *Feature Loop*
-sidebar entry — not a second application you visit. When a tool hits the review
-gate the ask appears in a stockbroker-style thread with optional feedback, not a
-modal interrupt. Live runs are grouped by workspace; Activity and Runs scroll
-independently.
+When a tool hits the review gate, operators decide in a stockbroker-style thread
+with optional feedback — not a modal interrupt. Live runs are grouped by
+workspace on a Cursor-dark ops rail; Activity and Runs scroll independently.
 
 <p align="center">
-  <img src="docs/screenshots/A2-dashboard-run.png" alt="The Feature Loop dashboard inside the DSH UI: approval thread, workspace tree, run meters and activity feed" width="100%">
-</p>
-
-You can **start the loop from that page** — describe the task and it is
-submitted as a normal turn, so the ceilings, detectors and gate apply exactly as
-they do to anything typed in the composer.
-
-<p align="center">
-  <img src="docs/screenshots/A1-start-control.png" alt="The Start a loop control, showing the session the run will use" width="100%">
-</p>
-
-The page follows the harness palette, so it tracks the host's light/dark theme
-rather than carrying its own:
-
-<p align="center">
-  <img src="docs/screenshots/A4-dashboard-dark.png" alt="The same page in dark theme" width="100%">
-</p>
-
-Configuration lives in the same place:
-
-<p align="center">
-  <img src="docs/screenshots/A3-settings.png" alt="The Settings tab: status, judge, attention and gate mode" width="100%">
-</p>
-
-### It responds to the page, not the window
-
-The dashboard renders inside the harness's main column, which is narrower than
-the window — the sidebar and right bar take their share. So the layout is driven
-by **container** queries: at a page width of ~1000px the run rail moves below the
-thread, and below ~520px everything is one column and the form controls stack.
-
-<p align="center">
-  <img src="docs/screenshots/A5-width-1000.png" alt="Two columns at a 1000px page width" width="100%">
-</p>
-<p align="center">
-  <img src="docs/screenshots/A5-width-640.png" alt="One column at a 640px page width, with settings and Start stacked" width="100%">
+  <img
+    src="docs/hitl-dashboard-revamp.png"
+    alt="HITL ops dashboard — left workspaces + activity, center approval thread, right grouped runs"
+    width="100%"
+  >
 </p>
 
 | Pane | What you get |
 |---|---|
 | **Left** | Live workspaces / sessions tree + scrollable activity ledger |
-| **Center** | Approval thread with review brief, Allow once / Reject, optional feedback |
+| **Center** | Approval thread with review brief, Allow / Reject, optional feedback |
 | **Right** | Runs grouped by workspace with step/spend meters and signals |
 
-Live updates are **pushed**: the host emits a coalesced change event and the page
-re-reads on it, so a new run or a pending ask appears immediately rather than on a
-poll. A slow interval remains only as a safety net for a dropped frame.
+```bash
+# open a seeded dashboard in your browser (no model call)
+node --experimental-strip-types demo/hitl-open.mjs open
+# capture docs/hitl-dashboard-revamp.png
+node --experimental-strip-types demo/hitl-open.mjs shot
+```
 
-An ask is claimed only while a page is actually watching; otherwise it falls
-through to the composer panel, so a dashboard nobody has open can never strand a
-decision.
-
-For headless and CI there is still an opt-in loopback page — set
-`dashboard.standalone: true` in the patch row — which serves the same components
-on `127.0.0.1` with its own token. Details:
+Token-gated loopback page · claim only while an SSE client is connected ·
+binary allow/reject preserved. Details:
 [`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md).
 
 ---

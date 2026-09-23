@@ -32,6 +32,11 @@ const QUESTION = {
 }
 
 const state = new DashboardState()
+// Primary live session (pending ask lands here).
+state.recordMeta('run-7f3a', {
+  sessionId: 'run-7f3a',
+  cwd: '/Users/linh.doan/work/harvey/freepeak/dsh-feature-loop',
+})
 state.recordStep('run-7f3a', {
   step: 4,
   maxSteps: 12,
@@ -48,6 +53,68 @@ state.note('step', 'step 4/12 — reviewing write_file', 'run-7f3a')
 state.note('route', 'routed onegw/execution', 'run-7f3a')
 state.note('judge', 'judge score 2/3 on step 3 output', 'run-7f3a')
 state.note('gate', 'ask: write_file — irreversible', 'run-7f3a')
+state.note('signals', 'budget trajectory warning at step 4', 'run-7f3a')
+state.note('step', 'step 3/12 — edited shell.css tokens', 'run-7f3a')
+state.note('note', 'composer feedback path wired', 'run-7f3a')
+state.note('approval', 'waiting on write_file decision', 'run-7f3a')
+
+// Second workspace so the rail tree shows grouping.
+state.recordMeta('sess-be-menu', {
+  sessionId: 'sess-be-menu',
+  cwd: '/Users/linh.doan/work/be/backend/be-menu',
+})
+state.recordStep('sess-be-menu', {
+  step: 2,
+  maxSteps: 10,
+  spentUSD: 0.0041,
+  budgetUSD: 0.5,
+})
+state.recordRoute('sess-be-menu', 'onegw/cheap')
+state.note('step', 'step 2/10 — exploring menu service', 'sess-be-menu')
+state.note('route', 'routed onegw/cheap', 'sess-be-menu')
+state.note('note', 'listing workspace handlers', 'sess-be-menu')
+state.recordMeta('sess-be-menu-2', {
+  sessionId: 'sess-be-menu-2',
+  cwd: '/Users/linh.doan/work/be/backend/be-menu',
+})
+state.recordStep('sess-be-menu-2', {
+  step: 5,
+  maxSteps: 10,
+  spentUSD: 0.018,
+  budgetUSD: 0.5,
+})
+state.recordJudge('sess-be-menu-2', 1)
+state.note('judge', 'judge score 1/3 — needs follow-up', 'sess-be-menu-2')
+
+// Third workspace + bare agent (no cwd) → Ungrouped bucket.
+state.recordMeta('sess-agent-platform', {
+  sessionId: 'sess-agent-platform',
+  cwd: '/Users/linh.doan/work/harvey/freepeak/agent-platform',
+})
+state.recordStep('sess-agent-platform', {
+  step: 7,
+  maxSteps: 20,
+  spentUSD: 0.11,
+  budgetUSD: 2,
+})
+state.recordRoute('sess-agent-platform', 'onegw/execution')
+state.note('step', 'step 7/20 — orchestrator plan', 'sess-agent-platform')
+state.note('gate', 'ask: shell — network egress', 'sess-agent-platform')
+
+
+// Extra live sessions so the workspace tree scrolls like activity/runs.
+for (let i = 0; i < 8; i++) {
+  const id = `sess-extra-${i}`
+  const cwd = i % 2 === 0
+    ? `/Users/linh.doan/work/be/backend/svc-${i}`
+    : `/Users/linh.doan/work/harvey/freepeak/proj-${i}`
+  state.recordMeta(id, { sessionId: id, cwd })
+  state.recordStep(id, { step: 1 + (i % 5), maxSteps: 12, spentUSD: 0.001 * (i + 1), budgetUSD: 1 })
+  state.note('step', `step ${1 + (i % 5)}/12 — ${id}`, id)
+}
+state.recordStep('agentless', { step: 1, maxSteps: 6 })
+state.note('note', 'agentless hook fired once', 'agentless')
+state.note('note', 'keepalive tick', 'agentless')
 
 const dash = startDashboard(
   { enabled: true, port: Number(process.env.DSH_DEMO_PORT ?? 3092), answerTimeoutMs: 30_000_000 },
