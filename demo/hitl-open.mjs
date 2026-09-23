@@ -12,6 +12,7 @@
  */
 import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import http from 'node:http'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -105,6 +106,40 @@ function openBrowser(target) {
   })
 }
 
+/**
+ * Hold one SSE client so a pending ask is not fail-closed when the human
+ * tab blips (Chrome focus changes, temporary network stalls). Decisions still
+ * come from the browser tab; this stream only keeps `clients.size > 0`.
+ */
+function holdSseClient(baseUrl, token) {
+  const target = new URL('/api/events', baseUrl)
+  target.searchParams.set('token', token)
+  let req
+  let stopped = false
+  const connect = () => {
+    if (stopped) return
+    req = http.get(target, {
+      headers: {
+        Accept: 'text/event-stream',
+        'X-Dashboard-Token': token,
+      },
+    }, (res) => {
+      res.resume()
+      res.on('end', () => {
+        if (!stopped) setTimeout(connect, 500)
+      })
+    })
+    req.on('error', () => {
+      if (!stopped) setTimeout(connect, 500)
+    })
+  }
+  connect()
+  return () => {
+    stopped = true
+    req?.destroy()
+  }
+}
+
 function playwrightCore() {
   const candidates = [
     join(homedir(), 'work/harvey/freepeak/deepseek-harness/node_modules/playwright-core'),
@@ -163,8 +198,19 @@ if (mode === 'shot') {
   await screenshot(url, join(root, 'docs/hitl-dashboard-revamp.png'))
   await dash.stop()
 } else {
+  // Keep-alive stream first so raiseClaimedAsk can claim without waiting on
+  // the human tab, and so tab focus changes do not settle the ask.
+  const releaseSse = holdSseClient(dash.url, dash.token)
+  await new Promise((resolve) => { setTimeout(resolve, 200) })
   openBrowser(url)
   await raiseClaimedAsk()
+  writeFileSync(join(root, 'docs/hitl-dashboard-url.txt'), `${url}\n`)
   console.log('pending ask raised; browser should show the decision card.')
   console.log('Ctrl+C stops the demo dashboard.')
+  process.on('SIGINT', async () => {
+    releaseSse()
+    await dash.stop()
+    process.exit(0)
+  })
+  await new Promise(() => {})
 }
