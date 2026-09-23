@@ -20,8 +20,8 @@ typecheck clean (CI file list)               ← now includes src/dashboard.ts, 
 9 passed (9)                                 ← integration, real cordis + real ApprovalService
 verify passed
 ```
-(Historical transcript at dashboard-ship time; current counts after the
-OpenUI brief work: 175 unit + 11 integration, `make verify` green.)
+(Historical transcript at dashboard-ship time. Current counts after the
+assistant-ui migration: 194 unit + 11 integration, `make verify` green.)
 
 - **151/151 unit tests** (`node --experimental-strip-types --test test/*.test.ts`),
   including `test/dashboard.test.ts` (18 tests): config validation, token
@@ -30,8 +30,9 @@ OpenUI brief work: 175 unit + 11 integration, `make verify` green.)
   socket closed, POST validation (401/400/403/409), plugin wiring
   (`{prepend: true}`, no-dashboard registers nothing, bad field fails at load),
   the greppable `feature-loop dashboard:` line, hook-fed run state.
-  (Historical baseline at dashboard-ship time; the OpenUI brief work grew the
-  suite to 175 unit + 11 integration — see the browser-click section below.)
+  (Historical baseline at dashboard-ship time; briefs and the assistant-ui
+  migration grew the suite to 194 unit + 11 integration — see the
+  re-verification section below.)
 - **9/9 integration tests** under the harness's own vitest
   (`test/integration/plugin-in-dsh.spec.ts`, through `run.sh`): the original 5
   (APPROVE / REJECT / FAIL-CLOSED / DENY / AUTO) plus 4 dashboard probes
@@ -118,6 +119,9 @@ e2e-dashboard (allowed-once): the Allow once click resolved the ask allowed-once
 $ node --experimental-strip-types test/e2e-dashboard.mjs reject
 e2e-dashboard (rejected): the Reject click resolved the ask rejected
 ```
+
+A captured frame of the three card states (brief ready / still writing /
+unavailable) is committed at [`assistant-ui-dashboard.png`](assistant-ui-dashboard.png).
 
 What changed in the mechanism, and why it is still the same guarantee: the
 approval card is now rendered by assistant-ui's `MessagePrimitive.Parts` with a

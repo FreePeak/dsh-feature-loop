@@ -1,6 +1,6 @@
 /**
  * The review-brief explainer: the model call that authors a pending
- * approval's OpenUI Lang brief.
+ * approval's review brief (plain prose).
  *
  * This mirrors the `Judge` / `NO_JUDGE` seam in `laya.ts` deliberately: the
  * default is a no-op so an unconfigured deployment behaves byte-identically
@@ -15,8 +15,8 @@
  *                     `undefined`, and the ask's own abort signal cancels the
  *                     call. A brief that cannot be produced is a missing brief,
  *                     never a stuck approval.
- *   never authoritative the returned string is OpenUI Lang for display only.
- *                     It is normalized by `brief.ts` before it reaches
+ *   never authoritative the returned string is display text only. It is
+ *                     normalized (and bounded) by `brief.ts` before it reaches
  *                     the page, and nothing in this module can settle an ask.
  *
  * ponytail: the brief's model call is not metered by `LoopBudget` — the
@@ -47,7 +47,7 @@ export interface BriefInput {
   reversibility?: string
 }
 
-/** The explainer contract: OpenUI Lang text, or `undefined` for no brief. */
+/** The explainer contract: brief prose, or `undefined` for no brief. */
 export interface Explainer {
   explain(input: BriefInput, signal?: AbortSignal): Promise<string | undefined>
 }
