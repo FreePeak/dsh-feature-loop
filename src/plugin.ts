@@ -47,8 +47,8 @@ import { validateSpec } from './spec.ts'
 import type { LoopSpec } from './spec.ts'
 import type { OptimizeConfig } from './spec.ts'
 import { NO_JUDGE, OnegwJudge } from './laya.ts'
-import { createChatJudge } from './judge.ts'
 import type { Judge } from './laya.ts'
+import { createChatJudge } from './judge.ts'
 import { createChatExplainer, NO_EXPLAINER } from './explainer.ts'
 import type { BriefInput, Explainer } from './explainer.ts'
 import { normalizeBrief } from './brief.ts'
@@ -915,6 +915,79 @@ function readCredentialsKey(): string | undefined {
   }
   const match = /^\s*(ONEGW_API_KEY|ONEGE_API_KEY):\s*(\S+)\s*$/m.exec(raw)
   return match?.[2]
+}
+
+/** Default System One endpoint: the shared Laya sidecar on this machine. */
+const DEFAULT_JUDGE_BASE_URL = 'http://127.0.0.1:8091'
+
+/** Default System One model alias. */
+const DEFAULT_SYSTEMONE_MODEL = 'laya'
+
+/** How a deployed plugin picks its judge, from the patch row. */
+export interface JudgeConfig {
+  /** `none` (detectors only) | `chat` (metered) | `laya` (local, free). */
+  judge?: 'none' | 'chat' | 'laya'
+  /** System One base URL — Laya, or hosted Jev/TypeSafe on the same wire. */
+  judgeBaseURL?: string
+  /** Model alias the System One provider routes to. */
+  systemOneModel?: string
+  /** Model the `chat` judge uses. */
+  judgeModel?: string
+  /** Deadline for one judge call, in ms. Defaults to 5000. */
+  judgeTimeoutMs?: number
+}
+
+/**
+ * Build the judge a deployment configured.
+ *
+ * Before this existed the plugin hardcoded `NO_JUDGE`, so a profile could
+ * configure `judge: laya`, see no error, and get detector-only reviews forever
+ * — a silent no-op, which is the failure mode this repo's config blocks
+ * otherwise refuse to allow. Now the kind is read and the client is real.
+ *
+ * `laya` needs nothing but a reachable sidecar, so it is built optimistically:
+ * `OnegwJudge` latches itself off after one failed call and reports the reason
+ * rather than stalling every step, so an unreachable Laya costs one timeout and
+ * then degrades to the detectors — the documented posture in `laya.ts`.
+ *
+ * `chat` costs money per judged step, so it fails at *load* when no gateway key
+ * is present, the same rule the brief explainer follows: a configured judge
+ * that silently never runs is worse than a loud refusal to start.
+ *
+ * @param config - the judge fields from the patch row.
+ * @returns the judge, and a label naming which one for the dashboard's status.
+ * @throws Error when `chat` was asked for with no reachable key.
+ */
+export function resolveJudge(config: JudgeConfig): { judge: Judge, label: string } {
+  const kind = config.judge ?? 'none'
+  if (kind === 'none') return { judge: NO_JUDGE, label: 'none (detectors only)' }
+  if (kind === 'laya') {
+    const baseURL = config.judgeBaseURL ?? process.env.SYSTEMONE_BASE_URL ?? DEFAULT_JUDGE_BASE_URL
+    const model = config.systemOneModel ?? process.env.SYSTEMONE_MODEL ?? DEFAULT_SYSTEMONE_MODEL
+    return {
+      judge: new OnegwJudge({ baseURL, model, timeoutMs: config.judgeTimeoutMs ?? 5_000 }),
+      label: `systemone (${model} @ ${baseURL})`,
+    }
+  }
+  const apiKey = process.env.ONEGW_API_KEY ?? process.env.ONEGE_API_KEY ?? readCredentialsKey()
+  if (apiKey === undefined) {
+    throw new Error(
+      'judge is "chat" but no gateway key was found: set ONEGW_API_KEY (or ONEGE_API_KEY) '
+      + 'in the environment, or add it to ~/.dsh/.credentials.yaml. '
+      + 'Use judge: laya for a local judge that needs no key, or judge: none for detectors only.',
+    )
+  }
+  const model = config.judgeModel ?? 'xiaomi/mimo-v2.5'
+  return {
+    judge: createChatJudge({
+      llm: createOnegwClient({
+        baseURL: process.env.ONEGE_BASE_URL ?? 'http://127.0.0.1:8080/v1',
+        apiKey,
+      }),
+      model,
+    }),
+    label: `chat (${model})`,
+  }
 }
 
 /**

@@ -13,7 +13,6 @@
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json",
     "./remote": "./lib/remote.mjs",
-    "./command": "./lib/command.mjs",
     "./client": "./client.js"
   },
   "files": [
@@ -27,10 +26,12 @@
     "assets/mark-mono.svg",
     "assets/mark.svg",
     "bin/dshloop.mjs",
+    "client.js",
     "cordis.patch.yml",
     "lib/cli.mjs",
     "lib/index.d.mts",
-    "lib/index.mjs"
+    "lib/index.mjs",
+    "lib/remote.mjs"
   ],
   "license": "MIT",
   "author": "Linh Doan",
@@ -62,7 +63,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsdown src/index.ts src/cli.ts --format esm --dts --out-dir lib",
+    "build": "tsdown src/index.ts src/cli.ts src/remote.ts --format esm --out-dir lib",
     "test": "node --experimental-strip-types --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "demo": "bash demo/run.sh",
@@ -88,7 +89,7 @@
     "@deepseek-ai/dsh-agent": ">=0.1.0-rc.6",
     "@deepseek-ai/dsh-llm": ">=0.0.1-rc.1",
     "@deepseek-ai/dsh-tools": ">=0.0.1-rc.1",
-    "@deepseek-ai/dsh-typert-protocol": ">=0.1.0-rc.6"
+    "@deepseek-ai/dsh-typert-protocol": ">=0.1.0"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-typert-protocol": "0.1.0-rc.6",

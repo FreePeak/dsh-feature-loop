@@ -191,11 +191,3 @@
     # namespace and consume it without deadlocking the loader.
     - id: feature-loop-remote
       name: '@freepeak/dsh-feature-loop/remote'
-
-    # The `/loop` host command: `/loop <task>` names a task for the bounded
-    # loop. The handler returns the task text for the composer to submit as
-    # the turn, so the loop policies apply to it exactly as to any typed
-    # request. Same package, separate row: the host command registry owns
-    # `commands`, and the policy row must not inject it.
-    - id: feature-loop-command
-      name: '@freepeak/dsh-feature-loop/command'
