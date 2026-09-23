@@ -432,11 +432,11 @@ System One / Jev / TypeSafe wire):
 
 ```bash
 bash demo/run.sh --judge laya --judge-base-url http://127.0.0.1:8091
-# or: LAYA_BASE_URL=http://127.0.0.1:8091 bash demo/run.sh --judge laya
+# or: SYSTEMONE_BASE_URL=http://127.0.0.1:8091 bash demo/run.sh --judge laya
 ```
 
 `--judge laya` defaults the judge base URL to `http://127.0.0.1:8091` (override
-with `--judge-base-url` / `LAYA_BASE_URL`). The actor still talks to onegw;
+with `--judge-base-url` / `SYSTEMONE_BASE_URL`). The actor still talks to onegw;
 only the judge URL splits. Score criteria go as ordered arrays so Laya keeps
 the human labels; `noul` answers map onto `probability`.
 

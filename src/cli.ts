@@ -47,10 +47,9 @@ interface Options {
   judge: 'none' | 'chat' | 'laya'
   judgeModel: string
   /**
-   * System One / Jev / TypeSafe provider base URL (not the actor gateway).
-   * Defaults: `LAYA_BASE_URL` → `SYSTEMONE_BASE_URL` → `JEV_BASE_URL` →
-   * `http://127.0.0.1:8091` (local Laya container). Point at hosted Jev the
-   * same way — only this URL (and the model alias) change.
+   * System One provider base URL (Laya, Jev, TypeSafe — same wire). Not the
+   * actor gateway. Default `SYSTEMONE_BASE_URL` or `http://127.0.0.1:8091`.
+   * Swap providers by changing only this URL (and the model alias).
    */
   judgeBaseURL: string
   /** Model alias the System One provider routes to (`laya`, hosted Jev id, …). */
@@ -99,10 +98,9 @@ const USAGE = `dsh-feature-loop — run the loop against a repository
   --judge <kind>      none | chat | laya                      (default: chat)
   --judge-model <id>  model the chat judge uses               (default: xiaomi/mimo-v2.5)
   --judge-base-url <u> System One provider URL (Laya/Jev/TypeSafe)
-                      default: $LAYA_BASE_URL | $SYSTEMONE_BASE_URL |
-                               $JEV_BASE_URL | http://127.0.0.1:8091
+                      default: $SYSTEMONE_BASE_URL | http://127.0.0.1:8091
   --systemone-model <id> System One model alias               (default: laya;
-                      override with $LAYA_MODEL / $SYSTEMONE_MODEL)
+                      or $SYSTEMONE_MODEL)
   --review-budget <f> fraction of steps a human may be asked  (default: 0.10)
   --max-tokens <n>    per-step output cap                     (default: 4096)
   --loops <n>         refinement passes, integer 3–10 (default: 1)
@@ -125,21 +123,6 @@ five usable runs) nothing is applied — a floor is not a measurement.
 `
 
 
-/**
- * Resolve the System One provider base URL.
- *
- * Same client for local Laya, hosted Jev, or any TypeSafe-compatible gateway:
- * only the URL changes. Prefer the most specific env name first.
- */
-function resolveSystemOneBaseURL(): string {
-  return (
-    process.env.LAYA_BASE_URL
-    ?? process.env.SYSTEMONE_BASE_URL
-    ?? process.env.JEV_BASE_URL
-    ?? 'http://127.0.0.1:8091'
-  )
-}
-
 /** Parse argv into options, rejecting unknown flags loudly. */
 function parseArgs(argv: string[]): Options | 'help' {
   const options: Options = {
@@ -153,8 +136,8 @@ function parseArgs(argv: string[]): Options | 'help' {
     maxSteps: 15,
     judge: 'chat',
     judgeModel: 'xiaomi/mimo-v2.5',
-    judgeBaseURL: resolveSystemOneBaseURL(),
-    systemOneModel: process.env.LAYA_MODEL ?? process.env.SYSTEMONE_MODEL ?? 'laya',
+    judgeBaseURL: process.env.SYSTEMONE_BASE_URL ?? 'http://127.0.0.1:8091',
+    systemOneModel: process.env.SYSTEMONE_MODEL ?? 'laya',
     reviewBudget: 0.1,
     auto: false,
     maxTokens: 4096,

@@ -123,7 +123,7 @@ Status: **done on `dsh/loop-optimize`** — `plugin.ts` drains settled
 ## P1 — LLM reasons → Laya decides → LLM acts (dynamic quality questions)
 
 Status: **done** — `src/questioner.ts` (validate/parse/author, 9 tests),
-`--judge-base-url`/`LAYA_BASE_URL` split in `src/cli.ts` (default
+`--judge-base-url`/`SYSTEMONE_BASE_URL` split in `src/cli.ts` (default
 `http://127.0.0.1:8091`), `questioner` seam in `LoopRunnerOptions`
 (`src/runner.ts`, actor `lastAssistant` as reasoning, silent fallback to
 `judgeQuestion`). Live: authored `risk` score question → Laya `1.15`;
@@ -152,7 +152,7 @@ like Jev / TypeSafe: same System One wire, different base URL. Health
 Ops: `cd ~/.local/share/laya-sidecar && docker compose up -d` (colima VM ≥ 4 GB).
 Point the judge at `http://127.0.0.1:8091`, not onegw's `:8080`.
 
-Status: **done** — judge URL split (`--judge-base-url` / `LAYA_BASE_URL`,
+Status: **done** — judge URL split (`--judge-base-url` / `SYSTEMONE_BASE_URL`,
 default `:8091`); score criteria are ordered arrays (maps lose ladder
 labels); `noul` wire field maps onto `JudgeResult.probability`; questioner
 authors 1–3 typed questions per judged step with silent fallback to
