@@ -33,8 +33,52 @@
 import { createServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import { randomBytes, randomUUID, timingSafeEqual, createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { ReviewSignal } from './signals.ts'
 import { DASHBOARD_PAGE } from './dashboard-page.ts'
+
+/**
+ * The vendored dashboard bundle and stylesheets, read once at startup.
+ *
+ * These are build artifacts committed under `assets/assistant-ui/`
+ * (`make dashboard-bundle`), not files this module generates. The published
+ * payload ships them (`package.json` `files`) and the server reads them from
+ * disk here. Two candidate paths are tried because the plugin loads the
+ * *built* `lib/index.mjs` in production while the tests run TS straight from
+ * `src/`: the assets sit two directories up from `src/`, but only one up
+ * from `lib/`. A miss is a hard error naming the fix rather than a 404 the
+ * operator would have to diagnose from a blank page.
+ */
+function readBundleAsset(name: string): Buffer {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const tried: string[] = []
+  for (const base of [here, join(here, '..')]) {
+    const candidate = join(base, 'assets/assistant-ui', name)
+    tried.push(candidate)
+    try {
+      return readFileSync(candidate)
+    } catch {
+      /* try the next layout */
+    }
+  }
+  throw new Error(
+    `dashboard bundle asset missing: ${name} (tried ${tried.join(', ')}) — `
+    + 'rebuild with `make dashboard-bundle`',
+  )
+}
+
+const BUNDLE_JS = readBundleAsset('dashboard.js')
+const BUNDLE_SHELL_CSS = readBundleAsset('shell.css')
+const BUNDLE_UI_CSS = readBundleAsset('dashboard.css')
+
+/** The only three files the page may load, by exact path. */
+const ASSETS: Record<string, { body: Buffer, contentType: string }> = {
+  '/assets/dashboard.js': { body: BUNDLE_JS, contentType: 'text/javascript; charset=utf-8' },
+  '/assets/shell.css': { body: BUNDLE_SHELL_CSS, contentType: 'text/css; charset=utf-8' },
+  '/assets/dashboard.css': { body: BUNDLE_UI_CSS, contentType: 'text/css; charset=utf-8' },
+}
 
 /**
  * The outcome vocabulary, mirrored structurally from the harness's
@@ -70,6 +114,23 @@ export interface RunSnapshot {
   signals: ReviewSignal[]
 }
 
+/**
+ * One normalized review-brief node: data only, no HTML, strings only.
+ *
+ * Structural mirror of `BriefNode` in `brief.ts`, kept in this module so
+ * `dashboard.ts` stays dependency-free (CI's test job runs with no
+ * `node_modules`). The two shapes must stay identical; `recordBrief` in
+ * `DashboardState` takes the structural form.
+ */
+export type BriefNode =
+  | { kind: 'heading', text: string }
+  | { kind: 'paragraph', text: string }
+  | { kind: 'list', items: string[] }
+  | { kind: 'code', language: string, code: string }
+
+/** The review brief's lifecycle on one pending ask. */
+export type BriefState = 'none' | 'pending' | 'ready' | 'failed'
+
 /** One approval waiting for a human. */
 export interface PendingApproval {
   id: string
@@ -78,6 +139,15 @@ export interface PendingApproval {
   reason?: string
   runId?: string
   askedAt: number
+  /**
+   * The review brief's lifecycle. `none` means no brief was requested (the
+   * default); `pending` while the explainer runs; `ready` with `brief` set;
+   * `failed` when the explainer or normalization produced nothing. A failed
+   * brief never touches the ask — the buttons stay fully answerable.
+   */
+  briefState: BriefState
+  /** Normalized brief nodes, present exactly when `briefState` is `ready`. */
+  brief?: BriefNode[]
 }
 
 /** The full state the page consumes — one JSON document per SSE frame. */
@@ -107,6 +177,28 @@ export interface DashboardConfig {
   answers?: boolean
   /** Fail closed this long after asking: pending asks settle `unavailable`. */
   answerTimeoutMs?: number
+  /**
+   * The model-authored review brief, rendered above the Allow/Reject buttons.
+   * Omitted or `enabled` not `true` means no brief is ever requested — the
+   * pending cards render exactly as before this feature existed.
+   */
+  brief?: BriefConfig
+}
+
+/**
+ * Configured under the `dashboard:` key's `brief:` row. All fields optional.
+ * The model call is built by the plugin from the deployment's gateway env;
+ * these fields only bound it.
+ */
+export interface BriefConfig {
+  /** Must be `true` for the plugin to request briefs at all. */
+  enabled?: boolean
+  /** The model id to ask, e.g. `xiaomi/mimo-v2.5`. Required when enabled. */
+  model?: string
+  /** Cap on the brief's own output tokens. Default 1024. */
+  maxTokens?: number
+  /** Per-brief deadline in ms. Default 15000. */
+  timeoutMs?: number
 }
 
 /** Config after validation: every field present and type-correct. */
@@ -116,6 +208,7 @@ export interface ResolvedDashboardConfig {
   token: string
   answers: boolean
   answerTimeoutMs: number
+  brief: { enabled: boolean, model: string | undefined, maxTokens: number, timeoutMs: number }
 }
 
 /**
@@ -212,7 +305,45 @@ export function parseDashboardConfig(config: DashboardConfig = {}): ResolvedDash
       `dashboard.answerTimeoutMs must be a positive integer of milliseconds, received ${JSON.stringify(config.answerTimeoutMs)}`,
     )
   }
-  return { host, port, token, answers, answerTimeoutMs }
+  return { host, port, token, answers, answerTimeoutMs, brief: parseBriefConfig(config.brief) }
+}
+
+/**
+ * Validate the `dashboard.brief` row, naming the first bad field like every
+ * other dashboard option. A brief without a model is a typo someone will
+ * flip `enabled: true` on later — it fails at load, not at the first ask.
+ */
+function parseBriefConfig(brief: BriefConfig | undefined): ResolvedDashboardConfig['brief'] {
+  if (brief === undefined) return { enabled: false, model: undefined, maxTokens: 1024, timeoutMs: 15_000 }
+  if (typeof brief !== 'object' || brief === null || Array.isArray(brief)) {
+    throw new TypeError(
+      `dashboard.brief must be a mapping of options, received ${JSON.stringify(brief)}`,
+    )
+  }
+  if (brief.enabled !== undefined && typeof brief.enabled !== 'boolean') {
+    throw new TypeError(`dashboard.brief.enabled must be true or false, received ${JSON.stringify(brief.enabled)}`)
+  }
+  const enabled = brief.enabled ?? false
+  const model = brief.model
+  if (model !== undefined && (typeof model !== 'string' || model === '')) {
+    throw new TypeError(`dashboard.brief.model must be a non-empty model id, received ${JSON.stringify(brief.model)}`)
+  }
+  if (enabled && model === undefined) {
+    throw new TypeError('dashboard.brief.model is required when dashboard.brief.enabled is true')
+  }
+  const maxTokens = brief.maxTokens ?? 1024
+  if (!Number.isInteger(maxTokens) || maxTokens < 1) {
+    throw new TypeError(
+      `dashboard.brief.maxTokens must be a positive integer, received ${JSON.stringify(brief.maxTokens)}`,
+    )
+  }
+  const timeoutMs = brief.timeoutMs ?? 15_000
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1) {
+    throw new TypeError(
+      `dashboard.brief.timeoutMs must be a positive integer of milliseconds, received ${JSON.stringify(brief.timeoutMs)}`,
+    )
+  }
+  return { enabled, model, maxTokens, timeoutMs }
 }
 
 /**
@@ -305,6 +436,16 @@ export class DashboardState {
   }
 }
 
+/**
+ * What the plugin needs of a brief-aware pending entry, without importing
+ * `startDashboard`'s internals: mark the brief pending while the explainer
+ * runs, then record its normalized nodes (or its failure).
+ */
+export interface BriefRecorder {
+  markBriefPending(id: string): void
+  recordBrief(id: string, nodes: BriefNode[] | undefined): void
+}
+
 /** What `startDashboard` hands back. */
 export interface DashboardHandle {
   /** Base URL once listening; empty until the socket is bound. */
@@ -324,11 +465,46 @@ export interface DashboardHandle {
   answer(question: ApprovalQuestion, next: () => Promise<ApprovalOutcome>): Promise<ApprovalOutcome>
   /** Settle every pending ask `unavailable`, close clients and the socket. */
   stop(): Promise<void>
+  /**
+   * The brief recorder the plugin drives: mark-pending when the explainer
+   * starts, record when it resolves. Fire-and-forget by contract — neither
+   * call can settle, delay, or otherwise touch the ask.
+   */
+  readonly briefs: BriefRecorder
+  /**
+   * The current pending entries, for the plugin to match a claimed ask back
+   * to its dashboard id. A point-in-time copy; the id may already be gone.
+   */
+  pendingSnapshot(): PendingApproval[]
 }
 
 /** A pending ask, internal form: the settle closure the POST path drives. */
 interface PendingEntry extends PendingApproval {
   settle(outcome: ApprovalOutcome): void
+}
+
+/**
+ * Find one pending entry's id by matching what the ask carried.
+ *
+ * The dashboard mints its own pending ids internally; the plugin learns them
+ * only through snapshots. Matching on toolName + callId + reason is unique
+ * enough in practice — two identical asks in flight would share a brief, and
+ * a shared brief for two identical asks is correct anyway.
+ *
+ * @param pending - the current pending entries.
+ * @param question - the ask whose entry to find.
+ * @returns the entry id, or `undefined` when already settled.
+ */
+export function pendingIdFor(
+  pending: PendingApproval[],
+  question: { toolName: string, callId?: string, reason?: string },
+): string | undefined {
+  const match = pending.find(entry =>
+    entry.toolName === question.toolName
+    && (entry.callId ?? undefined) === (question.callId ?? undefined)
+    && (entry.reason ?? undefined) === (question.reason ?? undefined),
+  )
+  return match?.id
 }
 
 /**
@@ -354,13 +530,36 @@ export function startDashboard(
 
   const snapshot = (): DashboardSnapshot => ({
     answers: cfg.answers,
-    pending: [...pending.values()].map(({ id, toolName, callId, reason, runId, askedAt }) => ({
+    pending: [...pending.values()].map(({ id, toolName, callId, reason, runId, askedAt, briefState, brief }) => ({
       id, toolName, ...callId === undefined ? {} : { callId },
       ...reason === undefined ? {} : { reason },
-      ...runId === undefined ? {} : { runId }, askedAt,
+      ...runId === undefined ? {} : { runId }, askedAt, briefState,
+      ...brief === undefined ? {} : { brief },
     })),
     ...state.snapshot(),
   })
+
+  /**
+   * Drive one pending entry's brief lifecycle and rebroadcast, without ever
+   * touching the ask's settle path. A settled (absent) entry swallows the
+   * update: a brief that lands after the human already decided is moot, and
+   * must not resurrect the card.
+   */
+  const briefs: BriefRecorder = {
+    markBriefPending(id: string): void {
+      const entry = pending.get(id)
+      if (entry === undefined || entry.briefState !== 'none') return
+      entry.briefState = 'pending'
+      broadcast()
+    },
+    recordBrief(id: string, nodes: BriefNode[] | undefined): void {
+      const entry = pending.get(id)
+      if (entry === undefined || entry.briefState !== 'pending') return
+      entry.briefState = nodes === undefined ? 'failed' : 'ready'
+      if (nodes !== undefined) entry.brief = nodes
+      broadcast()
+    },
+  }
 
   const broadcast = (): void => {
     if (clients.size === 0) return
@@ -469,6 +668,29 @@ export function startDashboard(
     sendJson(res, 200, { ok: true, outcome })
   }
 
+  /**
+   * Serve one vendored asset.
+   *
+   * Deliberately **unauthenticated**. The page's `<link>` and `<script>` tags
+   * are issued by the browser with no header and no query string, so a token
+   * check here would 401 the page's own stylesheets. Nothing secret is in
+   * these files — the token and the run state travel in the authed page and
+   * `/api/*` responses — and the server is loopback-bound, so the exposure is
+   * a local process reading a stylesheet. The set is a closed allowlist: no
+   * path from the request is ever joined onto a directory, so `/assets/../..`
+   * cannot reach anything.
+   */
+  const serveAsset = (res: ServerResponse, pathname: string): void => {
+    const asset = ASSETS[pathname]
+    if (asset === undefined) return sendJson(res, 404, { error: 'no such asset' })
+    res.writeHead(200, {
+      'content-type': asset.contentType,
+      'cache-control': 'no-store',
+      'content-security-policy': "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    })
+    res.end(asset.body)
+  }
+
   const route = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const url = new URL(req.url ?? '/', 'http://placeholder')
     const method = req.method ?? 'GET'
@@ -479,9 +701,21 @@ export function startDashboard(
     }
     if (method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
       if (!authorized(req, url, true)) return deny(res)
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-      res.end(DASHBOARD_PAGE)
+      // Per-response nonce covering the page's two <link>s and its one inline
+      // bootstrap script. The vendored bundle cannot carry a nonce (it is a
+      // static file), so `script-src` names it explicitly as `'self'` — the
+      // page may run its own script and nothing else.
+      const nonce = randomBytes(16).toString('base64')
+      res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+        'content-security-policy': `default-src 'none'; script-src 'nonce-${nonce}' 'self'; style-src 'nonce-${nonce}' 'self'; connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+      })
+      res.end(DASHBOARD_PAGE.replaceAll('__CSP_NONCE__', nonce))
       return
+    }
+    if (method === 'GET' && url.pathname.startsWith('/assets/')) {
+      return serveAsset(res, url.pathname)
     }
     if (method === 'POST' && url.pathname.startsWith('/api/approvals/')) {
       return approve(req, res, decodeURIComponent(url.pathname.slice('/api/approvals/'.length)))
@@ -557,6 +791,7 @@ export function startDashboard(
         ...question.reason === undefined ? {} : { reason: question.reason },
         runId,
         askedAt: Date.now(),
+        briefState: 'none',
         settle: outcome => settle(outcome),
       })
       timer = setTimeout(
@@ -585,6 +820,8 @@ export function startDashboard(
     ready,
     answer,
     stop,
+    briefs,
+    pendingSnapshot: () => [...pending.values()].map(({ settle: _settle, ...rest }) => ({ ...rest })),
   }
   return handle
 }

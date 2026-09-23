@@ -82,13 +82,19 @@ broken: it depends on `@deepseek-ai/dsh-client-ui-sidebar-documentpreview@^0.1.5
 which was never published, so `npm install` fails with ETARGET. `0.1.7-alpha.1`
 is the newest tag whose dependency tree resolves — verified by booting it.
 
-`npm install` **does** now run inside the plugin checkout — it installs three
-packages (typescript, @types/node, tsdown), and that is what stage 1 does. It used
+`npm install` **does** now run inside the plugin checkout — it installs the
+build tooling plus the UI runtime the dashboard bundles (`@assistant-ui/react`,
+`react`), and that is what stage 1 does. It used
 to be impossible: the manifest pinned `@deepseek-ai/cordis@0.4.0` and
 `@deepseek-ai/schemastery@0.1.5`, harness-monorepo *workspace* versions that were
 never published, so npm aborted with ERR_PNPM_NO_MATCHING_VERSION. The harness
 packages are now optional peers, and `.npmrc` disables peer auto-installation
 (some transitive peers, e.g. `@deepseek-ai/dsh-type-meta`, are unpublished).
+
+The dashboard's React bundle is committed under `assets/assistant-ui/`, so the
+image never builds it: `npm run dashboard-bundle` (host side) regenerates the
+artifact, and `web/build.mjs` refuses to emit one that carries `assistant-cloud`
+or telemetry code. See the dashboard section of the root README.
 
 ---
 

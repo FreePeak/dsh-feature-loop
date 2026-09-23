@@ -57,7 +57,7 @@ Start with whichever question you have; every file below is in this repo.
 | Doc | Proves |
 |---|---|
 | [`VERIFY-E2E-APPROVAL.md`](docs/VERIFY-E2E-APPROVAL.md) | **A real browser**: the panel renders this plugin's reason; **Allow once** writes the file; **Reject** writes nothing |
-| [`VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md) | The approval dashboard: 151 unit + 9/9 integration green, live HTTP transcript (page 200 / no-token 401 / approve → `allowed-once` / 409 / 403); the one browser click is recorded UNVERIFIED |
+| [`VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md) | The approval dashboard on assistant-ui: 194 unit + 11/11 integration green, live HTTP transcript, and the browser click verified via `make e2e-dashboard` |
 | [`VERIFY-INTEGRATION.md`](docs/VERIFY-INTEGRATION.md) | 5/5 in a real cordis context — approve, reject, fail-closed, `deny` mode, auto |
 | [`VERIFY-SDK-RUN.md`](docs/VERIFY-SDK-RUN.md) | A real model-driven run via the **SDK** reached the gate; session log quoted |
 | [`VERIFY-HEADLESS-RUN.md`](docs/VERIFY-HEADLESS-RUN.md) | A real model-driven run via the **CLI** reached the gate |
@@ -75,13 +75,13 @@ Start with whichever question you have; every file below is in this repo.
 
 ```bash
 cd dsh-feature-loop
-make verify        # compose-check + 151 tests + typecheck + the 9/9 integration spec
+make verify        # compose-check + 194 tests + typecheck + the 11/11 integration spec
 ```
 
 Or individually:
 
 ```bash
-make test          # 151 pass, 0 fail
+make test          # 194 pass, 0 fail
 make typecheck     # mirrors the CI file list (now incl. src/dashboard*.ts)
 make integration   # 9 pass (needs a harness checkout; set DSH_HARNESS to move it)
 make compose-check # the compose file is valid

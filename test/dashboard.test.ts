@@ -418,6 +418,34 @@ test('a bad dashboard field fails apply at load, naming the field', () => {
   )
 })
 
+test('brief enabled without a gateway key fails apply at load, loudly', (t) => {
+  // `DSH_CREDENTIALS` points the store read at nowhere, and the key env vars
+  // are cleared for the duration — simulating the keyless machine (CI) where
+  // this failure must fire. Restored afterwards so no other test observes it.
+  const savedKey = process.env.ONEGW_API_KEY
+  const savedAlt = process.env.ONEGE_API_KEY
+  const savedStore = process.env.DSH_CREDENTIALS
+  delete process.env.ONEGW_API_KEY
+  delete process.env.ONEGE_API_KEY
+  process.env.DSH_CREDENTIALS = '/nonexistent-credentials.yaml'
+  t.after(() => {
+    if (savedKey !== undefined) process.env.ONEGW_API_KEY = savedKey
+    if (savedAlt !== undefined) process.env.ONEGE_API_KEY = savedAlt
+    if (savedStore !== undefined) process.env.DSH_CREDENTIALS = savedStore
+    else delete process.env.DSH_CREDENTIALS
+  })
+  const { ctx, registered } = fakeCtx()
+  assert.throws(
+    () => apply(ctx as never, {
+      spec: SPEC,
+      dashboard: { enabled: true, port: 0, brief: { enabled: true, model: 'm' } },
+    }),
+    /no gateway key/,
+    'briefs were explicitly enabled: silence would be the worse failure',
+  )
+  assert.deepEqual(registered(), [], 'nothing registered after the load failure')
+})
+
 /**
  * Apply a dashboard-enabled config, catching the greppable startup line.
  *
@@ -522,3 +550,118 @@ test('the hooks feed the run state the page renders', async (t) => {
   const feed = snapshot.feed.map(entry => `${entry.kind}: ${entry.text}`).join('\n')
   assert.match(feed, /gate: ask: write_file/, 'the block is visible to the human')
 })
+
+// ── the review brief ───────────────────────────────────────────────────────
+
+test('parseDashboardConfig: brief defaults to disabled without a model', () => {
+  const cfg = parseDashboardConfig({})
+  assert.deepEqual(cfg.brief, { enabled: false, model: undefined, maxTokens: 1024, timeoutMs: 15_000 })
+})
+
+test('parseDashboardConfig: every bad brief field fails at load, naming dashboard.brief.<field>', () => {
+  const bad: [Record<string, unknown>, RegExp][] = [
+    [{ brief: { enabled: true } }, /dashboard\.brief\.model is required/],
+    [{ brief: { model: '' } }, /dashboard\.brief\.model/],
+    [{ brief: { model: 42 } }, /dashboard\.brief\.model/],
+    [{ brief: { enabled: 'yes' } }, /dashboard\.brief\.enabled/],
+    [{ brief: { model: 'm', maxTokens: 0 } }, /dashboard\.brief\.maxTokens/],
+    [{ brief: { model: 'm', timeoutMs: -1 } }, /dashboard\.brief\.timeoutMs/],
+    [{ brief: 'on' }, /dashboard\.brief must be a mapping/],
+  ]
+  for (const [config, pattern] of bad) {
+    assert.throws(
+      () => parseDashboardConfig(config as never),
+      (error: unknown) => error instanceof TypeError && pattern.test(error.message),
+      `expected ${JSON.stringify(config)} to throw ${String(pattern)}`,
+    )
+  }
+})
+
+test('the brief lifecycle rides the SSE frame without touching the ask', async (t) => {
+  const { dash } = await started(t)
+  const close = await connectSse(dash)
+  const { next } = delegatingNext()
+  const pending = dash.answer(QUESTION, next)
+
+  const claimed = await getState(dash)
+  assert.equal(claimed.pending.length, 1)
+  const id = claimed.pending[0]?.id ?? ''
+  assert.equal(claimed.pending[0]?.briefState, 'none')
+
+  dash.briefs.markBriefPending(id)
+  const marking = await getState(dash)
+  assert.equal(marking.pending[0]?.briefState, 'pending')
+
+  dash.briefs.recordBrief(id, [
+    { kind: 'heading', text: 'write_file' },
+    { kind: 'list', items: ['touches one file'] },
+  ])
+  const ready = await getState(dash)
+  assert.equal(ready.pending[0]?.briefState, 'ready')
+  assert.deepEqual(ready.pending[0]?.brief, [
+    { kind: 'heading', text: 'write_file' },
+    { kind: 'list', items: ['touches one file'] },
+  ])
+
+  // The ask itself is untouched: the human still decides, by POST as ever.
+  const res = await post(dash, id, 'allowed-once', { token: dash.token })
+  assert.equal(res.status, 200)
+  assert.equal(await pending, 'allowed-once')
+  close()
+})
+
+test('a failed brief leaves the ask fully answerable', async (t) => {
+  const { dash } = await started(t)
+  const close = await connectSse(dash)
+  const { next } = delegatingNext()
+  const pending = dash.answer(QUESTION, next)
+
+  const claimed = await getState(dash)
+  const id = claimed.pending[0]?.id ?? ''
+  dash.briefs.markBriefPending(id)
+  dash.briefs.recordBrief(id, undefined)
+  const failed = await getState(dash)
+  assert.equal(failed.pending[0]?.briefState, 'failed')
+  assert.equal(failed.pending[0]?.brief, undefined)
+
+  const res = await post(dash, id, 'rejected', { token: dash.token })
+  assert.equal(res.status, 200)
+  assert.equal(await pending, 'rejected')
+  close()
+})
+
+test('a brief landing after the settle is swallowed, not resurrected', async (t) => {
+  const { dash } = await started(t)
+  const close = await connectSse(dash)
+  const { next } = delegatingNext()
+  const pending = dash.answer(QUESTION, next)
+
+  const claimed = await getState(dash)
+  const id = claimed.pending[0]?.id ?? ''
+  dash.briefs.markBriefPending(id)
+  const res = await post(dash, id, 'allowed-once', { token: dash.token })
+  assert.equal(res.status, 200)
+  assert.equal(await pending, 'allowed-once')
+
+  // The explainer resolves late; the entry is gone, so this is a no-op.
+  dash.briefs.recordBrief(id, [{ kind: 'heading', text: 'late' }])
+  const after = await getState(dash)
+  assert.deepEqual(after.pending, [])
+  close()
+})
+
+test('the page carries a nonce CSP covering its script and style', async (t) => {
+  const { dash } = await started(t)
+  const page = await fetch(`${dash.url}?token=${dash.token}`)
+  assert.equal(page.status, 200)
+  const csp = page.headers.get('content-security-policy') ?? ''
+  assert.match(csp, /default-src 'none'/)
+  assert.match(csp, /connect-src 'self'/)
+  assert.match(csp, /frame-ancestors 'none'/)
+  const nonce = /script-src 'nonce-([^']+)'/.exec(csp)?.[1]
+  assert.ok(nonce !== undefined && nonce !== '', 'a per-response nonce is issued')
+  const html = await page.text()
+  assert.ok(!html.includes('__CSP_NONCE__'), 'no placeholder survives substitution')
+  assert.ok(html.includes(`nonce="${nonce}"`), 'the nonce reaches the page elements')
+})
+

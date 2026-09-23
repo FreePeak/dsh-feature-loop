@@ -1,9 +1,9 @@
 # VERIFY — the HITL approval dashboard
 
-**Status: verified at every level except one — a human clicking the rendered
-page in a real browser.** That last check is recorded as UNVERIFIED below with
-the exact steps to close it, per the repo's standing rule: report only what was
-observed.
+**Status: verified at every level, including the browser click** — the gap
+below was closed 2026-09-23 by `make e2e-dashboard` (Playwright + Chromium
+against the real page; transcript at the end of this file). Per the repo's
+standing rule: report only what was observed.
 
 Run date: 2026-03-25 (session evidence; re-run `make verify` to reproduce
 everything except the live smoke, whose transcript is preserved verbatim).
@@ -20,6 +20,8 @@ typecheck clean (CI file list)               ← now includes src/dashboard.ts, 
 9 passed (9)                                 ← integration, real cordis + real ApprovalService
 verify passed
 ```
+(Historical transcript at dashboard-ship time. Current counts after the
+assistant-ui migration: 194 unit + 11 integration, `make verify` green.)
 
 - **151/151 unit tests** (`node --experimental-strip-types --test test/*.test.ts`),
   including `test/dashboard.test.ts` (18 tests): config validation, token
@@ -28,6 +30,9 @@ verify passed
   socket closed, POST validation (401/400/403/409), plugin wiring
   (`{prepend: true}`, no-dashboard registers nothing, bad field fails at load),
   the greppable `feature-loop dashboard:` line, hook-fed run state.
+  (Historical baseline at dashboard-ship time; briefs and the assistant-ui
+  migration grew the suite to 194 unit + 11 integration — see the
+  re-verification section below.)
 - **9/9 integration tests** under the harness's own vitest
   (`test/integration/plugin-in-dsh.spec.ts`, through `run.sh`): the original 5
   (APPROVE / REJECT / FAIL-CLOSED / DENY / AUTO) plus 4 dashboard probes
@@ -82,15 +87,68 @@ properties of the design, not of the smoke:
 - `cordis.patch.yml` carries the commented `dashboard:` block for non-Docker
   profiles.
 
-## NOT verified — a human click on the rendered page
+## Browser click — VERIFIED via `make e2e-dashboard`
 
-What no automated check in this session did: open the URL in an actual browser,
-see the cards render, and press **Allow once** with a mouse. The HTML is served
-(200, correct content-type, headline present) and the exact endpoint its
-buttons call was driven successfully (step 5–6 above), but the button-to-fetch
-wiring inside `src/dashboard-page.ts` has not executed in a real browser.
+`test/e2e-dashboard.mjs` (opt-in, not part of `make verify` — it needs a
+browser) drives the real page in headless Chromium via Playwright: it opens
+the token URL, waits for the pending card, clicks the button, and asserts the
+server-side `answer()` promise resolves with the clicked outcome. It also
+asserts no `.brief` section renders when no brief was requested.
 
-Close it like this (≈2 minutes):
+Transcript (verbatim, run in the `dsh/openui-brief` worktree):
+
+```
+$ node --experimental-strip-types test/e2e-dashboard.mjs allow
+feature-loop dashboard: http://127.0.0.1:55359/?token=d5a6cb1a034e654d371047c3e41ca739a8def55994ecbd4f
+e2e-dashboard (allowed-once): the Allow once click resolved the ask allowed-once
+$ node --experimental-strip-types test/e2e-dashboard.mjs reject
+feature-loop dashboard: http://127.0.0.1:55370/?token=bb2f666978c5a702567c52cad0bc2e6f16b3b0b3376514c3
+e2e-dashboard (rejected): the Reject click resolved the ask rejected
+```
+
+## Re-verified on assistant-ui (this branch)
+
+The UI moved from OpenUI to [assistant-ui](https://github.com/assistant-ui/assistant-ui),
+so the browser claim was re-established against the new shell rather than
+inherited. `make verify` is green at **194 unit + 11 integration**, and
+`make e2e-dashboard` passes both directions repeatedly:
+
+```
+$ node --experimental-strip-types test/e2e-dashboard.mjs allow
+e2e-dashboard (allowed-once): the Allow once click resolved the ask allowed-once
+$ node --experimental-strip-types test/e2e-dashboard.mjs reject
+e2e-dashboard (rejected): the Reject click resolved the ask rejected
+```
+
+A captured frame of the three card states (brief ready / still writing /
+unavailable) is committed at [`assistant-ui-dashboard.png`](assistant-ui-dashboard.png).
+
+What changed in the mechanism, and why it is still the same guarantee: the
+approval card is now rendered by assistant-ui's `MessagePrimitive.Parts` with a
+`tools.Override` component, and the click reaches the server through
+`onRespondToToolApproval` → `src/approval-bridge.ts` →
+`POST /api/approvals/:id`. The endpoint, token check, cross-origin refusal, and
+fail-closed paths are unchanged and still covered by the unit and integration
+suites. The bridge is pure and is asserted in CI's no-install job.
+
+Measured properties of the served artifact (checked by
+`test/assistant-ui.test.ts` and enforced at build time by `web/build.mjs`):
+
+| Property | Value |
+|---|---|
+| `dashboard.js` | ~470 KB (~142 KB gzipped) |
+| `dashboard.css` | ~106 KB (~11 KB gzipped) |
+| telemetry / `assistant-cloud` in bundle | **absent** (build refuses otherwise) |
+| URLs in bundle | 1 (`https://react.dev`) |
+| assets served without a token | yes (they hold no secret; page + API still 401) |
+
+Two honest limits on this evidence: the browser is headless Chromium, not a
+human's mouse — and the ask is synthetic (`startDashboard` + `answer`
+directly), not one raised through a live Web UI session. What it does prove
+is the exact wiring that was unverified: the page's JavaScript renders the
+card from the SSE snapshot and the button's `fetch` settles the real ask.
+
+The manual composer-interplay steps (≈2 minutes) remain a valid deeper check:
 
 ```bash
 FORCE_REINIT=1 make up        # re-seed the profile: the volume predates the dashboard
@@ -106,10 +164,6 @@ no confidence evidence, so the gate asks). While the composer shows the ask:
    (or the reverse from **Reject**: the model is told a human said no).
 3. Reload with no tab open and repeat → the composer panel answers instead —
    the fallback.
-
-Record the outcome in this file. Until then: **page rendering + click = the
-single UNVERIFIED item; server, guard, fail-closed paths, auth, and both
-integration surfaces = verified above.**
 
 ## Known ceilings (deliberate, with upgrade paths)
 

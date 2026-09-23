@@ -77,7 +77,9 @@ export interface Config {
    * exactly as before this feature existed.
    *
    * Validated field-by-field by `parseDashboardConfig` even when disabled, so
-   * a typo fails at load rather than when someone flips `enabled` on.
+   * a typo fails at load rather than when someone flips `enabled` on. Set
+   * `brief.enabled` with a `brief.model` to also request a model-authored
+   * review brief per ask, rendered above the Allow/Reject buttons.
    */
   dashboard?: DashboardConfig
 }

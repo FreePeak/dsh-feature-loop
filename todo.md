@@ -176,7 +176,7 @@ rather than hand-editing it.
 | `pnpm install` works on a clean clone | `package.json` + `.npmrc`; `QA-FINAL.md` row 1 |
 | Setup guide independently QA'd; all 9 failures fixed | `QA-FINAL.md` |
 | Panel rendering is covered by the harness itself | `VERIFY-PANEL-EVIDENCE.md` |
-| HITL approval dashboard: guard, fail-closed, auth, POST path | `VERIFY-DASHBOARD.md` — 151 unit + 9/9 integration + live HTTP transcript (one browser click still UNVERIFIED) |
+| HITL approval dashboard: guard, fail-closed, auth, POST path | `VERIFY-DASHBOARD.md` — 194 unit + 11/11 integration + live HTTP transcript + browser click verified via `make e2e-dashboard` |
 
 ---
 

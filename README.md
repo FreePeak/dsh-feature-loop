@@ -5,7 +5,7 @@
 [![CI](https://github.com/FreePeak/dsh-feature-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/FreePeak/dsh-feature-loop/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](.nvmrc)
-[![Tests](https://img.shields.io/badge/tests-151%20passing-brightgreen.svg)](#quick-start)
+[![Tests](https://img.shields.io/badge/tests-194%20passing-brightgreen.svg)](#quick-start)
 
 A **book-shaped policy layer** for bug-fixing and small features: budget
 ceilings, cheap-first routing, a step-level review gate, and a local judge that
@@ -80,7 +80,7 @@ and that is the intended behaviour, not a miss.
 ## Quick start
 
 ```bash
-# 151 tests, no network, no model call — the policy layer is pure
+# 194 tests, no network, no model call — the policy layer is pure
 node --experimental-strip-types --test test/*.test.ts
 
 # the end-to-end demo (needs onegw on :8080 and xiaomi/mimo-v2.5)
@@ -149,9 +149,9 @@ gets reached.
   five outcomes executed in a **real** DSH context (5/5 pass), plus the exact
   string the approval panel renders.
 - **[`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md)** — the approval
-  dashboard: 151 unit + 9 integration green, a live HTTP transcript (page 200,
-  token 401, approve → `allowed-once`, 409, 403), and the one browser click
-  still unverified.
+  dashboard: 194 unit + 11 integration green, a live HTTP transcript (page 200,
+  token 401, approve → `allowed-once`, 409, 403), the browser click verified
+  via `make e2e-dashboard`, and the model-authored review brief.
 - **[`docs/VERIFY-E2E-APPROVAL.md`](docs/VERIFY-E2E-APPROVAL.md)** — a real
   browser on the containerised deployment: the panel appears with this plugin's
   reason, **Allow once** writes the file, **Reject** blocks it.
@@ -247,11 +247,15 @@ approval channel — it is strictly more capable without being less safe. Set
 ### The approval dashboard
 
 Besides the composer prompt, the plugin can host its own **loopback web page**
-(`src/dashboard.ts` + `src/dashboard-page.ts`, zero dependencies — Node builtins
-only): pending approval cards carrying the gate's `REVIEW REQUESTED` reason with
+(`src/dashboard.ts` + `src/dashboard-page.ts`, Node builtins only; the UI is a
+vendored React bundle built from `web/app.tsx` with **assistant-ui**): pending
+approval cards carrying
+the gate's `REVIEW REQUESTED` reason with
 **Allow once** / **Reject**, the live run state (step vs ceiling, spend, ladder
 route, judge score, signals) over SSE, and an activity feed of gate decisions
-and approval outcomes.
+and approval outcomes. A per-response nonce CSP (`default-src 'none'`,
+`frame-ancestors 'none'`) states the posture: the page runs its own script
+and style and nothing else.
 
 ```yaml
 - id: feature-loop
@@ -263,6 +267,11 @@ and approval outcomes.
       #                        # published as 127.0.0.1:3092 (loopback only)
       # answers: true          # false = observe only, composer keeps answering
       # answerTimeoutMs: 600000   # a pending ask fails closed after this
+      # brief:                 # model-authored review brief, off by default
+      #   enabled: false
+      #   model: xiaomi/mimo-v2.5   # required when enabled
+      #   maxTokens: 1024
+      #   timeoutMs: 15000
 ```
 
 `make up` prints the URL + token (`make dashboard` reprints it): the token is
@@ -276,8 +285,45 @@ Web UI tab is attached — but it *claims* a request only while a dashboard tab
 is actually connected. No tab → it delegates, and the composer answers exactly
 as before this feature existed. Every failure path (last tab closed, ask
 withdrawn, timeout, shutdown) settles the pending ask `unavailable`, which the
-harness maps to a refusal. Verified at every level except the browser click:
+harness maps to a refusal. Verified at every level including the browser click:
 [`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md).
+
+**The UI is assistant-ui; the decision is still ours.** The dashboard renders
+through [assistant-ui](https://github.com/assistant-ui/assistant-ui): pending
+asks become tool-call message parts carrying an approval gate, and
+`onRespondToToolApproval` is the single callback that turns a click into a
+request. That callback posts to this plugin's own guarded endpoint
+(`POST /api/approvals/:id`) — the same endpoint, token, and fail-closed
+behaviour the composer path uses. assistant-ui decides *how* a decision is
+asked for; it never decides *whether* one is valid.
+
+The mapping lives in `src/approval-bridge.ts`, which imports nothing at all so
+it can be tested in CI's no-install job. It is deliberately narrow: only
+`allow-once` and `reject-once` are offered, never `allow-always`/`reject-always`,
+because a browser click must not widen the deployment's gate — that is what
+`gatePolicies` and `actuator` are for. An unknown option throws rather than
+resolving to an authorisation.
+
+**The review brief is purely advisory.** With `brief.enabled`, each claimed ask
+also kicks off a model call that authors plain prose (`src/brief.ts`), shown
+inside the card. There is no model-authored component language any more — with
+OpenUI the model emitted component calls and a parser-plus-allowlist made that
+survivable; assistant-ui has no such language, so what remains is the part that
+was always load-bearing: **bounds**. A brief is capped by node count, list
+length, per-string length, and total size, and one that exceeds any cap is
+rejected whole rather than truncated — a half-rendered brief reads as a
+complete one, which is the failure that matters when the text is what a human
+decides on. The brief never blocks, delays, or settles the ask: it resolves to
+a card, to "brief unavailable", or to nothing at all.
+
+**The vendored bundle is auditable and offline.** `web/build.mjs` emits
+`assets/assistant-ui/dashboard.js` (~470 KB; ~142 KB gzipped) from
+`web/app.tsx`, and **refuses to build** if the output carries `assistant-cloud`,
+a telemetry reporter, or a phone-home — `@assistant-ui/react` depends on
+assistant-cloud, which ships engagement/run reporters and tree-shakes out
+today; the build turns "today" into a checked invariant. The page loads the
+bundle from its own origin under a `default-src 'none'` CSP with a per-response
+nonce, and the bundle contains exactly one URL (`https://react.dev`).
 
 ---
 
@@ -299,6 +345,11 @@ src/
 
   ── the harness host ──
   plugin.ts      agent/pre-step · agent/request · tools/pre-execute
+  dashboard.ts   the loopback HITL server (brief state + nonce CSP)
+  dashboard-page.ts the page as a string (DOM only, no innerHTML)
+  brief.ts       the brief's bounds, prompt, and normalizer (no UI language)
+  approval-bridge.ts the dashboard <-> assistant-ui approval mapping (pure)
+  explainer.ts   the brief's model call (NO_EXPLAINER by default)
 
   ── the standalone proof: the same policies, no harness ──
   runner.ts      spec → budget → route → judge → review → model → tools
@@ -433,12 +484,10 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 - **The price table is an estimate.** `mimo-v2.5` runs on a subscription plan,
   so marginal cost is near zero; the rates in `cli.ts` are illustrative and
   exist so the ceiling has something to measure against.
-- **The dashboard's rendered page has not been clicked in a real browser.**
-  The server, guard, auth, fail-closed paths and the exact endpoint the
-  buttons call are verified over real HTTP, and both integration surfaces are
-  green (9/9) — but no human has pressed **Allow once** on the page itself.
-  [`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md) records the evidence
-  and the two-minute steps to close it. Related: spend shown on the dashboard
+- **The dashboard's rendered page click is verified via `make e2e-dashboard`**
+  (headless Chromium clicks Allow/Reject against the real page and asserts the
+  ask settles). [`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md) records
+  the transcript. Related: spend shown on the dashboard
   inherits the metering gap above, and a Docker volume seeded before the
   dashboard existed needs `FORCE_REINIT=1` to re-seed its profile.
 
@@ -446,7 +495,7 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 
 ## Phase status
 
-- **Phase 0 — policy layer** ✅ 151 tests, pure, no harness dependency
+- **Phase 0 — policy layer** ✅ tests, pure, no harness dependency
 - **Phase 1 — loop integration** ✅ runner + CLI + tools + demo, working end to end
 - **Phase 1b — plugin compiles** ✅ `tsc --noEmit` clean against prebuilt `@deepseek-ai/dsh-*`
 - **Phase 2 — plugin review gate** ✅ all six detectors, the judge, the router and
@@ -461,9 +510,17 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 - **Phase 1e — HITL approval dashboard** ✅ optional loopback web surface
   (`src/dashboard.ts` + `src/dashboard-page.ts`): pending cards, live run state
   over SSE, Allow/Reject over HTTP — guarded so a tab-less deployment behaves
-  byte-identically to the composer-only path. 151 unit + 9 integration tests;
-  the one browser click is UNVERIFIED
+  byte-identically to the composer-only path. 194 unit + 11 integration tests;
+  the browser click verified via `make e2e-dashboard`
   ([`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md)).
+- **Phase 1f — review briefs** ✅ model-authored brief per ask
+  (`src/brief.ts` + `src/explainer.ts`): plain prose, bounded, rendered inside
+  the approval card — purely advisory, never blocking. Disabled by default
+  (`dashboard.brief.enabled`).
+- **Phase 1g — assistant-ui dashboard** ✅ the UI runs on assistant-ui
+  (`web/app.tsx`, vendored as `assets/assistant-ui/`); approvals ride
+  `ToolCallMessagePart.approval` and `onRespondToToolApproval`, mapped by the
+  pure `src/approval-bridge.ts` onto the existing guarded endpoint.
 - **Phase 2b — real spend accounting** ⬜ price each settled attempt into
   `LoopBudget` so the cost ceiling is load-bearing (the largest open gap).
 - **Phase 3 — Laya** ⬜ deploy the `systemone` provider in onegw, switch `--judge laya`
@@ -471,7 +528,7 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 ### Verifying the whole thing
 
 ```bash
-node --experimental-strip-types --test test/*.test.ts   # 151 pass
+node --experimental-strip-types --test test/*.test.ts   # 194 pass
 pnpm test:integration                                   # 9 pass, in the real harness
 tsc --noEmit                                            # clean
 bash demo/run.sh                                        # goal-met

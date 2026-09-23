@@ -24,6 +24,10 @@
  *   8. Dashboard enabled, tab open, POST reject -> STOPPED, same as case 2.
  *   9. Dashboard enabled, no tab, no composer -> STOPPED: the dashboard never
  *      weakens fail-closed, it only participates when it can answer.
+ *  10. Dashboard + stalled explainer, tab open, POST allow -> the tool RUNS:
+ *      the brief is advisory and can never gate the approval.
+ *  11. Dashboard + resolving explainer -> normalized brief nodes land on the
+ *      pending card, built from the ask's own fields only.
  *
  * Cases 6–9 drive the exact HTTP code path the browser page calls
  * (`POST /api/approvals/:id`), so they are the browser checks minus the
@@ -171,6 +175,7 @@ async function featureLoopSetup(options: {
   gateMode?: 'ask' | 'deny'
   gatePolicies?: Record<string, 'auto' | 'auto-if-confident' | 'always-approve'>
   dashboard?: boolean
+  explainer?: { explain: (input: unknown) => Promise<string | undefined> }
 } = {}): Promise<{ ctx: Context, dispose: () => void, dashboard?: DashboardProbe }> {
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
@@ -200,6 +205,7 @@ async function featureLoopSetup(options: {
       spec: SPEC,
       gateMode: options.gateMode ?? 'ask',
       gatePolicies: options.gatePolicies ?? {},
+      ...options.explainer === undefined ? {} : { explainer: options.explainer as never },
       ...(options.dashboard === true ? { dashboard: { enabled: true, port: 0 } } : {}),
     })
     if (options.dashboard === true) {
@@ -456,6 +462,90 @@ describe('feature-loop gate inside a real DSH pipeline', () => {
         text: 'Error: tool "write_file" requires approval, but no approval channel is available',
       })
       expect((await apiState(dashboard!)).pending).toHaveLength(0)
+    } finally {
+      dispose()
+    }
+  })
+
+  it('DASHBOARD BRIEF: a stalled explainer never gates the approval', async () => {
+    // The explainer hangs forever; the brief must stay `pending` while the
+    // human's POST still settles the ask. This is the property the whole
+    // brief feature leans on: advisory, never authoritative.
+    const { ctx, dispose, dashboard } = await featureLoopSetup({
+      dashboard: true,
+      explainer: { explain: () => new Promise<string | undefined>(() => {}) },
+    })
+    try {
+      expect(dashboard).toBeDefined()
+      const closeTab = await openTab(dashboard!)
+
+      const execution = ctx.tools.execute({
+        callId: ToolCallId('c-dash-brief-stall'),
+        name: 'write_file',
+        arguments: { path: '/tmp/dash-brief-stall' },
+        agent: fakeAgent(),
+        signal: testToolSignal,
+      })
+
+      const pending = await waitForPending(dashboard!, 1)
+      const res = await postDecision(dashboard!, pending[0]!.id, 'allowed-once')
+      expect(res.status).toBe(200)
+
+      const result = await execution
+      expect(result.isError).toBe(false)
+      expect(result.content[0]).toMatchObject({ text: 'wrote /tmp/dash-brief-stall' })
+      closeTab()
+    } finally {
+      dispose()
+    }
+  })
+
+  it('DASHBOARD BRIEF: a resolving explainer lands normalized nodes on the card', async () => {
+    const seen: unknown[] = []
+    const { ctx, dispose, dashboard } = await featureLoopSetup({
+      dashboard: true,
+      explainer: {
+        explain: async (input: unknown) => {
+          seen.push(input)
+          // Plain prose now: there is no model-authored component language
+          // after the move to assistant-ui.
+          return '# write_file\n\nTouches one file.'
+        },
+      },
+    })
+    try {
+      expect(dashboard).toBeDefined()
+      const closeTab = await openTab(dashboard!)
+
+      const execution = ctx.tools.execute({
+        callId: ToolCallId('c-dash-brief-ready'),
+        name: 'write_file',
+        arguments: { path: '/tmp/dash-brief-ready' },
+        agent: fakeAgent(),
+        signal: testToolSignal,
+      })
+
+      const pending = await waitForPending(dashboard!, 1)
+      // The explainer saw the ask's own fields — and nothing invented.
+      expect(seen).toHaveLength(1)
+      expect(seen[0]).toMatchObject({ toolName: 'write_file', callId: 'c-dash-brief-ready' })
+      for (let attempt = 0; attempt < 400; attempt++) {
+        const state = await apiState(dashboard!)
+        if (state.pending[0]?.briefState === 'ready') break
+        await sleep(10)
+        if (attempt === 399) throw new Error('brief never reached ready')
+      }
+      const ready = await apiState(dashboard!)
+      expect(ready.pending[0]?.brief).toEqual([
+        { kind: 'heading', text: 'write_file' },
+        { kind: 'paragraph', text: 'Touches one file.' },
+      ])
+
+      const res = await postDecision(dashboard!, pending[0]!.id, 'allowed-once')
+      expect(res.status).toBe(200)
+      const result = await execution
+      expect(result.isError).toBe(false)
+      closeTab()
     } finally {
       dispose()
     }

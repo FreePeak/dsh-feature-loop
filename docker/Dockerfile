@@ -40,6 +40,8 @@ FROM node:22-slim AS plugin-build
 WORKDIR /build
 
 COPY package.json package-lock.json* .npmrc ./
+# No telemetry opt-out needed: the OpenUI dependency that shipped an
+# install-time ping is gone from the manifest.
 RUN npm install --no-audit --no-fund
 
 COPY src ./src

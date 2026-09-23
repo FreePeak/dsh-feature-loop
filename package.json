@@ -21,7 +21,11 @@
     "assets/mark-light.svg",
     "assets/mark-mono.svg",
     "assets/logo.svg",
-    "assets/favicon.svg"
+    "assets/favicon.svg",
+    "assets/assistant-ui/dashboard.js",
+    "assets/assistant-ui/dashboard.css",
+    "assets/assistant-ui/shell.css",
+    "assets/assistant-ui/MANIFEST.txt"
   ],
   "license": "MIT",
   "author": "Linh Doan",
@@ -62,10 +66,15 @@
     "demo:cost": "bash demo/run.sh --budget 0.000001",
     "demo:nojudge": "bash demo/run.sh --judge none",
     "lint:workflows": "actionlint .github/workflows/*.yml",
-    "test:integration": "bash test/integration/run.sh"
+    "test:integration": "bash test/integration/run.sh",
+    "dashboard-bundle": "node web/build.mjs"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.2"
+    "@assistant-ui/react": "^0.15.21",
+    "@assistant-ui/styles": "^0.3.7",
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=0.4.0",
@@ -74,9 +83,10 @@
     "@deepseek-ai/dsh-tools": ">=0.0.1-rc.1"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.28.2",
     "tsdown": "^0.23.0",
-    "typescript": "^5.8.0",
-    "@types/node": "^22.0.0"
+    "typescript": "^5.8.0"
   },
   "dsh": {
     "bundle": {

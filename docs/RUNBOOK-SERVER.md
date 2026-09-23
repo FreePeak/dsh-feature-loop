@@ -57,9 +57,23 @@ Work down this list. Each row is an observation, not a claim.
 
 Rows 9–10 (the approval dashboard) are optional and additive: the dashboard
 claims an ask only while one of its tabs is open, so skipping it changes
-nothing about rows 5–7. What has and has not been verified about it — including
-the one browser click still outstanding — is in
+nothing about rows 5–7. What has and has not been verified about it is in
 [`VERIFY-DASHBOARD.md`](VERIFY-DASHBOARD.md).
+
+The dashboard UI is a vendored React bundle on
+[assistant-ui](https://github.com/assistant-ui/assistant-ui), committed under
+`assets/assistant-ui/`. It is not built at install or at runtime; regenerate it
+with `make dashboard-bundle` after changing `web/` and commit the result. If
+the assets are missing the server refuses to start with an error naming that
+command — it will not serve a blank page.
+
+To enable the model-authored review brief as well, add the `brief:` row under
+`dashboard:` (see the commented template in `cordis.patch.yml`) with the model
+to ask. The brief needs the same gateway the judge uses (`ONEGW_API_KEY` /
+`ONEGE_API_KEY` or `~/.dsh/.credentials.yaml`); without it the explainer call
+fails and the card shows "brief unavailable" — the ask itself is unaffected.
+The brief's model call is not metered by the loop budget (recorded as a
+`ponytail:` ceiling in `src/explainer.ts`).
 
 ### The panel's rendering is already covered by the harness
 
