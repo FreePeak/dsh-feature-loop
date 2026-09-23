@@ -67,7 +67,8 @@
     "demo:nojudge": "bash demo/run.sh --judge none",
     "lint:workflows": "actionlint .github/workflows/*.yml",
     "test:integration": "bash test/integration/run.sh",
-    "dashboard-bundle": "node web/build.mjs"
+    "dashboard-bundle": "node web/build.mjs",
+    "prepare": "git config core.hooksPath .githooks"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.15.21",

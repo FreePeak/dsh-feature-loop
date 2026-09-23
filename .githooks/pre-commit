@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# Pre-commit security scan for @freepeak/dsh-feature-loop.
+#
+# Installed once per clone by the `prepare` script in package.json
+# (`git config core.hooksPath .githooks`). Verify with:
+#
+#     git config core.hooksPath    # must print: .githooks
+#
+# Modes:
+#     bash .githooks/pre-commit          scan what is STAGED (what `git commit` runs)
+#     bash .githooks/pre-commit --all    scan every tracked file
+#
+# Blocks: secret-shaped content in the scanned lines, sensitive files
+# (.env*, keys, id_*, credentials), and workflows that put `runs-on` on a
+# self-hosted runner (a PR job there executes strangers' code on the
+# maintainer's machine). Needs only git + grep.
+#
+# Bypass ONLY for a confirmed false positive, and say so in the commit
+# message:  git commit --no-verify
+
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+mode=staged
+[ "${1:-}" = "--all" ] && mode=all
+
+# Content patterns — one per line, grep -iE. Each must be specific enough
+# that this script's own source, documentation prose, and `sk-...`
+# placeholders do not match themselves.
+patterns=(
+  'AKIA[0-9A-Z]{16}'
+  'ghp_[A-Za-z0-9]{36}'
+  'github_pat_[A-Za-z0-9_]{80}'
+  'sk-[A-Za-z0-9]{20,}'
+  'xox[baprs]-[A-Za-z0-9-]{10,}'
+  'glpat-[A-Za-z0-9_-]{20}'
+  'AIza[0-9A-Za-z_-]{35}'
+  'npm_[A-Za-z0-9]{30,}'
+  '-----BEGIN[A-Z ]*PRIVATE KEY-----'
+  'token=[A-Za-z0-9_-]{30,}'
+  '(password|passwd|secret|api[_-]?key|apikey|_auth|_authtoken)[[:space:]]*[:=][[:space:]]*["'"'"'][^"$][^"'"'"']{7,}["'"'"']'
+  '_auth(TOKEN)?[[:space:]]*[:=][[:space:]]*[A-Za-z0-9+/=_.-]{8,}'
+)
+
+fail=0
+
+# Sensitive-path test: .env family (except *.example/*.sample), key and
+# cert material, ssh private keys, credential stores.
+path_is_sensitive() {
+  case "$1" in
+    *.example|*.sample|*.template) return 1 ;;
+    *.pem|*.key|*.p12|*.pfx|*.ppk|*.keystore|*.jks) return 0 ;;
+    id_rsa|id_dsa|id_ecdsa|id_ed25519) return 0 ;;
+    credentials.json|credentials.yaml|credentials.yml) return 0 ;;
+  esac
+  printf '%s' "$1" | grep -qE '(^|/)\.env([.-]|$)'
+}
+
+# Scan a block of text (stdin) from one file against every pattern.
+scan_lines() {
+  local f="$1" pat m lines
+  lines=$(cat)
+  [ -z "$lines" ] && return 0
+  for pat in "${patterns[@]}"; do
+    m=$(printf '%s\n' "$lines" | grep -iEin -- "$pat" || true)
+    if [ -n "$m" ]; then
+      fail=1
+      printf '✗ SECRET-LIKE CONTENT in %s (pattern: %s)\n' "$f" "$pat"
+      printf '%s\n' "$m" | sed 's/^/      /'
+    fi
+  done
+}
+
+if [ "$mode" = all ]; then
+  files=$(git ls-files)
+else
+  files=$(git diff --cached --name-only --diff-filter=ACM)
+fi
+
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+
+  # 1. sensitive file being added/modified
+  if path_is_sensitive "$f"; then
+    printf '✗ SENSITIVE FILE staged: %s — keys and .env files never belong in the repo\n' "$f"
+    fail=1
+    continue
+  fi
+
+  # 2. content scan — added lines when staged, whole file with --all
+  if [ "$mode" = all ]; then
+    lines=$(cat "$f" 2>/dev/null || true)
+  else
+    lines=$(git diff --cached --no-color -U0 -- "$f" \
+      | grep -a '^+' | grep -av '^+++' | cut -c2- || true)
+  fi
+  scan_lines "$f" <<<"$lines"
+
+  # 3. workflow checks, staged only
+  if [ "$mode" = staged ]; then
+    case "$f" in
+      .github/workflows/*.yml|.github/workflows/*.yaml)
+        wf_added=$(git diff --cached --no-color -U0 -- "$f" \
+          | grep -a '^+' | grep -av '^+++' | cut -c2- || true)
+        if printf '%s\n' "$wf_added" | grep -qE '^[[:space:]]*runs-on:.*self-hosted'; then
+          printf '✗ SELF-HOSTED RUNNER in %s — a PR job there runs strangers'"'"' code on this machine (see AGENTS.md)\n' "$f"
+          fail=1
+        fi
+        if command -v actionlint >/dev/null 2>&1; then
+          tmp=$(mktemp -d)
+          git show ":$f" > "$tmp/$(basename "$f")"
+          if ! actionlint "$tmp/$(basename "$f")"; then
+            printf '✗ actionlint failed for staged %s\n' "$f"
+            fail=1
+          fi
+          rm -rf "$tmp"
+        fi
+        ;;
+    esac
+  fi
+done <<EOF
+$files
+EOF
+
+if [ "$fail" -ne 0 ]; then
+  echo "security scan FAILED — remove the finding (or --no-verify only for a confirmed false positive, saying so in the commit message)."
+  exit 1
+fi
+echo "security scan ok ($mode)"

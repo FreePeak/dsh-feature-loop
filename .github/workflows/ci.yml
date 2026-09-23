@@ -35,33 +35,15 @@
 # node_modules. See the README's "Known limits".
 #
 # ---------------------------------------------------------------------------
-# RUNNER: these jobs target a SELF-HOSTED runner, not a GitHub-hosted one.
+# RUNNER: GitHub-hosted `ubuntu-latest`.
 #
-# Why: GitHub Free gives an organization only a small monthly Actions allowance
-# for *private* repositories, and this repository is private. Hosted jobs were
-# therefore never scheduled at all — they failed in about three seconds with
-# zero steps executed and an empty `runner_name`, which is GitHub refusing to
-# provision a machine, not the workflow failing. A three-line probe workflow
-# (`- run: echo hi`) failed identically, which is how this file was cleared of
-# blame. The org had already consumed 1,785 of its 2,000 private-repo minutes
-# this month, nearly all of it in another repository.
-#
-# The runner is registered at ~/actions-runners/dsh-feature-loop with the
-# custom label `dsh-loop`, installed as a launchd service so it survives
-# reboots. To inspect or restart it:
-#
-#   cd ~/actions-runners/dsh-feature-loop
-#   ./svc.sh status      # is it running
-#   ./svc.sh stop        # pause it
-#   ./svc.sh start       # resume it
-#   ./svc.sh uninstall   # deregister and remove the service
-#
-# !! IF THIS REPOSITORY IS EVER MADE PUBLIC, CHANGE `runs-on` BACK TO
-# !! `ubuntu-latest` BEFORE YOU DO. On a public repository anyone can open a
-# !! pull request, and a pull-request job on a self-hosted runner executes
-# !! their code on your machine, with your files and credentials in reach.
-# !! Public repositories also get unlimited free hosted minutes, so the limit
-# !! this runner exists to dodge stops applying the moment it is public.
+# These jobs used a self-hosted runner while the repository was private —
+# GitHub Free's included Actions minutes apply only to private repos and run
+# out. Publishing changes the calculus both ways: public repositories get
+# unlimited hosted minutes, and a pull-request job on a self-hosted runner
+# executes a stranger's code on the maintainer's machine, with that machine's
+# files and credentials in reach. Never reintroduce `runs-on: self-hosted`
+# here — `.githooks/pre-commit` blocks it (see AGENTS.md).
 # ---------------------------------------------------------------------------
 
 name: CI
@@ -82,13 +64,10 @@ permissions:
 
 jobs:
   test:
-    name: test (self-hosted, Node 22)
-    # The custom label, not bare `self-hosted`: it targets this repository's
-    # runner specifically, so a runner added later for another project can never
-    # pick this job up by accident.
-    runs-on: [self-hosted, dsh-loop]
-    # A self-hosted runner is a finite resource — one machine, not an elastic
-    # pool. A hung job would occupy it indefinitely, so cap both.
+    name: test (Node 22)
+    # GitHub-hosted — see the RUNNER note at the top of this file.
+    runs-on: ubuntu-latest
+    # A hung job would occupy a runner indefinitely, so cap both jobs.
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -116,8 +95,8 @@ jobs:
           test/runner.test.ts test/tools.test.ts
 
   typecheck:
-    name: typecheck (self-hosted, harness-free src/ modules)
-    runs-on: [self-hosted, dsh-loop]
+    name: typecheck (harness-free src/ modules)
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
