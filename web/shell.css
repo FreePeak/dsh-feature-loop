@@ -1,31 +1,33 @@
 /* ──────────────────────────────────────────────────────────────────────
-   HITL dashboard shell — professional ops console.
+   HITL dashboard shell — stockbroker-inspired chat + ops rail.
 
-   Registers (from assistant-ui/design, adapted for a dark tool, not a site):
-     page = square · printed matter 6px · pressed controls 8px
-     chrome is ink (weight/fill); color is reserved for state:
-       blue = live · green = allow · red = reject/danger · amber = gate/warn
+   Visual language (assistant-ui stockbroker example, dark tool surface):
+     soft rounded chat chrome · sticky composer · message column max ~44rem
+     color reserved for state: blue live · green allow · red reject · amber gate
      mono only for machine text (tool, run, call, code)
-     line budget: section rules + row rhythm, no nested cages
-     motion only for state change; all off under prefers-reduced-motion
+     CSP-safe: system fonts only (no Google Fonts)
    ────────────────────────────────────────────────────────────────────── */
 
 :root {
-  --bg: #0f1115;
-  --panel: #14171e;
-  --panel-2: #10131a;
-  --border: #262b36;
-  --border-soft: #1c2029;
-  --text: #e6ebf4;
+  --bg: #0b0d12;
+  --panel: #141820;
+  --panel-2: #0f131a;
+  --border: #2a3140;
+  --border-soft: #1c2230;
+  --text: #f4f6fb;
   --muted: #9aa4b5;
   --faint: #6d7688;
-  --accent: #4c8dff;   /* live: connected, pending, selected */
-  --ok: #2ea043;       /* allow / answers-on */
-  --bad: #e5534b;      /* reject / danger / disconnected */
-  --warn: #d29922;     /* gate / brief warning */
-  --header-h: 52px;
-  --radius-doc: 6px;
-  --radius-ctl: 8px;
+  --accent: #5b8cff;   /* live: connected, pending, selected */
+  --ok: #3dd68c;       /* allow / answers-on */
+  --bad: #f07178;      /* reject / danger / disconnected */
+  --warn: #e0b04a;     /* gate / brief warning */
+  --composer: #171b24;
+  --user-bubble: #1c2433;
+  --header-h: 56px;
+  --radius-doc: 12px;
+  --radius-ctl: 999px;
+  --radius-chat: 1.25rem;
+  --thread-max-width: 44rem;
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
@@ -261,6 +263,7 @@ code {
   border-radius: var(--radius-doc);
   padding: 16px 18px;
   margin-bottom: 12px;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset;
 }
 .card + .card { margin-top: 0; }
 
@@ -344,12 +347,12 @@ code {
   color: var(--muted);
 }
 
-/* buttons — native, 8px, visible focus, min hit area */
+/* buttons — pill controls like the stockbroker confirm card */
 button {
   font: inherit;
   font-weight: 600;
   font-size: 13.5px;
-  border-radius: var(--radius-ctl);
+  border-radius: 999px;
   border: 1px solid var(--border);
   padding: 9px 18px;
   min-height: 40px;
@@ -367,11 +370,11 @@ button:disabled { opacity: 0.5; cursor: default; }
 button.allow {
   background: var(--ok);
   border-color: var(--ok);
-  color: #fff;
+  color: #062315;
 }
 button.allow:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--ok) 85%, #fff);
-  border-color: color-mix(in srgb, var(--ok) 85%, #fff);
+  background: color-mix(in srgb, var(--ok) 88%, #fff);
+  border-color: color-mix(in srgb, var(--ok) 88%, #fff);
 }
 button.reject {
   background: transparent;
@@ -383,7 +386,157 @@ button.reject:hover:not(:disabled) {
   border-color: var(--bad);
 }
 
-/* ── thread overrides (vendor loads second; stay specific) ─────────── */
+/* ── stockbroker-like approval thread ──────────────────────────────── */
+.hitl-thread-root {
+  display: flex;
+  flex-direction: column;
+  min-height: min(70vh, 720px);
+  max-height: calc(100vh - var(--header-h) - 120px);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius-chat) + 4px);
+  overflow: hidden;
+}
+.hitl-thread-viewport {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+  padding: 16px 16px 0;
+}
+.hitl-thread-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin-top: auto;
+  padding: 0 12px 14px;
+  background: linear-gradient(180deg, transparent, var(--panel) 28%);
+}
+.hitl-welcome {
+  margin: 24px auto;
+  max-width: var(--thread-max-width);
+  width: 100%;
+}
+
+.hitl-assistant-msg,
+.hitl-user-msg {
+  width: 100%;
+  max-width: var(--thread-max-width);
+  margin: 0 auto 14px;
+  padding: 0;
+}
+
+.hitl-user-msg {
+  display: flex;
+  justify-content: flex-end;
+}
+.hitl-user-bubble {
+  max-width: min(100%, 34rem);
+  background: var(--user-bubble);
+  border: 1px solid var(--border);
+  border-radius: 1.1rem 1.1rem 0.35rem 1.1rem;
+  padding: 10px 14px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  color: var(--text);
+}
+
+/* Composer — rounded chat dock like the stockbroker example */
+.hitl-composer-root {
+  width: 100%;
+  max-width: var(--thread-max-width);
+  margin: 0 auto;
+}
+.hitl-composer-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--composer);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-chat);
+  padding: 10px 12px 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.hitl-composer-shell:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent),
+    0 10px 30px rgba(0, 0, 0, 0.28);
+}
+.hitl-composer-shell.is-disabled {
+  opacity: 0.72;
+}
+.hitl-composer-input {
+  width: 100%;
+  resize: none;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 3.2rem;
+  max-height: 8rem;
+  padding: 4px 4px 0;
+}
+.hitl-composer-input::placeholder { color: var(--faint); }
+.hitl-composer-input:disabled { cursor: default; }
+.hitl-composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.hitl-composer-hint {
+  font-size: 11.5px;
+  color: var(--faint);
+  min-width: 0;
+}
+.hitl-composer-send {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 0;
+  background: var(--text);
+  color: var(--bg);
+}
+.hitl-composer-send:hover:not(:disabled) {
+  background: #fff;
+  border-color: transparent;
+}
+.hitl-composer-send:disabled {
+  opacity: 0.35;
+}
+
+.feedback-preview {
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel-2));
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: var(--radius-doc);
+  padding: 8px 10px;
+  line-height: 1.45;
+}
+.feedback-preview em {
+  font-style: normal;
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* vendor message chrome inside our thread */
 .stage .aui-assistant-message-root,
 .stage [data-message-id] {
   max-width: none;

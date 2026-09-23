@@ -284,6 +284,29 @@ test('a connected client claims; POST allowed-once resolves the ask', async (t) 
   assert.match(feed, /approved: write_file/)
 })
 
+test('POST feedback rides the decision into the activity feed', async (t) => {
+  const { dash } = await started(t)
+  const close = await connectSse(dash)
+  t.after(close)
+
+  const pending = dash.answer(QUESTION, delegatingNext().next)
+  const { id } = (await getState(dash)).pending[0] as { id: string }
+
+  const res = await post(dash, id, 'rejected', {
+    token: dash.token,
+    body: JSON.stringify({ outcome: 'rejected', feedback: 'path looks wrong; rewrite under src/' }),
+  })
+  assert.equal(res.status, 200)
+  assert.deepEqual(await res.json(), {
+    ok: true,
+    outcome: 'rejected',
+    feedback: 'path looks wrong; rewrite under src/',
+  })
+  assert.equal(await pending, 'rejected')
+  const feed = (await getState(dash)).feed.map(line => line.text).join('\n')
+  assert.match(feed, /rejected: write_file — path looks wrong; rewrite under src\//)
+})
+
 test('POST rejected resolves rejected; a second POST is 409', async (t) => {
   const { dash } = await started(t)
   const close = await connectSse(dash)

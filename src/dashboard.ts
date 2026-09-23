@@ -537,7 +537,11 @@ export interface DashboardHandle {
 
 /** A pending ask, internal form: the settle closure the POST path drives. */
 interface PendingEntry extends PendingApproval {
-  settle(outcome: ApprovalOutcome): void
+  /**
+   * Resolve the ask. `feedText` overrides the default approval feed line when
+   * the operator attached free-text feedback from the chat composer.
+   */
+  settle(outcome: ApprovalOutcome, feedText?: string): void
 }
 
 /**
@@ -713,16 +717,26 @@ export function startDashboard(
     } catch (error: unknown) {
       return sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) })
     }
-    const outcome = (body as { outcome?: unknown } | null)?.outcome
+    const parsed = body as { outcome?: unknown, feedback?: unknown } | null
+    const outcome = parsed?.outcome
     if (outcome !== 'allowed-once' && outcome !== 'rejected') {
       return sendJson(res, 400, { error: 'outcome must be "allowed-once" or "rejected"' })
     }
+    // Optional operator note from the chat composer. Cap length so a huge
+    // paste cannot bloat the feed; empty/whitespace is treated as absent.
+    const feedbackRaw = parsed?.feedback
+    const feedback = typeof feedbackRaw === 'string'
+      ? firstLine(feedbackRaw.trim(), 500)
+      : ''
     const entry = pending.get(id)
     // 409, not 404: the request existed; it was settled, expired, or
     // cancelled. A late click must read as "you were beaten", not "bad url".
     if (entry === undefined) return sendJson(res, 409, { error: 'no such pending approval (settled, expired, or cancelled)' })
-    entry.settle(outcome)
-    sendJson(res, 200, { ok: true, outcome })
+    const feedText = feedback === ''
+      ? undefined
+      : `${OUTCOME_LABEL[outcome]}: ${entry.toolName} — ${feedback}`
+    entry.settle(outcome, feedText)
+    sendJson(res, 200, { ok: true, outcome, ...feedback === '' ? {} : { feedback } })
   }
 
   /**
@@ -857,7 +871,8 @@ export function startDashboard(
         runId,
         askedAt: Date.now(),
         briefState: 'none',
-        settle: outcome => settle(outcome),
+        // Optional second arg is operator feedback from the dashboard composer.
+        settle: (outcome, feedText) => settle(outcome, feedText),
       })
       timer = setTimeout(
         () => settle('unavailable', `expired: ${toolName} — no answer within ${cfg.answerTimeoutMs}ms`),
