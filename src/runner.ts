@@ -38,6 +38,7 @@ import type { ReviewSignal, StepObservation } from './signals.ts'
 import { AttentionRouter, ReviewGate, judgeQuestion } from './review.ts'
 import type { GatePolicy, ReviewDecision, RouterConfig } from './review.ts'
 import type { Judge } from './laya.ts'
+import type { SystemOneQuestion } from './laya.ts'
 import { NO_JUDGE } from './laya.ts'
 import { describeEnvelope, validateSpec } from './spec.ts'
 import type { LoopSpec } from './spec.ts'
@@ -112,6 +113,18 @@ export interface LoopRunnerOptions {
   checkSuccess?: () => Promise<{ ok: boolean, output: string }>
   /** Model call budget per step, passed through to the gateway. */
   maxTokensPerStep?: number
+  /**
+   * Question author for the judge call. Receives the step summary, the
+   * signals, and a fallback supplier for the fixed `judgeQuestion`; returns
+   * the state and questions to score. Omitted means the fixed question —
+   * the questioner (`questioner.ts`, LLM-authored per-step questions) is
+   * opt-in because it costs a metered chat call per step where it runs.
+   */
+  questioner?: (
+    summary: string,
+    signals: readonly ReviewSignal[],
+    fallback: () => { state: string, questions: Record<string, SystemOneQuestion> },
+  ) => Promise<{ state: string, questions: Record<string, SystemOneQuestion> }>
   /**
    * Evidence from a previous refinement pass, delivered as a plugin-sourced
    * user notice on the opening turn.
@@ -313,7 +326,18 @@ export async function runLoop(options: LoopRunnerOptions): Promise<LoopRunResult
       const summary = history.at(-1) === undefined
         ? 'the run has just started'
         : `the last step called ${history.at(-1)!.tool ?? 'no tool'} and ${history.at(-1)!.error === true ? 'failed' : 'succeeded'}`
-      const question = judgeQuestion(summary, signals)
+      // LLM reasons → Laya decides: when the actor said something this step,
+      // the questioner turns its reasoning into typed questions instead of
+      // asking the fixed rubric. `lastAssistant` is the actor's own words —
+      // empty on step 1 (nothing said yet) and after tool-only steps, in
+      // which case the questioner gets the summary and behaves like the
+      // fixed question with more context. Falls back to `judgeQuestion`
+      // silently — generation is an optimisation, and the fallback is the
+      // observable behaviour.
+      const reasoning = lastAssistant.trim() === '' ? summary : lastAssistant
+      const question = options.questioner === undefined
+        ? judgeQuestion(summary, signals)
+        : await options.questioner(reasoning, signals, () => judgeQuestion(summary, signals))
       const answer = await judge.score(question.state, question.questions)
       judgeScore = answer.score
       emit({ kind: 'judge', step, score: answer.score, ...answer.error === undefined ? {} : { error: answer.error } })

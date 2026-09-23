@@ -62,9 +62,16 @@ services:
       - "host.docker.internal:host-gateway"
 
     volumes:
-      # Persists the profile, settings, sessions and logs across restarts.
-      # To start clean: docker compose -f docker/docker-compose.yml down -v
+      # Two mounts, split by blast radius:
+      # - `dsh-data` (/data): the harness profile, settings, sessions, logs.
+      #   Survives `make clean` — wiping sessions because you wanted fresh
+      #   metrics would be backwards.
+      # - `dsh-fl-data` (/data/.feature-loop): the loop's own run history
+      #   (`runs.jsonl`), the substrate every envelope/derivation reads.
+      #   `make clean` removes THIS volume only: metrics reset without
+      #   touching sessions, settings, or the seeded profile.
       - dsh-data:/data
+      - dsh-fl-data:/data/.feature-loop
 
     restart: unless-stopped
 
@@ -81,9 +88,11 @@ services:
       retries: 3
 
 volumes:
-  # The name is pinned so the volume is exactly `dsh-fl-data`, not
-  # `<project>_dsh-data`. Without `name:` compose prefixes it with the project
-  # name — and because this file lives in docker/, that prefix is the directory
+  # Both names pinned so they are exactly `dsh-data` / `dsh-fl-data`, not
+  # `<project>_*`. Without `name:` compose prefixes with the project name —
+  # and because this file lives in docker/, that prefix is the directory
   # name, which made `make clean` and the docs name a volume that did not exist.
   dsh-data:
+    name: dsh-data
+  dsh-fl-data:
     name: dsh-fl-data

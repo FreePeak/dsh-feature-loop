@@ -444,12 +444,13 @@ const BATTERY: readonly BatteryEntry[] = [
       type: 'score',
       instructions:
         'How well-sized is each step\'s output against the per-step token cap?',
-      criteria: {
-        '0': 'outputs are cut off or empty at the current cap — the cap binds',
-        '1': 'right-sized: outputs fill neither extreme',
-        '2': 'wordy: outputs routinely exceed what the step needs',
-        '3': 'bloated: most output tokens are waste',
-      },
+      // Ordered arrays keep the human labels as the Laya/Jev legend.
+      criteria: [
+        'outputs are cut off or empty at the current cap — the cap binds',
+        'right-sized: outputs fill neither extreme',
+        'wordy: outputs routinely exceed what the step needs',
+        'bloated: most output tokens are waste',
+      ],
     },
   },
   {
@@ -460,10 +461,6 @@ const BATTERY: readonly BatteryEntry[] = [
       instructions:
         'Is the prompt prefix stable across steps — the same system text and tool schemas '
         + 'before any per-step content, so a prompt cache would hit every step?',
-      criteria: {
-        yes: 'the fixed prefix is identical every step and caching would hit',
-        no: 'per-step content comes before or interleaves with the fixed prefix',
-      },
     },
   },
   {
@@ -472,12 +469,12 @@ const BATTERY: readonly BatteryEntry[] = [
     question: {
       type: 'score',
       instructions: 'How much do runs grind against the step ceiling?',
-      criteria: {
-        '0': 'runs finish well under the ceiling; it never binds',
-        '1': 'runs occasionally reach the ceiling',
-        '2': 'runs often stop at the ceiling with the goal unmet',
-        '3': 'runs routinely run out of steps mid-fix while still making progress',
-      },
+      criteria: [
+        'runs finish well under the ceiling; it never binds',
+        'runs occasionally reach the ceiling',
+        'runs often stop at the ceiling with the goal unmet',
+        'runs routinely run out of steps mid-fix while still making progress',
+      ],
     },
   },
   {
@@ -486,12 +483,12 @@ const BATTERY: readonly BatteryEntry[] = [
     question: {
       type: 'score',
       instructions: 'How well-timed is escalation up the model ladder?',
-      criteria: {
-        '0': 'the loop climbs to expensive rungs almost immediately',
-        '1': 'it climbs a little early',
-        '2': 'escalation timing is right',
-        '3': 'it grinds on a failing cheap rung long before climbing',
-      },
+      criteria: [
+        'the loop climbs to expensive rungs almost immediately',
+        'it climbs a little early',
+        'escalation timing is right',
+        'it grinds on a failing cheap rung long before climbing',
+      ],
     },
   },
   {
@@ -500,12 +497,12 @@ const BATTERY: readonly BatteryEntry[] = [
     question: {
       type: 'score',
       instructions: 'How well does the attention budget match what a human would want to see?',
-      criteria: {
-        '0': 'far too many steps interrupt a human',
-        '1': 'slightly chatty but close',
-        '2': 'about right: the steps that matter surface',
-        '3': 'serious problems reach nobody; the budget or threshold blocks them',
-      },
+      criteria: [
+        'far too many steps interrupt a human',
+        'slightly chatty but close',
+        'about right: the steps that matter surface',
+        'serious problems reach nobody; the budget or threshold blocks them',
+      ],
     },
   },
   {
@@ -514,12 +511,12 @@ const BATTERY: readonly BatteryEntry[] = [
     question: {
       type: 'score',
       instructions: 'How much do oversized tool results crowd the context?',
-      criteria: {
-        '0': 'results fit comfortably; nothing truncates',
-        '1': 'occasionally large, rarely worth capping',
-        '2': 'large tool outputs regularly crowd the context',
-        '3': 'the context is mostly tool output; a cap would help immediately',
-      },
+      criteria: [
+        'results fit comfortably; nothing truncates',
+        'occasionally large, rarely worth capping',
+        'large tool outputs regularly crowd the context',
+        'the context is mostly tool output; a cap would help immediately',
+      ],
     },
   },
 ]

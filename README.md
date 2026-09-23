@@ -384,7 +384,8 @@ src/
   review.ts      reversibility gate + attention router (<10% budget)
   agent-policy.ts the plugin agent's decisions, extracted so they are testable
   judge.ts       chat judge (works anywhere)
-  laya.ts        Laya judge via onegw /v1/systemone (the intended production path)
+  laya.ts        Laya judge via System One / Jev (local sidecar :8091 by default)
+  questioner.ts  LLM→Laya→LLM: actor uncertainty → typed questions → Laya decides
   messages.ts    notice text; imports nothing, which keeps the test suite runnable
   prompts.ts     BUG_FIX_PROMPT / FEATURE_PROMPT / REFACTOR_PROMPT
 
@@ -426,11 +427,18 @@ classification, so it has three implementations behind one interface:
 
 \* Laya-sidecar timings measured on this machine: first predict ~7 s (cold weights), then ~0.9–4 s per call warm — far above the JEV doc's 73 ms (that figure is raw forward-pass; ours includes HTTP + routing + a cold-ish process). Still 10× cheaper in wall-clock than a chat judge, and $0.
 
-The demo uses `ChatJudge` with `xiaomi/mimo-v2.5` because no `systemone` provider
-is configured in `~/.onegw/onegw.toml`. To point the demo at local Laya instead,
-run the sidecar and override the judge base URL (the CLI's `--judge laya` still
-defaults to onegw's `:8080`, which has no systemone provider — that wiring is
-a separate, smaller change: a `--judge-base-url` flag or env var).
+To point the demo at local Laya (the containerised sidecar on `:8091`, same
+System One / Jev / TypeSafe wire):
+
+```bash
+bash demo/run.sh --judge laya --judge-base-url http://127.0.0.1:8091
+# or: LAYA_BASE_URL=http://127.0.0.1:8091 bash demo/run.sh --judge laya
+```
+
+`--judge laya` defaults the judge base URL to `http://127.0.0.1:8091` (override
+with `--judge-base-url` / `LAYA_BASE_URL`). The actor still talks to onegw;
+only the judge URL splits. Score criteria go as ordered arrays so Laya keeps
+the human labels; `noul` answers map onto `probability`.
 
 The demo uses `ChatJudge` with `xiaomi/mimo-v2.5` because no `systemone` provider
 is configured in `~/.onegw/onegw.toml`. Two measured facts argue for Laya beyond

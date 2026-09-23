@@ -20,7 +20,9 @@ import { createTools } from './tools.ts'
 import { createOnegwClient } from './llm.ts'
 import { createChatJudge } from './judge.ts'
 import { OnegwJudge, NO_JUDGE } from './laya.ts'
-import type { Judge } from './laya.ts'
+import type { Judge, SystemOneQuestion } from './laya.ts'
+import type { ReviewSignal } from './signals.ts'
+import { authorQuestions } from './questioner.ts'
 import { runRefined } from './refine.ts'
 import { renderTranscript } from './runner.ts'
 import type { ReviewRequest } from './runner.ts'
@@ -44,6 +46,16 @@ interface Options {
   maxSteps: number
   judge: 'none' | 'chat' | 'laya'
   judgeModel: string
+  /**
+   * Where the Laya judge lives. Defaults to the local containerised sidecar
+   * at `http://127.0.0.1:8091` — the same System One / Jev / TypeSafe wire,
+   * not the actor's gateway. onegw's `:8080` has no systemone provider, so
+   * `--judge laya` against the actor URL fails every call and latches off.
+   * Split out rather than shared because pointing the whole CLI at `:8091`
+   * would break the actor. Treat Laya like any other decision provider:
+   * change `baseURL` (or `LAYA_BASE_URL`), never the client code.
+   */
+  judgeBaseURL: string
   reviewBudget: number
   auto: boolean
   maxTokens: number
@@ -87,6 +99,7 @@ const USAGE = `dsh-feature-loop — run the loop against a repository
   --max-steps <n>     step ceiling for the run                (default: 15)
   --judge <kind>      none | chat | laya                      (default: chat)
   --judge-model <id>  model the chat judge uses               (default: xiaomi/mimo-v2.5)
+  --judge-base-url <u> Laya sidecar URL (default: http://127.0.0.1:8091)
   --review-budget <f> fraction of steps a human may be asked  (default: 0.10)
   --max-tokens <n>    per-step output cap                     (default: 4096)
   --loops <n>         refinement passes, integer 3–10 (default: 1)
@@ -121,6 +134,7 @@ function parseArgs(argv: string[]): Options | 'help' {
     maxSteps: 15,
     judge: 'chat',
     judgeModel: 'xiaomi/mimo-v2.5',
+    judgeBaseURL: process.env.LAYA_BASE_URL ?? 'http://127.0.0.1:8091',
     reviewBudget: 0.1,
     auto: false,
     maxTokens: 4096,
@@ -150,6 +164,7 @@ function parseArgs(argv: string[]): Options | 'help' {
       case '--history': options.history = value(i, arg); i += 1; break
       case '--judge': options.judge = value(i, arg) as Options['judge']; i += 1; break
       case '--judge-model': options.judgeModel = value(i, arg); i += 1; break
+      case '--judge-base-url': options.judgeBaseURL = value(i, arg); i += 1; break
       case '--review-budget': options.reviewBudget = Number(value(i, arg)); i += 1; break
       case '--max-tokens': options.maxTokens = Number(value(i, arg)); i += 1; break
       case '--loops': {
@@ -245,8 +260,8 @@ function buildJudge(options: Options, apiKey: string, baseURL: string): { judge:
   if (options.judge === 'none') return { judge: NO_JUDGE, label: 'none (detectors only)' }
   if (options.judge === 'laya') {
     return {
-      judge: new OnegwJudge({ baseURL, model: 'laya', timeoutMs: 3000 }),
-      label: 'laya (local, via onegw /v1/systemone)',
+      judge: new OnegwJudge({ baseURL: options.judgeBaseURL, model: 'laya', timeoutMs: 30000 }),
+      label: `laya (local sidecar, ${options.judgeBaseURL}/v1/systemone)`,
     }
   }
   return {
@@ -347,6 +362,22 @@ async function main(): Promise<number> {
 
   const tools = createTools({ root })
   const llm = createOnegwClient({ baseURL, apiKey })
+  // The questioner closes the LLM→Laya→LLM loop: the actor's reasoning goes
+  // to Laya as authored questions, Laya's levels come back as the judge
+  // score. Same metered client as the actor — the questioner costs a chat
+  // call per judged step, which is why it only runs where the judge runs
+  // (detectors fired, or attention budget remaining).
+  const questioner = options.judge === 'none'
+    ? undefined
+    : async (
+      reasoning: string,
+      signals: readonly ReviewSignal[],
+      fallback: () => { state: string, questions: Record<string, SystemOneQuestion> },
+    ) => authorQuestions(
+      { llm, model: effectiveRoute(options).fullID },
+      { reasoning, goal: spec.goal, signals },
+      fallback,
+    )
 
   /** Run the success command in the sandbox. Its exit code is the only verdict. */
   const checkSuccess = async (): Promise<{ ok: boolean, output: string }> => {
@@ -409,6 +440,7 @@ async function main(): Promise<number> {
     tools,
     llm,
     judge,
+    questioner,
     router: { reviewBudget: options.reviewBudget },
     onReview,
     checkSuccess,
