@@ -27,7 +27,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
-import { MessageId, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { CONTEXT_SUMMARY_MAX_CHARS, MessageId } from '@deepseek-ai/dsh-llm'
 import type { LlmCallConfig, UserMessage } from '@deepseek-ai/dsh-llm'
 import type { PreToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import { LoopBudget } from './budget.ts'
@@ -100,6 +100,38 @@ declare module '@deepseek-ai/cordis' {
 }
 
 /**
+ * This plugin's own message-source kind.
+ *
+ * The harness's `MessageSourceMap` is a merge-extensible sum type where **each
+ * producer declares its own `kind` in its own module, and there is deliberately
+ * no shared catch-all `plugin` kind**. The v4 session format enforces that at
+ * the log boundary: `session-format-v3-to-v4/src/message-sources.ts` refuses
+ * `source.kind === 'plugin'` outright as a retired wrapper, and a turn whose
+ * message carries one fails with
+ *
+ *   format v4 message requires a producer-owned source kind
+ *
+ * which is a hard turn failure, not a warning. So the attribution below is not
+ * decoration: without it, every notice this plugin injects breaks the session.
+ *
+ * `form: 'notice'` is the other half — it tells consumers *what kind of thing*
+ * this is (a one-off account of something that just happened, superseding
+ * nothing), which is independent of who produced it.
+ */
+export interface FeatureLoopMessageSource {
+  readonly kind: 'feature-loop'
+  /** One-line account, shown without expanding the row. Bounded by the harness. */
+  readonly form: 'notice'
+  readonly summary: string
+}
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'feature-loop': FeatureLoopMessageSource
+  }
+}
+
+/**
  * Wrap notice text as a plugin-sourced user message.
  *
  * The notices reach both the model and the human reading the transcript, which
@@ -114,7 +146,28 @@ function notice(text: string): UserMessage {
     id: MessageId(randomUUID()),
     role: 'user',
     content: [{ type: 'text', text }],
-    source: { kind: 'plugin', plugin: name },
+    source: featureLoopSource(text),
+  }
+}
+
+/**
+ * Build this plugin's message source.
+ *
+ * Exported so the invariant can be asserted directly: a test that had to go
+ * through a live agent hook to see this object is a test nobody runs, and this
+ * exact shape once broke every session it touched.
+ *
+ * @param text - the notice text.
+ * @returns the producer-owned source for one notice.
+ */
+export function featureLoopSource(text: string): FeatureLoopMessageSource {
+  return {
+    kind: 'feature-loop',
+    form: 'notice',
+    // The harness bounds the durable summary itself; truncating here keeps the
+    // row honest about what it holds rather than relying on a downstream clip
+    // that would silently differ from the transcript.
+    summary: text.replace(/\s+/g, ' ').slice(0, CONTEXT_SUMMARY_MAX_CHARS),
   }
 }
 
