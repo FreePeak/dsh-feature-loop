@@ -148,6 +148,29 @@ directly), not one raised through a live Web UI session. What it does prove
 is the exact wiring that was unverified: the page's JavaScript renders the
 card from the SSE snapshot and the button's `fetch` settles the real ask.
 
+## Professional revamp (2026-09-23, branch `dsh/hitl-dashboard-pro`)
+
+Presentation-only: `web/shell.css`, `web/app.tsx`, `src/dashboard-page.ts`,
+rebuilt assets. The approval seam, snapshot schema, token CSP, and
+`approval-bridge` vocabulary are unchanged. What was observed after the
+change:
+
+- `make verify` — green (194 unit + 11 integration, typecheck, compose).
+- `make e2e-dashboard` — allow and reject both resolve the real ask.
+- Headless structural pass (Chromium against `startDashboard` + `answer`):
+  stage+rail grid at 1440, sticky header, mono tool id, `.card .tool` +
+  role-named buttons, `Allow once` via keyboard Enter → `allowed-once`,
+  `Reject` click → `rejected`, `#pending-count` reads `1 pending`, skip
+  link present, no horizontal scroll at 390.
+- Full-page screenshot of the live page with one pending ask + brief:
+  `docs/hitl-dashboard-revamp.png`.
+- `demo/hitl-open.mjs` starts a seeded demo (run metrics, feed, pending ask
+  with brief) and opens it in the default browser; that is the "new
+  dashboard" URL, not the container's older bundle on :3092.
+
+Still true: headless Chromium, synthetic ask, no human click in this pass —
+same ceilings as above.
+
 The manual composer-interplay steps (≈2 minutes) remain a valid deeper check:
 
 ```bash
