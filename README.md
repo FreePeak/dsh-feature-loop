@@ -1,11 +1,31 @@
-<img src="assets/logo.svg" alt="dsh-feature-loop" width="344" height="80">
+<p align="center">
+  <img src="assets/logo.svg" alt="dsh-feature-loop" width="360" height="84">
+</p>
 
-# @freepeak/dsh-feature-loop
+<h1 align="center">@freepeak/dsh-feature-loop</h1>
 
-[![CI](https://github.com/FreePeak/dsh-feature-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/FreePeak/dsh-feature-loop/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](.nvmrc)
-[![Tests](https://img.shields.io/badge/tests-296%20passing-brightgreen.svg)](#quick-start)
+<p align="center">
+  <strong>Bounded agent loop for DeepSeek Harness</strong><br>
+  Budget ceilings · cheap-first routing · loop hygiene · human-in-the-loop review
+</p>
+
+<p align="center">
+  <a href="https://github.com/FreePeak/dsh-feature-loop/actions/workflows/ci.yml"><img src="https://github.com/FreePeak/dsh-feature-loop/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+  <a href=".nvmrc"><img src="https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg" alt="Node >= 22"></a>
+  <a href="#quick-start"><img src="https://img.shields.io/badge/tests-296%20passing-brightgreen.svg" alt="296 tests passing"></a>
+  <a href="https://www.npmjs.com/package/@freepeak/dsh-feature-loop"><img src="https://img.shields.io/npm/v/@freepeak/dsh-feature-loop.svg?color=cb3837" alt="npm"></a>
+  <a href="https://github.com/FreePeak/dsh-feature-loop/stargazers"><img src="https://img.shields.io/github/stars/FreePeak/dsh-feature-loop?style=social" alt="GitHub stars"></a>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#hitl-ops-dashboard">HITL dashboard</a> ·
+  <a href="#the-book-mapping">Book mapping</a> ·
+  <a href="#two-paths-one-policy-layer">Architecture</a> ·
+  <a href="docs/SETUP.md">Setup</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
 
 A **book-shaped policy layer** for bug-fixing and small features: budget
 ceilings, cheap-first routing, a step-level review gate, and a local judge that
@@ -21,6 +41,52 @@ build.
 > package adds, so ~3,064 lines of forked code were removed and replaced by
 > `src/plugin.ts`. See [`docs/PRD.md`](docs/PRD.md) for the audit and the
 > acceptance criteria.
+
+---
+
+## Features
+
+| | |
+|---|---|
+| **Budget the loop** | Step and USD ceilings that stop the run — a limit, not an invoice |
+| **Cheap-first routing** | Model ladder by step type (`onegw/cheap` → execution) |
+| **Loop hygiene** | Tool-cycle, error-cascade, budget trajectory, and related detectors |
+| **Fail-closed review gate** | Tiered by reversibility; low judge confidence → ask the human |
+| **HITL ops dashboard** | Workspaces, activity, grouped runs, Allow / Reject + optional feedback |
+| **One policy, two paths** | Standalone runner and DSH plugin share the same rules |
+
+---
+
+## HITL ops dashboard
+
+When a tool hits the review gate, operators decide in a stockbroker-style thread
+with optional feedback — not a modal interrupt. Live runs are grouped by
+workspace on a Cursor-dark ops rail; Activity and Runs scroll independently.
+
+<p align="center">
+  <img
+    src="docs/hitl-dashboard-revamp.png"
+    alt="HITL ops dashboard — left workspaces + activity, center approval thread, right grouped runs"
+    width="100%"
+  >
+</p>
+
+| Pane | What you get |
+|---|---|
+| **Left** | Live workspaces / sessions tree + scrollable activity ledger |
+| **Center** | Approval thread with review brief, Allow / Reject, optional feedback |
+| **Right** | Runs grouped by workspace with step/spend meters and signals |
+
+```bash
+# open a seeded dashboard in your browser (no model call)
+node --experimental-strip-types demo/hitl-open.mjs open
+# capture docs/hitl-dashboard-revamp.png
+node --experimental-strip-types demo/hitl-open.mjs shot
+```
+
+Token-gated loopback page · claim only while an SSE client is connected ·
+binary allow/reject preserved. Details:
+[`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md).
 
 ---
 
@@ -149,7 +215,7 @@ gets reached.
   five outcomes executed in a **real** DSH context (5/5 pass), plus the exact
   string the approval panel renders.
 - **[`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md)** — the approval
-  dashboard: 194 unit + 11 integration green, a live HTTP transcript (page 200,
+  dashboard: 296 unit + 11 integration green, a live HTTP transcript (page 200,
   token 401, approve → `allowed-once`, 409, 403), the browser click verified
   via `make e2e-dashboard`, and the model-authored review brief.
 - **[`docs/VERIFY-E2E-APPROVAL.md`](docs/VERIFY-E2E-APPROVAL.md)** — a real
@@ -195,7 +261,7 @@ The policies are shared. Only transport and session state differ.
 | Signals | ✅ wired | ✅ wired (`agent/pre-step`) |
 | Review gate | ✅ wired (blocks) | ✅ wired (`tools/pre-execute`, **asks**) |
 | Human approval in the browser | ➖ console prompt | ✅ Web UI composer prompt |
-| HITL approval dashboard | ➖ | ✅ optional loopback web page: pending cards, live run state, Allow/Reject (`dashboard:` config) |
+| HITL approval dashboard | ➖ | ✅ ops console: workspace tree, activity, grouped runs, Allow/Reject + feedback (`dashboard:` config) |
 | Judge | ✅ wired | ✅ wired (`agent/pre-step`, awaited) |
 | Operator review | ✅ wired (blocks) | ✅ prompts, then blocks |
 
@@ -572,7 +638,7 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 - **Phase 1e — HITL approval dashboard** ✅ optional loopback web surface
   (`src/dashboard.ts` + `src/dashboard-page.ts`): pending cards, live run state
   over SSE, Allow/Reject over HTTP — guarded so a tab-less deployment behaves
-  byte-identically to the composer-only path. 194 unit + 11 integration tests;
+  byte-identically to the composer-only path. 296 unit + 11 integration tests;
   the browser click verified via `make e2e-dashboard`
   ([`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md)).
 - **Phase 1f — review briefs** ✅ model-authored brief per ask
@@ -632,3 +698,15 @@ approving runs the write and rejecting stops it. See
   dispatched **ungated**. An agent-less call now gets a shared policy and is
   gated like any other; the refusal happens downstream, where the harness denies
   an agent-less `ask`. Caught by independent verification, not by CI.
+
+---
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). Please open issues with the templates under
+[`.github/ISSUE_TEMPLATE`](.github/ISSUE_TEMPLATE/). Security reports:
+[`SECURITY.md`](SECURITY.md).
+
+## License
+
+[MIT](LICENSE) © Linh Doan / FreePeak

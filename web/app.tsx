@@ -587,7 +587,7 @@ function WorkspaceTree({
         <h2>Workspaces</h2>
         <span className="section-count">{groups.length}</span>
       </div>
-      <div className="ws-tree" role="tree">
+      <div className="ws-tree scroll-beauty" role="tree">
         <button
           type="button"
           className={`ws-all${filter === 'all' ? ' is-active' : ''}`}
@@ -657,7 +657,79 @@ function WorkspaceTree({
   )
 }
 
-function RunPanels({
+function RunCard({ run }: { run: DashboardSnapshot['runs'][number] }): React.ReactElement {
+  return (
+    <div className="run-card">
+      <div className="run-grid">
+        <div>
+          <div className="k">run</div>
+          <div className="v mono" title={run.runId}>{shortSessionId(run.sessionId ?? run.runId)}</div>
+        </div>
+        <div>
+          <div className="k">steps</div>
+          <div className="v">
+            {run.step ?? '—'}{run.maxSteps === undefined ? '' : ` / ${run.maxSteps}`}
+          </div>
+          {run.step !== undefined && run.maxSteps !== undefined && (
+            <Meter
+              value={run.step}
+              max={run.maxSteps}
+              label={`Step ${run.step} of ${run.maxSteps}`}
+            />
+          )}
+        </div>
+        <div>
+          <div className="k">spend</div>
+          <div className="v">
+            {run.spentUSD === undefined ? '—' : `$${run.spentUSD.toFixed(4)}`}
+            {run.budgetUSD === undefined ? '' : ` / $${run.budgetUSD.toFixed(2)}`}
+          </div>
+          {run.spentUSD !== undefined && run.budgetUSD !== undefined && (
+            <Meter
+              value={run.spentUSD}
+              max={run.budgetUSD}
+              label={`Spend $${run.spentUSD.toFixed(4)} of $${run.budgetUSD.toFixed(2)}`}
+            />
+          )}
+        </div>
+        {run.route !== undefined && (
+          <div>
+            <div className="k">route</div>
+            <div className="v">
+              <span className="tag tag-accent" title={run.route}>{run.route}</span>
+            </div>
+          </div>
+        )}
+        {run.judgeScore !== undefined && (
+          <div>
+            <div className="k">judge</div>
+            <div className="v">
+              <span className={`tag ${run.judgeScore >= 2 ? 'tag-ok' : run.judgeScore >= 1 ? 'tag-warn' : 'tag-bad'}`}>
+                {run.judgeScore} / 3
+              </span>
+            </div>
+            <Meter
+              value={run.judgeScore}
+              max={3}
+              label={`Judge score ${run.judgeScore} of 3`}
+              className="accent"
+            />
+          </div>
+        )}
+      </div>
+      {(run.signals ?? []).map((signal, i) => (
+        <div key={i} className={`sig ${signal.severity}`}>
+          <span className={severityTagClass(signal.severity)}>{signal.severity}</span>
+          <span className="tag tag-ghost">{signal.kind}</span>
+          <span>@ step {signal.step} — {signal.detail}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** Right rail: runs grouped by workspace, independent scroll. */
+function GroupedRunPanels({
   snapshot,
   filter,
 }: {
@@ -667,104 +739,67 @@ function RunPanels({
   const runs = filter === 'all'
     ? snapshot.runs
     : snapshot.runs.filter((r) => r.runId === filter)
+  const groups = useMemo(() => buildWorkspaceTree(runs), [runs])
+
+  return (
+    <section id="run-state" className="pane pane-runs">
+      <div className="section-head pane-head">
+        <h2>Runs</h2>
+        <span className="section-count">{runs.length}</span>
+        {filter !== 'all' && (
+          <span className="tag tag-accent" title={filter}>{shortSessionId(filter)}</span>
+        )}
+      </div>
+      <div className="pane-scroll scroll-beauty">
+        {runs.length === 0
+          ? (
+            <p className="empty">
+              {filter === 'all' ? 'No run has reported yet.' : 'No run state for this session.'}
+            </p>
+          )
+          : groups.map((group) => (
+            <div key={group.key} className="run-group">
+              <div className="run-group-head" title={group.cwd ?? group.label}>
+                <span className="run-group-label">{group.label}</span>
+                <span className="tag tag-ghost">{group.sessions.length}</span>
+              </div>
+              <div className="run-group-body">
+                {group.sessions.map((run) => (
+                  <RunCard key={run.runId} run={run} />
+                ))}
+              </div>
+            </div>
+          ))}
+      </div>
+    </section>
+  )
+}
+
+/** Left sidebar activity ledger — filtered feed, independent scroll. */
+function ActivityFeed({
+  snapshot,
+  filter,
+}: {
+  snapshot: DashboardSnapshot
+  filter: SessionFilter
+}): React.ReactElement {
   const feed = filter === 'all'
     ? snapshot.feed
     : snapshot.feed.filter((line) => line.runId === filter)
 
   return (
-    <>
-      <section id="run-state">
-        <div className="section-head">
-          <h2>Run state</h2>
-          {filter !== 'all' && (
-            <span className="tag tag-accent" title={filter}>{shortSessionId(filter)}</span>
-          )}
-        </div>
-        {runs.length === 0
-          ? <p className="empty">{filter === 'all' ? 'No run has reported yet.' : 'No run state for this session.'}</p>
-          : runs.map((run) => (
-            <div className="run-card" key={run.runId}>
-              <div className="run-grid">
-                <div>
-                  <div className="k">run</div>
-                  <div className="v mono">{run.runId}</div>
-                </div>
-                {(run.workspaceLabel !== undefined || run.cwd !== undefined) && (
-                  <div>
-                    <div className="k">workspace</div>
-                    <div className="v" title={run.cwd}>
-                      <span className="tag tag-cyan">{run.workspaceLabel ?? run.cwd}</span>
-                    </div>
-                  </div>
-                )}
-                <div>
-                  <div className="k">steps</div>
-                  <div className="v">
-                    {run.step ?? '—'}{run.maxSteps === undefined ? '' : ` / ${run.maxSteps}`}
-                  </div>
-                  {run.step !== undefined && run.maxSteps !== undefined && (
-                    <Meter
-                      value={run.step}
-                      max={run.maxSteps}
-                      label={`Step ${run.step} of ${run.maxSteps}`}
-                    />
-                  )}
-                </div>
-                <div>
-                  <div className="k">spend</div>
-                  <div className="v">
-                    {run.spentUSD === undefined ? '—' : `$${run.spentUSD.toFixed(4)}`}
-                    {run.budgetUSD === undefined ? '' : ` / $${run.budgetUSD.toFixed(2)}`}
-                  </div>
-                  {run.spentUSD !== undefined && run.budgetUSD !== undefined && (
-                    <Meter
-                      value={run.spentUSD}
-                      max={run.budgetUSD}
-                      label={`Spend $${run.spentUSD.toFixed(4)} of $${run.budgetUSD.toFixed(2)}`}
-                    />
-                  )}
-                </div>
-                {run.route !== undefined && (
-                  <div>
-                    <div className="k">route</div>
-                    <div className="v">
-                      <span className="tag tag-accent" title={run.route}>{run.route}</span>
-                    </div>
-                  </div>
-                )}
-                {run.judgeScore !== undefined && (
-                  <div>
-                    <div className="k">judge</div>
-                    <div className="v">
-                      <span className={`tag ${run.judgeScore >= 2 ? 'tag-ok' : run.judgeScore >= 1 ? 'tag-warn' : 'tag-bad'}`}>
-                        {run.judgeScore} / 3
-                      </span>
-                    </div>
-                    <Meter
-                      value={run.judgeScore}
-                      max={3}
-                      label={`Judge score ${run.judgeScore} of 3`}
-                      className="accent"
-                    />
-                  </div>
-                )}
-              </div>
-              {(run.signals ?? []).map((signal, i) => (
-                <div key={i} className={`sig ${signal.severity}`}>
-                  <span className={severityTagClass(signal.severity)}>{signal.severity}</span>
-                  <span className="tag tag-ghost">{signal.kind}</span>
-                  <span>@ step {signal.step} — {signal.detail}</span>
-                </div>
-              ))}
-            </div>
-          ))}
-      </section>
-      <section id="activity">
-        <div className="section-head">
-          <h2>Activity</h2>
-        </div>
+    <section id="activity" className="pane pane-activity">
+      <div className="section-head pane-head">
+        <h2>Activity</h2>
+        <span className="section-count">{feed.length}</span>
+      </div>
+      <div className="pane-scroll scroll-beauty">
         {feed.length === 0
-          ? <p className="empty">{filter === 'all' ? 'No activity yet.' : 'No activity for this session.'}</p>
+          ? (
+            <p className="empty">
+              {filter === 'all' ? 'No activity yet.' : 'No activity for this session.'}
+            </p>
+          )
           : (
             <ul className="feed">
               {[...feed].reverse().map((line, i) => (
@@ -776,8 +811,8 @@ function RunPanels({
               ))}
             </ul>
           )}
-      </section>
-    </>
+      </div>
+    </section>
   )
 }
 
@@ -799,6 +834,16 @@ function App(): React.ReactElement {
   }
   return (
     <div className="dashboard-shell">
+      <aside className="sidebar" aria-label="Workspaces and activity">
+        <div className="sidebar-top">
+          <WorkspaceTree
+            snapshot={snapshot}
+            filter={sessionFilter}
+            onSelect={setSessionFilter}
+          />
+        </div>
+        <ActivityFeed snapshot={snapshot} filter={sessionFilter} />
+      </aside>
       <section className="stage" id="approvals" aria-label="Approvals thread">
         <div className="section-head">
           <h2>Approval thread</h2>
@@ -808,13 +853,8 @@ function App(): React.ReactElement {
         </div>
         <ApprovalThread pending={snapshot.pending} />
       </section>
-      <aside className="rail" aria-label="Run context">
-        <WorkspaceTree
-          snapshot={snapshot}
-          filter={sessionFilter}
-          onSelect={setSessionFilter}
-        />
-        <RunPanels snapshot={snapshot} filter={sessionFilter} />
+      <aside className="rail" aria-label="Grouped runs">
+        <GroupedRunPanels snapshot={snapshot} filter={sessionFilter} />
       </aside>
     </div>
   )
