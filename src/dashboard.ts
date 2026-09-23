@@ -109,6 +109,17 @@ export interface FeedEntry {
 /** One run's live numbers, as the page renders them. */
 export interface RunSnapshot {
   runId: string
+  /**
+   * Session id when known (usually the same as `runId` / agent id).
+   * Present so the rail can label sessions without inventing a second key.
+   */
+  sessionId?: string
+  /** Absolute workspace cwd projected from the live agent session header. */
+  cwd?: string
+  /** Basename of `cwd` for workspace grouping; absent when ungrouped. */
+  workspaceLabel?: string
+  /** Last time this run's numbers or meta were touched (epoch ms). */
+  updatedAt?: number
   step?: number
   maxSteps?: number
   spentUSD?: number
@@ -117,6 +128,19 @@ export interface RunSnapshot {
   judgeScore?: number
   route?: string
   signals: ReviewSignal[]
+}
+
+/**
+ * Basename of an absolute workspace path for rail grouping.
+ * No path-module dependency: dashboard.ts stays node_modules-free for CI strip-types.
+ */
+export function workspaceLabelOf(cwd: string | undefined): string | undefined {
+  if (typeof cwd !== 'string' || cwd.trim() === '') return undefined
+  const trimmed = cwd.replace(/[/\\]+$/, '')
+  if (trimmed === '' || trimmed === '/') return '/'
+  const parts = trimmed.split(/[/\\]/).filter((p) => p !== '')
+  const last = parts[parts.length - 1]
+  return last === undefined || last === '' ? trimmed : last
 }
 
 /**
@@ -398,7 +422,7 @@ export class DashboardState {
   private run(runId: string): RunSnapshot {
     let record = this.runs.get(runId)
     if (record === undefined) {
-      record = { runId, signals: [] }
+      record = { runId, signals: [], updatedAt: Date.now() }
       this.runs.set(runId, record)
       // See RUN_LIMIT: FIFO eviction, recorded ceiling rather than engineered.
       while (this.runs.size > RUN_LIMIT) {
@@ -410,27 +434,62 @@ export class DashboardState {
     return record
   }
 
+  private touch(run: RunSnapshot): void {
+    run.updatedAt = Date.now()
+  }
+
   /** Record the step-boundary numbers: ceiling position and spend. */
   recordStep(runId: string, patch: Omit<RunSnapshot, 'runId' | 'signals'>): void {
-    Object.assign(this.run(runId), patch)
+    const run = this.run(runId)
+    Object.assign(run, patch)
+    if (patch.cwd !== undefined) {
+      run.workspaceLabel = workspaceLabelOf(patch.cwd) ?? run.workspaceLabel
+    }
+    this.touch(run)
+    this.changed()
+  }
+
+  /**
+   * Attach session/workspace identity projected from a live agent.
+   * Safe to call repeatedly; only defined fields overwrite.
+   */
+  recordMeta(
+    runId: string,
+    meta: { sessionId?: string, cwd?: string, workspaceLabel?: string },
+  ): void {
+    const run = this.run(runId)
+    if (meta.sessionId !== undefined && meta.sessionId !== '') run.sessionId = meta.sessionId
+    if (meta.cwd !== undefined && meta.cwd !== '') {
+      run.cwd = meta.cwd
+      run.workspaceLabel = meta.workspaceLabel ?? workspaceLabelOf(meta.cwd) ?? run.workspaceLabel
+    } else if (meta.workspaceLabel !== undefined && meta.workspaceLabel !== '') {
+      run.workspaceLabel = meta.workspaceLabel
+    }
+    this.touch(run)
     this.changed()
   }
 
   /** Replace the run's current signals: the detectors recompute them each step. */
   recordSignals(runId: string, signals: readonly ReviewSignal[]): void {
-    this.run(runId).signals = [...signals]
+    const run = this.run(runId)
+    run.signals = [...signals]
+    this.touch(run)
     this.changed()
   }
 
   /** Record the judge's latest score, when one was spent. */
   recordJudge(runId: string, score: number): void {
-    this.run(runId).judgeScore = score
+    const run = this.run(runId)
+    run.judgeScore = score
+    this.touch(run)
     this.changed()
   }
 
   /** Record the route the ladder chose for this step. */
   recordRoute(runId: string, route: string): void {
-    this.run(runId).route = route
+    const run = this.run(runId)
+    run.route = route
+    this.touch(run)
     this.changed()
   }
 

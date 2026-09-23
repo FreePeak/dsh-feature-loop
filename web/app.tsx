@@ -436,52 +436,324 @@ function ApprovalThread({ pending }: { pending: PendingApproval[] }): React.Reac
   )
 }
 
-function RunPanels({ snapshot }: { snapshot: DashboardSnapshot }): React.ReactElement {
+/** Fraction 0–1 → meter tone (Cursor progress green → warn → bad). */
+function meterTone(ratio: number): 'ok' | 'warn' | 'bad' {
+  if (ratio >= 0.9) return 'bad'
+  if (ratio >= 0.7) return 'warn'
+  return 'ok'
+}
+
+function Meter({
+  value,
+  max,
+  label,
+  className,
+}: {
+  value: number
+  max: number
+  label: string
+  className?: string
+}): React.ReactElement | null {
+  if (!(max > 0) || !Number.isFinite(value) || !Number.isFinite(max)) return null
+  const ratio = Math.max(0, Math.min(1, value / max))
+  const tone = meterTone(ratio)
+  const pct = Math.round(ratio * 1000) / 10
+  return (
+    <div
+      className={`meter ${tone}${className ? ` ${className}` : ''}`}
+      role="progressbar"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(ratio * 100)}
+      aria-label={label}
+    >
+      <i style={{ width: `${pct}%` }} />
+    </div>
+  )
+}
+
+function severityTagClass(severity: string): string {
+  if (severity === 'critical') return 'tag tag-bad sig-tag'
+  if (severity === 'warning') return 'tag tag-warn sig-tag'
+  if (severity === 'info' || severity === 'notice') return 'tag tag-cyan sig-tag'
+  return 'tag tag-ghost sig-tag'
+}
+
+function feedKindTagClass(kind: string): string {
+  if (kind === 'approval') return 'tag tag-warn feed-k'
+  if (kind === 'gate') return 'tag tag-bad feed-k'
+  if (kind === 'judge') return 'tag tag-ok feed-k'
+  if (kind === 'signals') return 'tag tag-cyan feed-k'
+  if (kind === 'route' || kind === 'step') return 'tag tag-accent feed-k'
+  return 'tag tag-ghost feed-k'
+}
+
+const UNGROUPED = 'Ungrouped'
+
+type SessionFilter = 'all' | string
+
+interface WorkspaceGroup {
+  key: string
+  label: string
+  cwd?: string
+  sessions: DashboardSnapshot['runs']
+}
+
+function shortSessionId(id: string): string {
+  if (id.length <= 12) return id
+  return `${id.slice(0, 8)}…`
+}
+
+function buildWorkspaceTree(runs: DashboardSnapshot['runs']): WorkspaceGroup[] {
+  const map = new Map<string, WorkspaceGroup>()
+  for (const run of runs) {
+    const label = run.workspaceLabel?.trim() || UNGROUPED
+    const key = run.cwd && run.cwd !== '' ? run.cwd : label
+    let group = map.get(key)
+    if (group === undefined) {
+      group = {
+        key,
+        label,
+        ...run.cwd === undefined || run.cwd === '' ? {} : { cwd: run.cwd },
+        sessions: [],
+      }
+      map.set(key, group)
+    }
+    group.sessions.push(run)
+  }
+  const groups = [...map.values()]
+  for (const g of groups) {
+    g.sessions.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+  }
+  groups.sort((a, b) => {
+    if (a.label === UNGROUPED && b.label !== UNGROUPED) return 1
+    if (b.label === UNGROUPED && a.label !== UNGROUPED) return -1
+    return a.label.localeCompare(b.label)
+  })
+  return groups
+}
+
+function WorkspaceTree({
+  snapshot,
+  filter,
+  onSelect,
+}: {
+  snapshot: DashboardSnapshot
+  filter: SessionFilter
+  onSelect: (next: SessionFilter) => void
+}): React.ReactElement {
+  const pendingByRun = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const p of snapshot.pending) {
+      if (p.runId === undefined || p.runId === '') continue
+      counts.set(p.runId, (counts.get(p.runId) ?? 0) + 1)
+    }
+    return counts
+  }, [snapshot.pending])
+
+  const groups = useMemo(() => buildWorkspaceTree(snapshot.runs), [snapshot.runs])
+
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+
+  // Expand groups that hold the selection or a pending session by default.
+  useEffect(() => {
+    setCollapsed((prev) => {
+      const next = { ...prev }
+      for (const g of groups) {
+        const hasPending = g.sessions.some((s) => (pendingByRun.get(s.runId) ?? 0) > 0)
+        const hasSelected = filter !== 'all' && g.sessions.some((s) => s.runId === filter)
+        if (hasPending || hasSelected) next[g.key] = false
+        else if (next[g.key] === undefined) next[g.key] = false
+      }
+      return next
+    })
+  }, [groups, filter, pendingByRun])
+
+  if (snapshot.runs.length === 0) {
+    return (
+      <section id="workspaces" aria-label="Workspaces">
+        <div className="section-head">
+          <h2>Workspaces</h2>
+          <span className="section-count">0</span>
+        </div>
+        <p className="empty">No live sessions yet.</p>
+      </section>
+    )
+  }
+
+  return (
+    <section id="workspaces" aria-label="Workspaces">
+      <div className="section-head">
+        <h2>Workspaces</h2>
+        <span className="section-count">{groups.length}</span>
+      </div>
+      <div className="ws-tree" role="tree">
+        <button
+          type="button"
+          className={`ws-all${filter === 'all' ? ' is-active' : ''}`}
+          role="treeitem"
+          aria-current={filter === 'all' ? 'true' : undefined}
+          onClick={() => onSelect('all')}
+        >
+          All sessions
+          <span className="tag tag-ghost">{snapshot.runs.length}</span>
+        </button>
+        {groups.map((group) => {
+          const folded = collapsed[group.key] === true
+          const pendingInGroup = group.sessions.reduce(
+            (n, s) => n + (pendingByRun.get(s.runId) ?? 0),
+            0,
+          )
+          return (
+            <div key={group.key} className="ws-group" role="group">
+              <button
+                type="button"
+                className="ws-group-head"
+                aria-expanded={!folded}
+                onClick={() => setCollapsed((c) => ({ ...c, [group.key]: !folded }))}
+                title={group.cwd ?? group.label}
+              >
+                <span className="ws-chevron" aria-hidden="true">{folded ? '▸' : '▾'}</span>
+                <span className="ws-group-label">{group.label}</span>
+                <span className="tag tag-ghost">{group.sessions.length}</span>
+                {pendingInGroup > 0 && (
+                  <span className="tag tag-warn">{pendingInGroup}</span>
+                )}
+              </button>
+              {!folded && (
+                <ul className="ws-sessions">
+                  {group.sessions.map((session) => {
+                    const pending = pendingByRun.get(session.runId) ?? 0
+                    const selected = filter === session.runId
+                    const label = session.sessionId ?? session.runId
+                    return (
+                      <li key={session.runId}>
+                        <button
+                          type="button"
+                          className={`ws-session${selected ? ' is-active' : ''}${pending > 0 ? ' is-pending' : ''}`}
+                          role="treeitem"
+                          aria-current={selected ? 'true' : undefined}
+                          title={session.cwd ? `${label}\n${session.cwd}` : label}
+                          onClick={() => onSelect(session.runId)}
+                        >
+                          <span className="ws-session-id mono">{shortSessionId(label)}</span>
+                          {session.step !== undefined && (
+                            <span className="tag tag-ghost">s{session.step}</span>
+                          )}
+                          {pending > 0 && (
+                            <span className="tag tag-warn">{pending}</span>
+                          )}
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
+function RunPanels({
+  snapshot,
+  filter,
+}: {
+  snapshot: DashboardSnapshot
+  filter: SessionFilter
+}): React.ReactElement {
+  const runs = filter === 'all'
+    ? snapshot.runs
+    : snapshot.runs.filter((r) => r.runId === filter)
+  const feed = filter === 'all'
+    ? snapshot.feed
+    : snapshot.feed.filter((line) => line.runId === filter)
+
   return (
     <>
       <section id="run-state">
         <div className="section-head">
           <h2>Run state</h2>
+          {filter !== 'all' && (
+            <span className="tag tag-accent" title={filter}>{shortSessionId(filter)}</span>
+          )}
         </div>
-        {snapshot.runs.length === 0
-          ? <p className="empty">No run has reported yet.</p>
-          : snapshot.runs.map((run) => (
+        {runs.length === 0
+          ? <p className="empty">{filter === 'all' ? 'No run has reported yet.' : 'No run state for this session.'}</p>
+          : runs.map((run) => (
             <div className="run-card" key={run.runId}>
               <div className="run-grid">
                 <div>
                   <div className="k">run</div>
                   <div className="v mono">{run.runId}</div>
                 </div>
+                {(run.workspaceLabel !== undefined || run.cwd !== undefined) && (
+                  <div>
+                    <div className="k">workspace</div>
+                    <div className="v" title={run.cwd}>
+                      <span className="tag tag-cyan">{run.workspaceLabel ?? run.cwd}</span>
+                    </div>
+                  </div>
+                )}
                 <div>
                   <div className="k">steps</div>
                   <div className="v">
                     {run.step ?? '—'}{run.maxSteps === undefined ? '' : ` / ${run.maxSteps}`}
                   </div>
+                  {run.step !== undefined && run.maxSteps !== undefined && (
+                    <Meter
+                      value={run.step}
+                      max={run.maxSteps}
+                      label={`Step ${run.step} of ${run.maxSteps}`}
+                    />
+                  )}
                 </div>
                 <div>
-                  <div className="k">spend (unmetered)</div>
+                  <div className="k">spend</div>
                   <div className="v">
                     {run.spentUSD === undefined ? '—' : `$${run.spentUSD.toFixed(4)}`}
                     {run.budgetUSD === undefined ? '' : ` / $${run.budgetUSD.toFixed(2)}`}
                   </div>
+                  {run.spentUSD !== undefined && run.budgetUSD !== undefined && (
+                    <Meter
+                      value={run.spentUSD}
+                      max={run.budgetUSD}
+                      label={`Spend $${run.spentUSD.toFixed(4)} of $${run.budgetUSD.toFixed(2)}`}
+                    />
+                  )}
                 </div>
                 {run.route !== undefined && (
                   <div>
                     <div className="k">route</div>
-                    <div className="v mono">{run.route}</div>
+                    <div className="v">
+                      <span className="tag tag-accent" title={run.route}>{run.route}</span>
+                    </div>
                   </div>
                 )}
                 {run.judgeScore !== undefined && (
                   <div>
                     <div className="k">judge</div>
-                    <div className="v">{run.judgeScore} / 3</div>
+                    <div className="v">
+                      <span className={`tag ${run.judgeScore >= 2 ? 'tag-ok' : run.judgeScore >= 1 ? 'tag-warn' : 'tag-bad'}`}>
+                        {run.judgeScore} / 3
+                      </span>
+                    </div>
+                    <Meter
+                      value={run.judgeScore}
+                      max={3}
+                      label={`Judge score ${run.judgeScore} of 3`}
+                      className="accent"
+                    />
                   </div>
                 )}
               </div>
               {(run.signals ?? []).map((signal, i) => (
                 <div key={i} className={`sig ${signal.severity}`}>
-                  <span className="sig-tag">{signal.severity}</span>
-                  <span>{signal.kind} @ step {signal.step} — {signal.detail}</span>
+                  <span className={severityTagClass(signal.severity)}>{signal.severity}</span>
+                  <span className="tag tag-ghost">{signal.kind}</span>
+                  <span>@ step {signal.step} — {signal.detail}</span>
                 </div>
               ))}
             </div>
@@ -491,15 +763,15 @@ function RunPanels({ snapshot }: { snapshot: DashboardSnapshot }): React.ReactEl
         <div className="section-head">
           <h2>Activity</h2>
         </div>
-        {snapshot.feed.length === 0
-          ? <p className="empty">No activity yet.</p>
+        {feed.length === 0
+          ? <p className="empty">{filter === 'all' ? 'No activity yet.' : 'No activity for this session.'}</p>
           : (
             <ul className="feed">
-              {[...snapshot.feed].reverse().map((line, i) => (
-                <li key={`${String(line.t)}-${String(i)}`}>
-                  <span className="feed-t">{new Date(line.t).toLocaleTimeString()}</span>
-                  <span className={`feed-k ${line.kind}`}>{line.kind}</span>
-                  <span className="feed-text">{line.text}</span>
+              {[...feed].reverse().map((line, i) => (
+                <li key={`${String(line.t)}-${String(i)}`} className="feed-item">
+                  <span className="feed-t t">{new Date(line.t).toLocaleTimeString()}</span>
+                  <span className={feedKindTagClass(line.kind)}>{line.kind}</span>
+                  <span className="feed-text text">{line.text}</span>
                 </li>
               ))}
             </ul>
@@ -511,7 +783,17 @@ function RunPanels({ snapshot }: { snapshot: DashboardSnapshot }): React.ReactEl
 
 function App(): React.ReactElement {
   const snapshot = useSnapshot()
+  const [sessionFilter, setSessionFilter] = useState<SessionFilter>('all')
   usePendingBadge(snapshot?.pending.length ?? 0)
+
+  // Drop selection if the run disappeared (eviction / restart).
+  useEffect(() => {
+    if (sessionFilter === 'all' || snapshot === null) return
+    if (!snapshot.runs.some((r) => r.runId === sessionFilter)) {
+      setSessionFilter('all')
+    }
+  }, [snapshot, sessionFilter])
+
   if (snapshot === null) {
     return <p className="empty">Loading…</p>
   }
@@ -527,7 +809,12 @@ function App(): React.ReactElement {
         <ApprovalThread pending={snapshot.pending} />
       </section>
       <aside className="rail" aria-label="Run context">
-        <RunPanels snapshot={snapshot} />
+        <WorkspaceTree
+          snapshot={snapshot}
+          filter={sessionFilter}
+          onSelect={setSessionFilter}
+        />
+        <RunPanels snapshot={snapshot} filter={sessionFilter} />
       </aside>
     </div>
   )
