@@ -213,21 +213,6 @@ function runIdOf(agent: Agent | undefined): string {
 }
 
 /**
- * The dashboard URL for the published config, read lazily.
- *
- * The handle's `url` is empty until the socket is bound, and the remote row
- * may ask before that resolves — so this reads it per call rather than
- * snapshotting it once at publish time.
- *
- * @param dashboard - the started dashboard handle.
- * @returns the config fragment carrying the URL and token.
- */
-function dashboardURLOnceBound(dashboard: DashboardHandle): Record<string, unknown> {
-  const url = dashboard.url
-  return url === '' ? {} : { dashboardURL: `${url}?token=${dashboard.token}` }
-}
-
-/**
  * Absolute workspace cwd from a live agent session header.
  * Structural read: `Agent` type only guarantees `id`; ReactLoopAgent also
  * carries `session.header.cwd`. Tests/fakes without a session stay ungrouped.

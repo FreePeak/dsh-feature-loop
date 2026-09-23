@@ -119,16 +119,6 @@ export interface RunSnapshot {
   cwd?: string
   /** Basename of `cwd` for workspace grouping; absent when ungrouped. */
   workspaceLabel?: string
-  /**
-   * What this run was asked to do, in the words the human typed.
-   *
-   * Absent until something labels it. `runId` is an agent id, which tells a
-   * person nothing; this is what makes a run in the workspace tree
-   * self-describing. Deliberately a display label, NOT a policy input: the
-   * loop's `goal` still comes from the spec, so a task can never widen its own
-   * ceilings by naming them.
-   */
-  label?: string
   /** Last time this run's numbers or meta were touched (epoch ms). */
   updatedAt?: number
   step?: number
@@ -490,11 +480,10 @@ export class DashboardState {
    */
   recordMeta(
     runId: string,
-    meta: { sessionId?: string, cwd?: string, workspaceLabel?: string, label?: string },
+    meta: { sessionId?: string, cwd?: string, workspaceLabel?: string },
   ): void {
     const run = this.run(runId)
     if (meta.sessionId !== undefined && meta.sessionId !== '') run.sessionId = meta.sessionId
-    if (meta.label !== undefined && meta.label !== '') run.label = firstLine(meta.label, 120)
     if (meta.cwd !== undefined && meta.cwd !== '') {
       run.cwd = meta.cwd
       run.workspaceLabel = meta.workspaceLabel ?? workspaceLabelOf(meta.cwd) ?? run.workspaceLabel
