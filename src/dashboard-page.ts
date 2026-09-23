@@ -37,7 +37,7 @@ export const DASHBOARD_PAGE = `<!doctype html>
   <div class="brand">
     <h1>feature-loop</h1>
     <span class="sep" aria-hidden="true">·</span>
-    <span class="product">HITL approval thread</span>
+    <span class="product">HITL approvals</span>
   </div>
   <div class="header-meta">
     <span class="conn-wrap">

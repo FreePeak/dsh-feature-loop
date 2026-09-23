@@ -1,65 +1,32 @@
 /* ──────────────────────────────────────────────────────────────────────
-   HITL dashboard shell — stockbroker chat chrome.
+   HITL dashboard shell — professional ops console.
 
-   PALETTE: the DeepSeek Harness design tokens (`--dsw-alias-*`).
-
-   The dashboard is a page inside the DSH web UI, so it must look like part
-   of that UI rather than a guest in it. Those tokens are live on the host
-   page and resolve per theme, so binding to them is what makes this shell
-   follow light/dark, density and any future palette change automatically.
-   Every hex that used to be hardcoded here (a Cursor Dark palette) is now a
-   token; the fallbacks only matter if this file is ever rendered outside the
-   harness, which is what keeps the standalone path honest.
-
-   Layout still stockbroker-like: sticky composer, ~44rem thread, pill ctls.
-   CSP-safe: system fonts only (no Google Fonts).
+   Registers (from assistant-ui/design, adapted for a dark tool, not a site):
+     page = square · printed matter 6px · pressed controls 8px
+     chrome is ink (weight/fill); color is reserved for state:
+       blue = live · green = allow · red = reject/danger · amber = gate/warn
+     mono only for machine text (tool, run, call, code)
+     line budget: section rules + row rhythm, no nested cages
+     motion only for state change; all off under prefers-reduced-motion
    ────────────────────────────────────────────────────────────────────── */
 
-/* The aliases live on `body`, not `:root`, and that is load-bearing: the
-   harness declares its `--dsw-alias-*` tokens on `body`. An alias block on
-   `:root` (the html element) resolves before those tokens are ever in scope
-   and silently keeps its hex fallback forever — which is exactly how this
-   file ended up looking like a guest in the host UI. Declared on `body`, the
-   same declarations still carry their fallbacks when the stylesheet renders
-   outside the harness (the standalone page), which keeps that path honest. */
-body {
-  /* Harness surfaces. Layer 1 is the page, 2/3 are raised strips. */
-  --bg: var(--dsw-alias-bg-base, #101114);
-  --panel: var(--dsw-alias-bg-layer-1, #15161a);
-  --panel-2: var(--dsw-alias-bg-layer-2, #1b1c21);
-  --border: var(--dsw-alias-border-l2, #2f3035);
-  --border-soft: var(--dsw-alias-border-l1, #26272b);
-
-  /* Harness text ramp. */
-  --text: var(--dsw-alias-label-primary, #e6e6e6);
-  --muted: var(--dsw-alias-label-secondary, #b9b9c0);
-  --faint: var(--dsw-alias-label-tertiary, #9a9aa0);
-
-  /* Accent + interactive states, from the same vocabulary the sidebar and
-     composer buttons already use. */
-  --accent: var(--dsw-alias-link, #7fb0ff);
-  --accent-bright: var(--dsw-alias-brand-primary, #9fc4ff);
-  --badge: var(--dsw-alias-label-secondary, #b9b9c0);
-  --hover: var(--dsw-alias-interactive-bg-hover, rgba(127, 176, 255, 0.08));
-  --selection: var(--dsw-alias-interactive-bg-active, rgba(127, 176, 255, 0.14));
-  --user-bubble: var(--dsw-alias-bg-layer-3, #202127);
-
-  /* Status colors — the harness has one token per state, so a run's health
-     reads the same here as it does everywhere else. */
-  --ok: var(--dsw-alias-state-success-primary, #70b489);
-  --ok-deep: var(--dsw-alias-state-success-primary, #3fa266);
-  --bad: var(--dsw-alias-state-error-primary, #fc6b83);
-  --bad-deep: var(--dsw-alias-state-error-primary, #e34671);
-  --warn: var(--dsw-alias-state-warn-primary, #f1b467);
-  --warn-deep: var(--dsw-alias-state-warn-primary, #d2943e);
-
-  --composer: var(--dsw-alias-bg-layer-2, #1b1c21);
-  --header-h: 56px;
-  --radius-doc: 8px;
-  --radius-ctl: 999px;
-  --radius-chat: 1.25rem;
-  --thread-max-width: 44rem;
-  --font-sans: var(--dsw-font-family, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+:root {
+  --bg: #0f1115;
+  --panel: #14171e;
+  --panel-2: #10131a;
+  --border: #262b36;
+  --border-soft: #1c2029;
+  --text: #e6ebf4;
+  --muted: #9aa4b5;
+  --faint: #6d7688;
+  --accent: #4c8dff;   /* live: connected, pending, selected */
+  --ok: #2ea043;       /* allow / answers-on */
+  --bad: #e5534b;      /* reject / danger / disconnected */
+  --warn: #d29922;     /* gate / brief warning */
+  --header-h: 52px;
+  --radius-doc: 6px;
+  --radius-ctl: 8px;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
@@ -158,295 +125,48 @@ header .header-meta {
   white-space: nowrap;
 }
 .badge.answer {
-  color: var(--text);
-  background: color-mix(in srgb, var(--ok-deep) 20%, var(--panel));
-  border-color: color-mix(in srgb, var(--ok-deep) 45%, var(--border));
-  font-weight: 650;
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 55%, var(--border));
 }
 .badge.badge-pending {
-  color: var(--text);
-  background: color-mix(in srgb, var(--warn) 14%, var(--panel));
-  border-color: color-mix(in srgb, var(--warn) 40%, var(--border));
-  font-weight: 650;
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
 }
 .badge.badge-pending[data-count="0"] {
-  color: var(--muted);
-  background: transparent;
-  border-color: var(--border);
-  font-weight: 500;
-}
-
-/* Cursor-like tags (run route / judge / feed kinds / signal severity) */
-.tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  line-height: 1.3;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  /* A run's route/judge tag carries information a human reads, so it uses the
-     primary label: tertiary measured 3.7:1 at this size, under the 4.5 floor. */
-  color: var(--text);
-  background: var(--hover);
-  white-space: nowrap;
-  vertical-align: middle;
-}
-.tag-accent {
-  color: var(--text);
-  background: color-mix(in srgb, var(--accent) 20%, var(--panel));
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-}
-.tag-ok {
-  color: var(--text);
-  background: color-mix(in srgb, var(--ok-deep) 20%, var(--panel));
-  border-color: color-mix(in srgb, var(--ok-deep) 45%, var(--border));
-}
-.tag-bad {
-  color: var(--text);
-  background: color-mix(in srgb, var(--bad-deep) 20%, var(--panel));
-  border-color: color-mix(in srgb, var(--bad-deep) 45%, var(--border));
-}
-.tag-warn {
-  color: var(--text);
-  background: color-mix(in srgb, var(--warn-deep) 20%, var(--panel));
-  border-color: color-mix(in srgb, var(--warn-deep) 45%, var(--border));
-}
-.tag-cyan {
-  color: var(--text);
-  background: color-mix(in srgb, var(--badge) 20%, var(--panel));
-  border-color: color-mix(in srgb, var(--badge) 45%, var(--border));
-}
-.tag-ghost {
-  color: var(--muted);
-  background: transparent;
+  color: var(--faint);
   border-color: var(--border);
 }
 
 /* ── main frame ────────────────────────────────────────────────────── */
 main {
-  max-width: 1480px;
+  max-width: 1280px;
   margin: 0 auto;
-  padding: 16px 20px 48px;
-}
-
-/* Responsive by CONTAINER, not by viewport.
-   The dashboard is a main-column page, so its width is the viewport minus the
-   harness sidebar and right bar — a viewport query answered a question nobody
-   asked, and on a 1600px window the three columns were crammed into ~1000px
-   and never collapsed. `@container` asks the question that matters: how wide is
-   THIS page. Same pattern as `ui-deliverables` and `ui-trajectory`, which set
-   `container-type: inline-size` on their page root for exactly this reason. */
-/* The page root is the container, and that placement is load-bearing. Declared
-   on the dashboard alone, the container described only the approval thread — the
-   start control and the settings form sit outside it, so their own responsive
-   rules (`@container fl-dashboard (max-width: 520px)`) could never match and the
-   narrow layout silently never applied. One page, one container. */
-.fl-page {
-  container-type: inline-size;
-  container-name: fl-dashboard;
+  padding: 20px 24px 48px;
 }
 
 .dashboard-shell {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 20px;
+  gap: 28px;
   align-items: start;
-  /* min-width: 0 is the harness's own grid rule (see AppFrame): without it a
-     grid item refuses to shrink below its content and pushes the page wide. */
-  min-width: 0;
 }
-
-/* Two columns: workspaces stay beside the thread, the run rail moves below it. */
-@container fl-dashboard (min-width: 760px) {
+@media (min-width: 1024px) {
   .dashboard-shell {
-    grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
-    gap: 20px;
+    grid-template-columns: minmax(0, 1.65fr) minmax(300px, 1fr);
+    gap: 32px;
   }
-  .sidebar {
-    position: sticky;
-    top: calc(var(--header-h) + 12px);
-    height: calc(100vh - var(--header-h) - 28px);
-    max-height: calc(100vh - var(--header-h) - 28px);
-    overflow: hidden;
-  }
-  .rail { grid-column: 1 / -1; max-height: 70vh; overflow: hidden; }
-}
-
-/* Three columns: workspaces · thread · runs, each in its own track. */
-@container fl-dashboard (min-width: 1100px) {
-  .dashboard-shell {
-    grid-template-columns: minmax(220px, 260px) minmax(0, 1.5fr) minmax(280px, 340px);
-    gap: 24px;
-  }
-  .rail {
-    grid-column: auto;
-    position: sticky;
-    top: calc(var(--header-h) + 12px);
-    height: calc(100vh - var(--header-h) - 28px);
-    max-height: calc(100vh - var(--header-h) - 28px);
-    overflow: hidden;
-  }
-}
-
-/* Below 760px the reading order is the argument order — thread, then runs, then
-   workspaces. The source order is workspaces-first, so placement is explicit
-   rather than left to grid auto-placement. Sticky columns are also meaningless
-   once everything is one scroll, so they are released here. */
-@container fl-dashboard (max-width: 759px) {
-  .dashboard-shell { gap: 16px; }
-  .stage { order: 1; }
-  .rail { order: 2; grid-column: auto; max-height: none; overflow: visible; }
-  .sidebar { order: 3; }
-  .sidebar,
-  .rail { position: static; height: auto; max-height: none; overflow: visible; }
+  .rail { position: sticky; top: calc(var(--header-h) + 16px); }
 }
 
 .stage { min-width: 0; }
-.sidebar,
 .rail {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  min-height: 0;
+  gap: 24px;
 }
-.sidebar section,
 .rail section,
 .stage section { min-width: 0; }
-
-/* Left column: workspace tree on top, activity fills remaining height */
-.sidebar-top {
-  flex: 0 0 auto;
-  max-height: 42%;
-  min-height: 0;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-.sidebar-top #workspaces {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.sidebar-top #workspaces .section-head {
-  flex: 0 0 auto;
-}
-.sidebar-top .ws-tree {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
-  scroll-behavior: smooth;
-  scrollbar-gutter: stable;
-}
-.sidebar .pane-activity {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-.rail .pane-runs {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
-
-/* Pane chrome: sticky head + scroll body */
-.pane {
-  background: color-mix(in srgb, var(--panel) 92%, transparent);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-doc);
-  min-height: 0;
-  overflow: hidden;
-}
-.pane-head {
-  flex: 0 0 auto;
-  margin: 0 !important;
-  padding: 10px 12px 8px !important;
-  border-bottom: 1px solid var(--border-soft);
-  background: color-mix(in srgb, var(--chrome) 55%, var(--panel));
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  gap: 8px;
-}
-.pane-scroll {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  padding: 8px 10px 14px;
-  overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
-  scroll-behavior: smooth;
-  scrollbar-gutter: stable;
-}
-
-/* Beautiful thin scrollbars (WebKit + Firefox) */
-.scroll-beauty {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--accent) 45%, transparent) transparent;
-}
-.scroll-beauty::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-.scroll-beauty::-webkit-scrollbar-track {
-  background: transparent;
-  margin: 4px 0;
-}
-.scroll-beauty::-webkit-scrollbar-thumb {
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--accent) 55%, var(--ok-deep)),
-    color-mix(in srgb, var(--badge) 40%, transparent)
-  );
-  border-radius: 999px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-  min-height: 32px;
-}
-.scroll-beauty::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--accent) 80%, var(--text)),
-    color-mix(in srgb, var(--badge) 70%, transparent)
-  );
-  background-clip: padding-box;
-  border: 2px solid transparent;
-}
-.scroll-beauty::-webkit-scrollbar-corner { background: transparent; }
-
-/* Compact left chrome — Cursor-style activity bar feel */
-.sidebar #workspaces .section-head {
-  margin-bottom: 8px;
-  padding-bottom: 6px;
-}
-.sidebar .ws-tree {
-  border-color: var(--border-soft);
-  background: color-mix(in srgb, var(--panel) 88%, transparent);
-}
-.sidebar .feed-item {
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 4px 8px;
-  padding: 7px 6px;
-  font-size: 12.5px;
-}
-.sidebar .feed-item .feed-t { grid-column: 1 / -1; padding-top: 0; }
-.sidebar .feed-item .feed-k { justify-self: start; }
-.sidebar .feed-text { grid-column: 1 / -1; }
 
 /* ── section heads ─────────────────────────────────────────────────── */
 .section-head {
@@ -469,19 +189,10 @@ h2 {
 .section-count {
   font-family: var(--font-mono);
   font-size: 12px;
-  /* --faint (label-tertiary) measured 3.7:1 on the light surface — below
-     AA for 12px body text. The count is scanned for, so it takes the
-     secondary label, which clears 4.5:1 in both themes. */
-  color: var(--muted);
+  color: var(--faint);
   font-variant-numeric: tabular-nums;
 }
-.section-count.hot {
-  color: var(--text);
-  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary, var(--badge)) 20%, var(--panel));
-  border-radius: 999px;
-  padding: 1px 8px;
-  font-weight: 650;
-}
+.section-count.hot { color: var(--accent); }
 
 /* ── empty / loading / help ────────────────────────────────────────── */
 .empty {
@@ -533,9 +244,9 @@ code {
 
 #auth {
   display: none;
-  background: color-mix(in srgb, var(--bad-deep) 12%, var(--panel));
+  background: color-mix(in srgb, var(--bad) 12%, var(--panel));
   border: 1px solid color-mix(in srgb, var(--bad) 55%, var(--border));
-  color: var(--text);
+  color: #f5c6c2;
   padding: 14px 16px;
   border-radius: var(--radius-doc);
   margin-bottom: 18px;
@@ -550,7 +261,6 @@ code {
   border-radius: var(--radius-doc);
   padding: 16px 18px;
   margin-bottom: 12px;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset;
 }
 .card + .card { margin-top: 0; }
 
@@ -572,7 +282,7 @@ code {
 .asked {
   font-family: var(--font-mono);
   font-size: 11.5px;
-  color: var(--muted);
+  color: var(--faint);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -596,7 +306,7 @@ code {
   margin: 0 0 12px;
 }
 .card .meta .meta-k {
-  color: var(--muted);
+  color: var(--faint);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   font-size: 10.5px;
@@ -634,12 +344,12 @@ code {
   color: var(--muted);
 }
 
-/* buttons — pill controls like the stockbroker confirm card */
+/* buttons — native, 8px, visible focus, min hit area */
 button {
   font: inherit;
   font-weight: 600;
   font-size: 13.5px;
-  border-radius: 999px;
+  border-radius: var(--radius-ctl);
   border: 1px solid var(--border);
   padding: 9px 18px;
   min-height: 40px;
@@ -655,177 +365,25 @@ button:focus-visible {
 }
 button:disabled { opacity: 0.5; cursor: default; }
 button.allow {
-  background: var(--ok-deep);
-  border-color: var(--ok-deep);
-  /* A mid-tone fill takes the page's own primary label, not the dark-fill
-     foreground: that token is white in the light theme and measured 2.3:1 here. */
-  color: var(--text);
-}
-button.allow:hover:not(:disabled) {
   background: var(--ok);
   border-color: var(--ok);
+  color: #fff;
+}
+button.allow:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ok) 85%, #fff);
+  border-color: color-mix(in srgb, var(--ok) 85%, #fff);
 }
 button.reject {
-  background: color-mix(in srgb, var(--bad) 10%, var(--panel));
-  border-color: color-mix(in srgb, var(--bad) 60%, var(--border));
-  color: color-mix(in srgb, var(--bad) 62%, var(--text));
+  background: transparent;
+  border-color: color-mix(in srgb, var(--bad) 70%, var(--border));
+  color: var(--bad);
 }
 button.reject:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--bad-deep) 14%, transparent);
+  background: color-mix(in srgb, var(--bad) 14%, transparent);
   border-color: var(--bad);
 }
 
-/* ── stockbroker-like approval thread ──────────────────────────────── */
-.hitl-thread-root {
-  display: flex;
-  flex-direction: column;
-  min-height: min(70vh, 720px);
-  max-height: calc(100vh - var(--header-h) - 120px);
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: calc(var(--radius-chat) + 4px);
-  overflow: hidden;
-}
-.hitl-thread-viewport {
-  position: relative;
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  overflow-x: hidden;
-  overflow-y: auto;
-  scroll-behavior: smooth;
-  padding: 16px 16px 0;
-}
-.hitl-thread-footer {
-  position: sticky;
-  bottom: 0;
-  z-index: 2;
-  margin-top: auto;
-  padding: 0 12px 14px;
-  background: linear-gradient(180deg, transparent, var(--panel) 28%);
-}
-.hitl-welcome {
-  margin: 24px auto;
-  max-width: var(--thread-max-width);
-  width: 100%;
-}
-
-.hitl-assistant-msg,
-.hitl-user-msg {
-  width: 100%;
-  max-width: var(--thread-max-width);
-  margin: 0 auto 14px;
-  padding: 0;
-}
-
-.hitl-user-msg {
-  display: flex;
-  justify-content: flex-end;
-}
-.hitl-user-bubble {
-  max-width: min(100%, 34rem);
-  background: var(--user-bubble);
-  border: 1px solid var(--border);
-  border-radius: 1.1rem 1.1rem 0.35rem 1.1rem;
-  padding: 10px 14px;
-  font-size: 13.5px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  color: var(--text);
-}
-
-/* Composer — rounded chat dock like the stockbroker example */
-.hitl-composer-root {
-  width: 100%;
-  max-width: var(--thread-max-width);
-  margin: 0 auto;
-}
-.hitl-composer-shell {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  background: var(--composer);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-chat);
-  padding: 10px 12px 10px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
-  transition: border-color 150ms ease, box-shadow 150ms ease;
-}
-.hitl-composer-shell:focus-within {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  box-shadow:
-    0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent),
-    0 10px 30px rgba(0, 0, 0, 0.28);
-}
-.hitl-composer-shell.is-disabled {
-  opacity: 0.72;
-}
-.hitl-composer-input {
-  width: 100%;
-  resize: none;
-  border: 0;
-  outline: none;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  font-size: 14px;
-  line-height: 1.5;
-  min-height: 3.2rem;
-  max-height: 8rem;
-  padding: 4px 4px 0;
-}
-.hitl-composer-input::placeholder { color: var(--faint); }
-.hitl-composer-input:disabled { cursor: default; }
-.hitl-composer-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-.hitl-composer-hint {
-  font-size: 11.5px;
-  color: var(--muted);
-  min-width: 0;
-}
-.hitl-composer-send {
-  flex: none;
-  width: 36px;
-  height: 36px;
-  min-height: 36px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 999px;
-  border: 0;
-  background: var(--text);
-  color: var(--bg);
-}
-.hitl-composer-send:hover:not(:disabled) {
-  background: var(--dsw-alias-label-primary, #fff);
-  border-color: transparent;
-}
-.hitl-composer-send:disabled {
-  opacity: 0.35;
-}
-
-.feedback-preview {
-  margin-top: 10px;
-  font-size: 12.5px;
-  color: var(--muted);
-  background: color-mix(in srgb, var(--accent) 10%, var(--panel-2));
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
-  border-radius: var(--radius-doc);
-  padding: 8px 10px;
-  line-height: 1.45;
-}
-.feedback-preview em {
-  font-style: normal;
-  color: var(--text);
-  font-weight: 500;
-}
-
-/* vendor message chrome inside our thread */
+/* ── thread overrides (vendor loads second; stay specific) ─────────── */
 .stage .aui-assistant-message-root,
 .stage [data-message-id] {
   max-width: none;
@@ -835,146 +393,21 @@ button.reject:hover:not(:disabled) {
   animation: none;
 }
 
-/* ── workspaces / sessions tree ─────────────────────────────────────── */
-.ws-tree {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-doc);
-  padding: 8px;
-}
-.ws-all,
-.ws-group-head,
-.ws-session {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  text-align: left;
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--text);
-  border-radius: 6px;
-  padding: 8px 10px;
-  min-height: 36px;
-  font: inherit;
-  font-weight: 600;
-  font-size: 13px;
-  cursor: pointer;
-}
-.ws-all:hover,
-.ws-group-head:hover,
-.ws-session:hover {
-  background: var(--hover);
-  border-color: var(--border-soft);
-}
-.ws-all.is-active,
-.ws-session.is-active {
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-  color: var(--text);
-}
-.ws-session.is-pending:not(.is-active) {
-  border-color: color-mix(in srgb, var(--warn) 40%, var(--border));
-}
-.ws-group { display: flex; flex-direction: column; gap: 2px; }
-.ws-group-head {
-  font-weight: 650;
-  color: var(--muted);
-}
-.ws-chevron {
-  width: 12px;
-  color: var(--muted);
-  font-size: 11px;
-  flex: 0 0 auto;
-}
-.ws-group-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1 1 auto;
-}
-.ws-sessions {
-  list-style: none;
-  margin: 0;
-  padding: 0 0 4px 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.ws-session-id {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1 1 auto;
-  font-size: 12.5px;
-}
-.ws-all .tag,
-.ws-group-head .tag,
-.ws-session .tag {
-  flex: 0 0 auto;
-  margin-left: auto;
-}
-.ws-group-head .tag + .tag,
-.ws-session .tag + .tag {
-  margin-left: 0;
-}
-
-/* ── run state rail (grouped) ──────────────────────────────────────── */
-.run-group {
-  margin-bottom: 14px;
-}
-.run-group:last-child { margin-bottom: 4px; }
-.run-group-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 4px 8px;
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--panel) 96%, transparent) 70%,
-    transparent
-  );
-}
-.run-group-label {
-  font-size: 11.5px;
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--muted);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1 1 auto;
-}
-.run-group-body {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
+/* ── run state rail ────────────────────────────────────────────────── */
 .run-card {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-doc);
-  padding: 12px 14px;
-  margin-bottom: 0;
-  box-shadow: 0 1px 0 var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.06));
+  padding: 14px 16px;
+  margin-bottom: 10px;
 }
 .run-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
-  gap: 10px 14px;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 12px 16px;
 }
 .run-grid .k {
-  color: var(--muted);
+  color: var(--faint);
   font-size: 10.5px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -988,12 +421,11 @@ button.reject:hover:not(:disabled) {
 }
 .run-grid .v.mono { font-family: var(--font-mono); font-weight: 600; }
 
-/* The meter fill tints by headroom, off the harness success token. */
 .meter {
   width: 100%;
-  max-width: 220px;
+  max-width: 180px;
   height: 6px;
-  background: var(--dsw-alias-bg-layer-3, #F0F0F011);
+  background: var(--panel-2);
   border-radius: 3px;
   overflow: hidden;
   border: 1px solid var(--border-soft);
@@ -1002,15 +434,8 @@ button.reject:hover:not(:disabled) {
 .meter > i {
   display: block;
   height: 100%;
-  width: 0%;
-  background: var(--ok-deep);
-  border-radius: 2px;
-  transition: width 160ms ease, background-color 160ms ease;
+  background: var(--accent);
 }
-.meter.ok > i { background: var(--ok-deep); }
-.meter.warn > i { background: var(--warn); }
-.meter.bad > i { background: var(--bad-deep); }
-.meter.accent > i { background: var(--accent); }
 
 .sig {
   font-size: 12.5px;
@@ -1020,78 +445,69 @@ button.reject:hover:not(:disabled) {
   border-radius: var(--radius-doc);
   background: var(--panel-2);
   border-left: 3px solid var(--border);
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px 8px;
 }
 .sig + .sig { margin-top: 6px; }
 .sig .sig-tag {
-  /* uses .tag + severity class from markup */
-  margin-right: 0;
-  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-right: 8px;
 }
 .sig.critical {
-  color: var(--text);
+  color: #f0b4b0;
   border-left-color: var(--bad);
-  background: color-mix(in srgb, var(--bad-deep) 12%, var(--panel-2));
 }
+.sig.critical .sig-tag { color: var(--bad); }
 .sig.warning {
-  color: #F0F0F0;
+  color: #edd6a3;
   border-left-color: var(--warn);
-  background: color-mix(in srgb, var(--warn) 10%, var(--panel-2));
 }
+.sig.warning .sig-tag { color: var(--warn); }
 .sig.info,
 .sig.notice {
   color: var(--muted);
-  border-left-color: var(--accent);
+  border-left-color: var(--border);
 }
+.sig.info .sig-tag,
+.sig.notice .sig-tag { color: var(--faint); }
 
 .rail-honesty {
   margin: 10px 0 0;
 }
 
 /* ── activity ledger ───────────────────────────────────────────────── */
-.feed {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
 .feed-item {
   display: grid;
   grid-template-columns: auto auto minmax(0, 1fr);
-  gap: 6px 10px;
-  align-items: start;
+  gap: 4px 12px;
   padding: 8px 8px;
   font-size: 13px;
   line-height: 1.45;
   border-radius: 4px;
 }
-.feed-item:hover { background: var(--hover); }
-.feed-item .t,
-.feed-t {
-  color: var(--muted);
+.feed-item:hover { background: rgba(230, 235, 244, 0.03); }
+.feed-item .t {
+  color: var(--faint);
   white-space: nowrap;
   font-family: var(--font-mono);
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
-  padding-top: 3px;
 }
-.feed-item .kind,
-.feed-k {
+.feed-item .kind {
+  color: var(--accent);
   white-space: nowrap;
-  min-width: 0;
-  justify-self: start;
+  min-width: 66px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
-.feed-item .text,
-.feed-text {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  padding-top: 2px;
-}
+.feed-item .kind.k-approval { color: var(--warn); }
+.feed-item .kind.k-gate { color: var(--bad); }
+.feed-item .kind.k-judge { color: var(--ok); }
+.feed-item .text { min-width: 0; overflow-wrap: anywhere; }
 
 /* ── review brief ──────────────────────────────────────────────────── */
 .brief {

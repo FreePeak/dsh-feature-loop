@@ -14,9 +14,27 @@
  * and the components below are unchanged — the design, meters, badges and
  * workspace tree are exactly the ones that shipped.
  *
- * Layout: stockbroker-style chat thread — assistant messages carry the
- * approval card; a sticky composer accepts free-text response/feedback.
- * Allow once / Reject still settle the gate.
+ * Two consequences worth stating, because they are easy to lose in a rewrite:
+ *
+ *   the buttons are not the model's   the gate's options come from
+ *                                     `approval-bridge`, a module with no
+ *                                     model input at all. The brief is text
+ *                                     *inside* this card, never the card.
+ *   a failed POST stays retryable     assistant-ui keeps the gate open when
+ *                                     the callback rejects, so a 409 (someone
+ *                                     else answered) or a dropped connection
+ *                                     leaves the operator able to act rather
+ *                                     than staring at a dead button.
+ *
+ * Bootstrapping: the shell inlines `window.__FL_DASHBOARD_SNAPSHOT__` and
+ * `__FL_DASHBOARD_TOKEN__` before this bundle's script tag, so first paint
+ * needs no fetch. SSE frames replace the snapshot after that.
+ *
+ * Layout: the page is an ops console — primary decision stage on the left,
+ * run/activity rail on the right. Run cards, the activity feed, and the
+ * run-state numbers are plain DOM in React; they were never model-authored,
+ * and rendering them through a chat primitive would be the tail wagging the
+ * dog.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -140,31 +158,9 @@ function BriefView({ ask }: { ask: PendingApproval }): React.ReactElement | null
   )
 }
 
+/** Local wall-clock time for the "asked at" stamp. */
 function formatAsked(askedAt: number): string {
   return new Date(askedAt).toLocaleTimeString()
-}
-
-/**
- * Shared draft between the card actions and the thread composer.
- * Typing in the composer is the response/feedback; Allow/Reject still settle.
- */
-type FeedbackApi = {
-  text: string
-  setText: (next: string) => void
-  clear: () => void
-  /** Park the current draft as a user bubble without settling the gate. */
-  commitLocal: () => void
-}
-
-const FeedbackCtx = React.createContext<FeedbackApi>({
-  text: '',
-  setText: () => undefined,
-  clear: () => undefined,
-  commitLocal: () => undefined,
-})
-
-function useFeedback(): FeedbackApi {
-  return React.useContext(FeedbackCtx)
 }
 
 /** One decision plate: eyebrow, tool, meta, reason, brief, actions. */
@@ -233,11 +229,6 @@ function ApprovalCard(props: ToolCallMessagePartProps): React.ReactElement {
           {busy && <span className="busy-note">Submitting…</span>}
         </div>
       )}
-      {!settled && note !== '' && (
-        <div className="feedback-preview" aria-live="polite">
-          Feedback will be sent with your decision: <em>{note}</em>
-        </div>
-      )}
       {error !== null && <div className="brief-note error" role="alert">{error}</div>}
     </div>
   )
@@ -268,6 +259,7 @@ function useSnapshot(source: DashboardSource): DashboardSnapshot | null {
   return snapshot
 }
 
+/** Publish the pending count into the page chrome's status badge. */
 function usePendingBadge(count: number): void {
   useEffect(() => {
     const el = document.getElementById('pending-count')
@@ -277,81 +269,11 @@ function usePendingBadge(count: number): void {
   }, [count])
 }
 
-/**
- * Sticky chat composer — stockbroker shape, controlled draft.
- *
- * Owned input (not ComposerPrimitive.Input) so Allow/Reject always see the
- * same text the operator typed, even without pressing Send first.
- */
-function ApprovalComposer({ disabled }: { disabled: boolean }): React.ReactElement {
-  const feedback = useFeedback()
-  const onSubmit = (event: React.FormEvent) => {
-    event.preventDefault()
-    if (disabled || feedback.text.trim() === '') return
-    feedback.commitLocal()
-  }
-  return (
-    <form className="hitl-composer-root" onSubmit={onSubmit}>
-      <div className={`hitl-composer-shell${disabled ? ' is-disabled' : ''}`}>
-        <textarea
-          className="hitl-composer-input"
-          placeholder={disabled
-            ? 'No pending approval — waiting for the next gate…'
-            : 'Add response or feedback, then Allow once / Reject — or send to post feedback into the thread…'}
-          rows={2}
-          aria-label="Approval response and feedback"
-          disabled={disabled}
-          value={feedback.text}
-          onChange={(event) => feedback.setText(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault()
-              if (!disabled && feedback.text.trim() !== '') feedback.commitLocal()
-            }
-          }}
-        />
-        <div className="hitl-composer-actions">
-          <span className="hitl-composer-hint">
-            {disabled ? 'Composer idle' : 'Enter posts feedback · Shift+Enter newline · buttons decide'}
-          </span>
-          <button
-            type="submit"
-            className="hitl-composer-send"
-            disabled={disabled || feedback.text.trim() === ''}
-            aria-label="Send feedback"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M12 19V5M12 5l-6 6M12 5l6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </button>
-        </div>
-      </div>
-    </form>
-  )
-}
-
-function UserBubble(): React.ReactElement {
-  return (
-    <MessagePrimitive.Root className="hitl-user-msg" data-role="user">
-      <div className="hitl-user-bubble">
-        <MessagePrimitive.Parts />
-      </div>
-    </MessagePrimitive.Root>
-  )
-}
-
-function AssistantBubble(): React.ReactElement {
-  return (
-    <MessagePrimitive.Root className="hitl-assistant-msg" data-role="assistant">
-      <MessagePrimitive.Parts components={{ tools: { Override: ApprovalCard } }} />
-    </MessagePrimitive.Root>
-  )
-}
-
-function ApprovalThread({ pending, source }: {
-  pending: PendingApproval[]
-  source: DashboardSource
-}): React.ReactElement {
+function ApprovalThread({ pending }: { pending: PendingApproval[] }): React.ReactElement {
+  // The renderer receives a part without the domain object behind it, so the
+  // asks are published for lookup by id. This runs during render because the
+  // map must match the messages being rendered in the same pass; it is a
+  // module-level cache of the current frame, not app state.
   ASK_BY_ID.clear()
   for (const ask of pending) ASK_BY_ID.set(ask.id, ask)
 
@@ -417,435 +339,13 @@ function ApprovalThread({ pending, source }: {
       draftRef.current = ''
     },
   })
-
-  return (
-    <FeedbackCtx.Provider value={feedbackApi}>
-      <AssistantRuntimeProvider runtime={runtime}>
-        <ThreadPrimitive.Root className="hitl-thread-root" style={{ ['--thread-max-width' as string]: '44rem' }}>
-          <ThreadPrimitive.Viewport className="hitl-thread-viewport" turnAnchor="top">
-            {pending.length === 0 && localMessages.length === 0 ? (
-              <div className="empty empty-plate hitl-welcome">
-                <p className="empty-title">No pending approval requests.</p>
-                <p className="hint">
-                  When a run reaches a review gate, the ask appears in this thread.
-                  Use the composer for response/feedback, then Allow once or Reject.
-                </p>
-              </div>
-            ) : null}
-            <ThreadPrimitive.Messages
-              components={{
-                UserMessage: UserBubble,
-                AssistantMessage: AssistantBubble,
-              }}
-            />
-            <ThreadPrimitive.ViewportFooter className="hitl-thread-footer">
-              <ApprovalComposer disabled={pending.length === 0} />
-            </ThreadPrimitive.ViewportFooter>
-          </ThreadPrimitive.Viewport>
-        </ThreadPrimitive.Root>
-      </AssistantRuntimeProvider>
-    </FeedbackCtx.Provider>
-  )
-}
-
-/** Fraction 0–1 → meter tone (Cursor progress green → warn → bad). */
-function meterTone(ratio: number): 'ok' | 'warn' | 'bad' {
-  if (ratio >= 0.9) return 'bad'
-  if (ratio >= 0.7) return 'warn'
-  return 'ok'
-}
-
-function Meter({
-  value,
-  max,
-  label,
-  className,
-}: {
-  value: number
-  max: number
-  label: string
-  className?: string
-}): React.ReactElement | null {
-  if (!(max > 0) || !Number.isFinite(value) || !Number.isFinite(max)) return null
-  const ratio = Math.max(0, Math.min(1, value / max))
-  const tone = meterTone(ratio)
-  const pct = Math.round(ratio * 1000) / 10
-  return (
-    <div
-      className={`meter ${tone}${className ? ` ${className}` : ''}`}
-      role="progressbar"
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={Math.round(ratio * 100)}
-      aria-label={label}
-    >
-      <i style={{ width: `${pct}%` }} />
-    </div>
-  )
-}
-
-function severityTagClass(severity: string): string {
-  if (severity === 'critical') return 'tag tag-bad sig-tag'
-  if (severity === 'warning') return 'tag tag-warn sig-tag'
-  if (severity === 'info' || severity === 'notice') return 'tag tag-cyan sig-tag'
-  return 'tag tag-ghost sig-tag'
-}
-
-function feedKindTagClass(kind: string): string {
-  if (kind === 'approval') return 'tag tag-warn feed-k'
-  if (kind === 'gate') return 'tag tag-bad feed-k'
-  if (kind === 'judge') return 'tag tag-ok feed-k'
-  if (kind === 'signals') return 'tag tag-cyan feed-k'
-  if (kind === 'route' || kind === 'step') return 'tag tag-accent feed-k'
-  return 'tag tag-ghost feed-k'
-}
-
-const UNGROUPED = 'Ungrouped'
-
-type SessionFilter = 'all' | string
-
-interface WorkspaceGroup {
-  key: string
-  label: string
-  cwd?: string
-  sessions: DashboardSnapshot['runs']
-}
-
-function shortSessionId(id: string): string {
-  if (id.length <= 12) return id
-  return `${id.slice(0, 8)}…`
-}
-
-function buildWorkspaceTree(runs: DashboardSnapshot['runs']): WorkspaceGroup[] {
-  const map = new Map<string, WorkspaceGroup>()
-  for (const run of runs) {
-    const label = run.workspaceLabel?.trim() || UNGROUPED
-    const key = run.cwd && run.cwd !== '' ? run.cwd : label
-    let group = map.get(key)
-    if (group === undefined) {
-      group = {
-        key,
-        label,
-        ...run.cwd === undefined || run.cwd === '' ? {} : { cwd: run.cwd },
-        sessions: [],
-      }
-      map.set(key, group)
-    }
-    group.sessions.push(run)
-  }
-  const groups = [...map.values()]
-  for (const g of groups) {
-    g.sessions.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
-  }
-  groups.sort((a, b) => {
-    if (a.label === UNGROUPED && b.label !== UNGROUPED) return 1
-    if (b.label === UNGROUPED && a.label !== UNGROUPED) return -1
-    return a.label.localeCompare(b.label)
-  })
-  return groups
-}
-
-function WorkspaceTree({
-  snapshot,
-  filter,
-  onSelect,
-}: {
-  snapshot: DashboardSnapshot
-  filter: SessionFilter
-  onSelect: (next: SessionFilter) => void
-}): React.ReactElement {
-  const pendingByRun = useMemo(() => {
-    const counts = new Map<string, number>()
-    for (const p of snapshot.pending) {
-      if (p.runId === undefined || p.runId === '') continue
-      counts.set(p.runId, (counts.get(p.runId) ?? 0) + 1)
-    }
-    return counts
-  }, [snapshot.pending])
-
-  const groups = useMemo(() => buildWorkspaceTree(snapshot.runs), [snapshot.runs])
-
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
-
-  // Expand groups that hold the selection or a pending session by default.
-  useEffect(() => {
-    setCollapsed((prev) => {
-      const next = { ...prev }
-      for (const g of groups) {
-        const hasPending = g.sessions.some((s) => (pendingByRun.get(s.runId) ?? 0) > 0)
-        const hasSelected = filter !== 'all' && g.sessions.some((s) => s.runId === filter)
-        if (hasPending || hasSelected) next[g.key] = false
-        else if (next[g.key] === undefined) next[g.key] = false
-      }
-      return next
-    })
-  }, [groups, filter, pendingByRun])
-
-  if (snapshot.runs.length === 0) {
+  if (pending.length === 0) {
     return (
-      <section id="workspaces" aria-label="Workspaces">
-        <div className="section-head">
-          <h2>Workspaces</h2>
-          <span className="section-count">0</span>
-        </div>
-        <p className="empty">No live sessions yet.</p>
-      </section>
+      <div className="empty empty-plate">
+        <p className="empty-title">No pending approval requests.</p>
+        <p className="hint">When a run reaches a review gate, the ask appears here for Allow once / Reject.</p>
+      </div>
     )
-  }
-
-  return (
-    <section id="workspaces" aria-label="Workspaces">
-      <div className="section-head">
-        <h2>Workspaces</h2>
-        <span className="section-count">{groups.length}</span>
-      </div>
-      <div className="ws-tree scroll-beauty" role="tree">
-        <button
-          type="button"
-          className={`ws-all${filter === 'all' ? ' is-active' : ''}`}
-          role="treeitem"
-          aria-current={filter === 'all' ? 'true' : undefined}
-          onClick={() => onSelect('all')}
-        >
-          All sessions
-          <span className="tag tag-ghost">{snapshot.runs.length}</span>
-        </button>
-        {groups.map((group) => {
-          const folded = collapsed[group.key] === true
-          const pendingInGroup = group.sessions.reduce(
-            (n, s) => n + (pendingByRun.get(s.runId) ?? 0),
-            0,
-          )
-          return (
-            <div key={group.key} className="ws-group" role="group">
-              <button
-                type="button"
-                className="ws-group-head"
-                aria-expanded={!folded}
-                onClick={() => setCollapsed((c) => ({ ...c, [group.key]: !folded }))}
-                title={group.cwd ?? group.label}
-              >
-                <span className="ws-chevron" aria-hidden="true">{folded ? '▸' : '▾'}</span>
-                <span className="ws-group-label">{group.label}</span>
-                <span className="tag tag-ghost">{group.sessions.length}</span>
-                {pendingInGroup > 0 && (
-                  <span className="tag tag-warn">{pendingInGroup}</span>
-                )}
-              </button>
-              {!folded && (
-                <ul className="ws-sessions">
-                  {group.sessions.map((session) => {
-                    const pending = pendingByRun.get(session.runId) ?? 0
-                    const selected = filter === session.runId
-                    // A run's own label — the task a human typed — is what a tree
-                  // row should read as. The id stays as the tooltip, because it
-                  // is what an operator needs when matching a log entry.
-                  const label = session.label ?? session.sessionId ?? session.runId
-                    return (
-                      <li key={session.runId}>
-                        <button
-                          type="button"
-                          className={`ws-session${selected ? ' is-active' : ''}${pending > 0 ? ' is-pending' : ''}`}
-                          role="treeitem"
-                          aria-current={selected ? 'true' : undefined}
-                          title={`${label}\n${session.runId}${session.cwd === undefined ? '' : `\n${session.cwd}`}`}
-                          onClick={() => onSelect(session.runId)}
-                        >
-                          <span className="ws-session-id mono">{shortSessionId(label)}</span>
-                          {session.step !== undefined && (
-                            <span className="tag tag-ghost">s{session.step}</span>
-                          )}
-                          {pending > 0 && (
-                            <span className="tag tag-warn">{pending}</span>
-                          )}
-                        </button>
-                      </li>
-                    )
-                  })}
-                </ul>
-              )}
-            </div>
-          )
-        })}
-      </div>
-    </section>
-  )
-}
-
-function RunCard({ run }: { run: DashboardSnapshot['runs'][number] }): React.ReactElement {
-  return (
-    <div className="run-card">
-      <div className="run-grid">
-        <div>
-          <div className="k">run</div>
-          <div className="v mono" title={run.runId}>{shortSessionId(run.sessionId ?? run.runId)}</div>
-        </div>
-        <div>
-          <div className="k">steps</div>
-          <div className="v">
-            {run.step ?? '—'}{run.maxSteps === undefined ? '' : ` / ${run.maxSteps}`}
-          </div>
-          {run.step !== undefined && run.maxSteps !== undefined && (
-            <Meter
-              value={run.step}
-              max={run.maxSteps}
-              label={`Step ${run.step} of ${run.maxSteps}`}
-            />
-          )}
-        </div>
-        <div>
-          <div className="k">spend</div>
-          <div className="v">
-            {run.spentUSD === undefined ? '—' : `$${run.spentUSD.toFixed(4)}`}
-            {run.budgetUSD === undefined ? '' : ` / $${run.budgetUSD.toFixed(2)}`}
-          </div>
-          {run.spentUSD !== undefined && run.budgetUSD !== undefined && (
-            <Meter
-              value={run.spentUSD}
-              max={run.budgetUSD}
-              label={`Spend $${run.spentUSD.toFixed(4)} of $${run.budgetUSD.toFixed(2)}`}
-            />
-          )}
-        </div>
-        {run.route !== undefined && (
-          <div>
-            <div className="k">route</div>
-            <div className="v">
-              <span className="tag tag-accent" title={run.route}>{run.route}</span>
-            </div>
-          </div>
-        )}
-        {run.judgeScore !== undefined && (
-          <div>
-            <div className="k">judge</div>
-            <div className="v">
-              <span className={`tag ${run.judgeScore >= 2 ? 'tag-ok' : run.judgeScore >= 1 ? 'tag-warn' : 'tag-bad'}`}>
-                {run.judgeScore} / 3
-              </span>
-            </div>
-            <Meter
-              value={run.judgeScore}
-              max={3}
-              label={`Judge score ${run.judgeScore} of 3`}
-              className="accent"
-            />
-          </div>
-        )}
-      </div>
-      {(run.signals ?? []).map((signal, i) => (
-        <div key={i} className={`sig ${signal.severity}`}>
-          <span className={severityTagClass(signal.severity)}>{signal.severity}</span>
-          <span className="tag tag-ghost">{signal.kind}</span>
-          <span>@ step {signal.step} — {signal.detail}</span>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-/** Right rail: runs grouped by workspace, independent scroll. */
-function GroupedRunPanels({
-  snapshot,
-  filter,
-}: {
-  snapshot: DashboardSnapshot
-  filter: SessionFilter
-}): React.ReactElement {
-  const runs = filter === 'all'
-    ? snapshot.runs
-    : snapshot.runs.filter((r) => r.runId === filter)
-  const groups = useMemo(() => buildWorkspaceTree(runs), [runs])
-
-  return (
-    <section id="run-state" className="pane pane-runs">
-      <div className="section-head pane-head">
-        <h2>Runs</h2>
-        <span className="section-count">{runs.length}</span>
-        {filter !== 'all' && (
-          <span className="tag tag-accent" title={filter}>{shortSessionId(filter)}</span>
-        )}
-      </div>
-      <div className="pane-scroll scroll-beauty">
-        {runs.length === 0
-          ? (
-            <p className="empty">
-              {filter === 'all' ? 'No run has reported yet.' : 'No run state for this session.'}
-            </p>
-          )
-          : groups.map((group) => (
-            <div key={group.key} className="run-group">
-              <div className="run-group-head" title={group.cwd ?? group.label}>
-                <span className="run-group-label">{group.label}</span>
-                <span className="tag tag-ghost">{group.sessions.length}</span>
-              </div>
-              <div className="run-group-body">
-                {group.sessions.map((run) => (
-                  <RunCard key={run.runId} run={run} />
-                ))}
-              </div>
-            </div>
-          ))}
-      </div>
-    </section>
-  )
-}
-
-/** Left sidebar activity ledger — filtered feed, independent scroll. */
-function ActivityFeed({
-  snapshot,
-  filter,
-}: {
-  snapshot: DashboardSnapshot
-  filter: SessionFilter
-}): React.ReactElement {
-  const feed = filter === 'all'
-    ? snapshot.feed
-    : snapshot.feed.filter((line) => line.runId === filter)
-
-  return (
-    <section id="activity" className="pane pane-activity">
-      <div className="section-head pane-head">
-        <h2>Activity</h2>
-        <span className="section-count">{feed.length}</span>
-      </div>
-      <div className="pane-scroll scroll-beauty">
-        {feed.length === 0
-          ? (
-            <p className="empty">
-              {filter === 'all' ? 'No activity yet.' : 'No activity for this session.'}
-            </p>
-          )
-          : (
-            <ul className="feed">
-              {[...feed].reverse().map((line, i) => (
-                <li key={`${String(line.t)}-${String(i)}`} className="feed-item">
-                  <span className="feed-t t">{new Date(line.t).toLocaleTimeString()}</span>
-                  <span className={feedKindTagClass(line.kind)}>{line.kind}</span>
-                  <span className="feed-text text">{line.text}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-      </div>
-    </section>
-  )
-}
-
-export function DashboardApp({ source }: { source: DashboardSource }): React.ReactElement {
-  const snapshot = useSnapshot(source)
-  const [sessionFilter, setSessionFilter] = useState<SessionFilter>('all')
-  usePendingBadge(snapshot?.pending.length ?? 0)
-
-  // Drop selection if the run disappeared (eviction / restart).
-  useEffect(() => {
-    if (sessionFilter === 'all' || snapshot === null) return
-    if (!snapshot.runs.some((r) => r.runId === sessionFilter)) {
-      setSessionFilter('all')
-    }
-  }, [snapshot, sessionFilter])
-
-  if (snapshot === null) {
-    return <p className="empty">Loading…</p>
   }
   return (
     <div className="dashboard-shell">
@@ -874,3 +374,101 @@ export function DashboardApp({ source }: { source: DashboardSource }): React.Rea
     </div>
   )
 }
+
+function RunPanels({ snapshot }: { snapshot: DashboardSnapshot }): React.ReactElement {
+  return (
+    <>
+      <section id="run-state">
+        <div className="section-head">
+          <h2>Run state</h2>
+        </div>
+        {snapshot.runs.length === 0
+          ? <p className="empty">No run has reported yet.</p>
+          : snapshot.runs.map((run) => (
+            <div className="run-card" key={run.runId}>
+              <div className="run-grid">
+                <div>
+                  <div className="k">run</div>
+                  <div className="v mono">{run.runId}</div>
+                </div>
+                <div>
+                  <div className="k">steps</div>
+                  <div className="v">
+                    {run.step ?? '—'}{run.maxSteps === undefined ? '' : ` / ${run.maxSteps}`}
+                  </div>
+                </div>
+                <div>
+                  <div className="k">spend (unmetered)</div>
+                  <div className="v">
+                    {run.spentUSD === undefined ? '—' : `$${run.spentUSD.toFixed(4)}`}
+                    {run.budgetUSD === undefined ? '' : ` / $${run.budgetUSD.toFixed(2)}`}
+                  </div>
+                </div>
+                {run.route !== undefined && (
+                  <div>
+                    <div className="k">route</div>
+                    <div className="v mono">{run.route}</div>
+                  </div>
+                )}
+                {run.judgeScore !== undefined && (
+                  <div>
+                    <div className="k">judge</div>
+                    <div className="v">{run.judgeScore} / 3</div>
+                  </div>
+                )}
+              </div>
+              {(run.signals ?? []).map((signal, i) => (
+                <div key={i} className={`sig ${signal.severity}`}>
+                  <span className="sig-tag">{signal.severity}</span>
+                  <span>{signal.kind} @ step {signal.step} — {signal.detail}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        <p className="hint rail-honesty">Spend is not metered on the plugin path (Phase 2b), so
+        <code>spent</code> can legitimately read zero; <code>maxSteps</code> is the
+        trustworthy ceiling.</p>
+      </section>
+      <section id="activity">
+        <div className="section-head">
+          <h2>Activity</h2>
+          <span className="section-count">{snapshot.feed.length}</span>
+        </div>
+        {snapshot.feed.length === 0
+          ? <p className="empty">Nothing yet.</p>
+          : [...snapshot.feed].reverse().map((entry, i) => (
+            <div key={i} className="feed-item">
+              <span className="t">{new Date(entry.t).toLocaleTimeString()}</span>
+              <span className={`kind k-${entry.kind}`}>{entry.kind}</span>
+              <span className="text">{entry.text}</span>
+            </div>
+          ))}
+      </section>
+    </>
+  )
+}
+
+function App(): React.ReactElement {
+  const snapshot = useSnapshot()
+  usePendingBadge(snapshot?.pending.length ?? 0)
+  if (snapshot === null) return <p className="empty">Connecting…</p>
+  return (
+    <div className="dashboard-shell">
+      <section className="stage" id="approvals">
+        <div className="section-head">
+          <h2>Pending approvals</h2>
+          <span className={`section-count${snapshot.pending.length > 0 ? ' hot' : ''}`}>
+            {snapshot.pending.length}
+          </span>
+        </div>
+        <ApprovalThread pending={snapshot.pending} />
+      </section>
+      <aside className="rail" aria-label="Run context">
+        <RunPanels snapshot={snapshot} />
+      </aside>
+    </div>
+  )
+}
+
+const root = document.getElementById('root')
+if (root !== null) createRoot(root).render(<App />)
