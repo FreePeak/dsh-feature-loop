@@ -99,10 +99,10 @@ Transcript (verbatim, run in the `dsh/openui-brief` worktree):
 
 ```
 $ node --experimental-strip-types test/e2e-dashboard.mjs allow
-feature-loop dashboard: http://127.0.0.1:55359/?token=d5a6cb1a034e654d371047c3e41ca739a8def55994ecbd4f
+feature-loop dashboard: http://127.0.0.1:55359/?token=<redacted>
 e2e-dashboard (allowed-once): the Allow once click resolved the ask allowed-once
 $ node --experimental-strip-types test/e2e-dashboard.mjs reject
-feature-loop dashboard: http://127.0.0.1:55370/?token=bb2f666978c5a702567c52cad0bc2e6f16b3b0b3376514c3
+feature-loop dashboard: http://127.0.0.1:55370/?token=<redacted>
 e2e-dashboard (rejected): the Reject click resolved the ask rejected
 ```
 

@@ -2,3 +2,6 @@ node_modules/
 lib/
 dist/
 *.tsbuildinfo
+
+# Machine-local scratch with a live dashboard token in it — never commit.
+hitl-dashboard-url.txt

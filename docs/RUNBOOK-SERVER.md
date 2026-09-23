@@ -5,9 +5,9 @@ and approve a gated step in the browser.
 
 | | |
 |---|---|
-| **Live URL (use this one)** | `http://127.0.0.1:3097/?token=TvTOrx4LgziNHZH9RPce_DM0I0gRyxV3w71Rn5S-gck` |
+| **Live URL (use this one)** | `http://127.0.0.1:3097/?token=<redacted — printed by the `dsh web:` log line>` |
 | **Port** | `3097` — hermetic `DSH_HOME=$HOME/.dsh-fl-verify` (§2.6): preset is already `workspace-write`, so **the approval panel appears with no global change** |
-| **Second server** | `http://127.0.0.1:3099/?token=FlQ9s7SFGfE73Qz55TY-eZH1ncUBTVTQ-vBl5YzexmI` — same profile but reads your real `~/.dsh` settings, so its preset is `danger-full-access` and **the panel stays suppressed until you switch the preset** (§2.5) |
+| **Second server** | `http://127.0.0.1:3099/?token=<redacted>` — same profile but reads your real `~/.dsh` settings, so its preset is `danger-full-access` and **the panel stays suppressed until you switch the preset** (§2.5) |
 | **Profile path** | `~/.dsh/profiles/fltest` |
 | **Logs** | `/tmp/fl-hermetic.log` (3097) · `/tmp/fltest-live.log` (3099) — the `dsh web: ...token=...` line is in each |
 | **User's live GUI** | port 3081 — **untouched**, verified still serving (`401` on an unauthenticated request) |

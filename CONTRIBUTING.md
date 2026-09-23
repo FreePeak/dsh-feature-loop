@@ -54,16 +54,14 @@ working, not a broken checkout. `bash demo/reset.sh` re-plants it.
 ## Type checking
 
 The script is `pnpm typecheck`, which runs `tsc --noEmit`. If `tsc` is not
-resolvable in your shell, run the compiler by path instead — this is the form
-the README quotes:
+resolvable in your shell, `npx` runs the compiler from `node_modules`:
 
 ```bash
-node /Users/linh.doan/.npm/_npx/a322a253dbd59f36/node_modules/typescript/lib/tsc.js --noEmit
+npx tsc --noEmit
 ```
 
-That path is machine-specific; substitute your own `typescript/lib/tsc.js`. It
-checks against the prebuilt `@deepseek-ai/dsh-*` packages in `node_modules`, and
-it should be clean.
+It checks against the prebuilt `@deepseek-ai/dsh-*` packages in `node_modules`,
+and it should be clean.
 
 ## The constraint that will bite you: no parameter properties
 
