@@ -28,9 +28,11 @@
  * `__FL_DASHBOARD_TOKEN__` before this bundle's script tag, so first paint
  * needs no fetch. SSE frames replace the snapshot after that.
  *
- * Run cards, the activity feed, and the run-state numbers are plain DOM in
- * React — they were never model-authored, and rendering them through a chat
- * primitive would be the tail wagging the dog.
+ * Layout: the page is an ops console — primary decision stage on the left,
+ * run/activity rail on the right. Run cards, the activity feed, and the
+ * run-state numbers are plain DOM in React; they were never model-authored,
+ * and rendering them through a chat primitive would be the tail wagging the
+ * dog.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react'
@@ -155,7 +157,12 @@ function BriefView({ ask }: { ask: PendingApproval }): React.ReactElement | null
   )
 }
 
-/** One tool call in the thread: the gate, the reason, and the brief. */
+/** Local wall-clock time for the "asked at" stamp. */
+function formatAsked(askedAt: number): string {
+  return new Date(askedAt).toLocaleTimeString()
+}
+
+/** One decision plate: eyebrow, tool, meta, reason, brief, actions. */
 function ApprovalCard(props: ToolCallMessagePartProps): React.ReactElement {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -176,35 +183,49 @@ function ApprovalCard(props: ToolCallMessagePartProps): React.ReactElement {
   const settled = gate?.approved !== undefined || gate?.resolution !== undefined
 
   return (
-    <div className="card">
+    <div className="card" aria-busy={busy}>
+      <div className="card-top">
+        <span className="eyebrow">Approval required</span>
+        {ask !== undefined && <span className="asked">asked {formatAsked(ask.askedAt)}</span>}
+      </div>
       <div className="tool">{props.toolName}</div>
       {ask !== undefined && (
         <div className="meta">
-          {ask.runId ?? 'agentless'}{ask.callId === undefined ? '' : ` · ${ask.callId}`}
+          <span className="meta-k">run</span>
+          <span className="meta-v">{ask.runId ?? 'agentless'}</span>
+          {ask.callId !== undefined && (
+            <>
+              <span className="meta-k">call</span>
+              <span className="meta-v">{ask.callId}</span>
+            </>
+          )}
         </div>
       )}
       {gate?.prompt !== undefined && <div className="reason">{gate.prompt}</div>}
       {ask !== undefined && <BriefView ask={ask} />}
       {gate?.resolution !== undefined && (
-        <div className="brief-note">
+        <div className="brief-note settled">
           {gate.resolution === 'expired' ? 'Expired — no answer in time.' : 'Cancelled — the ask was withdrawn.'}
         </div>
       )}
       {!settled && (
-        <div className="row">
+        <div className="row actions">
           {options.map(option => (
             <button
               key={option.id}
+              type="button"
               className={option.kind === 'allow-once' ? 'allow' : 'reject'}
               disabled={busy}
+              aria-busy={busy}
               onClick={() => decide(option.id)}
             >
               {option.label}
             </button>
           ))}
+          {busy && <span className="busy-note">Submitting…</span>}
         </div>
       )}
-      {error !== null && <div className="brief-note error">{error}</div>}
+      {error !== null && <div className="brief-note error" role="alert">{error}</div>}
     </div>
   )
 }
@@ -248,6 +269,16 @@ function useSnapshot(): DashboardSnapshot | null {
   return snapshot
 }
 
+/** Publish the pending count into the page chrome's status badge. */
+function usePendingBadge(count: number): void {
+  useEffect(() => {
+    const el = document.getElementById('pending-count')
+    if (el === null) return
+    el.textContent = count === 0 ? 'idle' : `${String(count)} pending`
+    el.setAttribute('data-count', String(count))
+  }, [count])
+}
+
 function ApprovalThread({ pending }: { pending: PendingApproval[] }): React.ReactElement {
   // The renderer receives a part without the domain object behind it, so the
   // asks are published for lookup by id. This runs during render because the
@@ -273,7 +304,12 @@ function ApprovalThread({ pending }: { pending: PendingApproval[] }): React.Reac
     },
   })
   if (pending.length === 0) {
-    return <p className="empty">No pending approval requests.</p>
+    return (
+      <div className="empty empty-plate">
+        <p className="empty-title">No pending approval requests.</p>
+        <p className="hint">When a run reaches a review gate, the ask appears here for Allow once / Reject.</p>
+      </div>
+    )
   }
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -302,44 +338,69 @@ function ApprovalThread({ pending }: { pending: PendingApproval[] }): React.Reac
 function RunPanels({ snapshot }: { snapshot: DashboardSnapshot }): React.ReactElement {
   return (
     <>
-      <section>
-        <h2>Run state</h2>
+      <section id="run-state">
+        <div className="section-head">
+          <h2>Run state</h2>
+        </div>
         {snapshot.runs.length === 0
           ? <p className="empty">No run has reported yet.</p>
           : snapshot.runs.map((run) => (
-            <div className="card" key={run.runId}>
-              <div className="run">
-                <div><div className="k">run</div><div className="v">{run.runId}</div></div>
-                <div><div className="k">steps</div><div className="v">
-                  {run.step ?? '—'}{run.maxSteps === undefined ? '' : ` / ${run.maxSteps}`}
-                </div></div>
-                <div><div className="k">spend (unmetered)</div><div className="v">
-                  {run.spentUSD === undefined ? '—' : `$${run.spentUSD.toFixed(4)}`}
-                  {run.budgetUSD === undefined ? '' : ` / $${run.budgetUSD.toFixed(2)}`}
-                </div></div>
-                {run.route !== undefined && <div><div className="k">route</div><div className="v">{run.route}</div></div>}
-                {run.judgeScore !== undefined && <div><div className="k">judge</div><div className="v">{run.judgeScore} / 3</div></div>}
+            <div className="run-card" key={run.runId}>
+              <div className="run-grid">
+                <div>
+                  <div className="k">run</div>
+                  <div className="v mono">{run.runId}</div>
+                </div>
+                <div>
+                  <div className="k">steps</div>
+                  <div className="v">
+                    {run.step ?? '—'}{run.maxSteps === undefined ? '' : ` / ${run.maxSteps}`}
+                  </div>
+                </div>
+                <div>
+                  <div className="k">spend (unmetered)</div>
+                  <div className="v">
+                    {run.spentUSD === undefined ? '—' : `$${run.spentUSD.toFixed(4)}`}
+                    {run.budgetUSD === undefined ? '' : ` / $${run.budgetUSD.toFixed(2)}`}
+                  </div>
+                </div>
+                {run.route !== undefined && (
+                  <div>
+                    <div className="k">route</div>
+                    <div className="v mono">{run.route}</div>
+                  </div>
+                )}
+                {run.judgeScore !== undefined && (
+                  <div>
+                    <div className="k">judge</div>
+                    <div className="v">{run.judgeScore} / 3</div>
+                  </div>
+                )}
               </div>
               {(run.signals ?? []).map((signal, i) => (
                 <div key={i} className={`sig ${signal.severity}`}>
-                  [{signal.severity}] {signal.kind} @ step {signal.step} — {signal.detail}
+                  <span className="sig-tag">{signal.severity}</span>
+                  <span>{signal.kind} @ step {signal.step} — {signal.detail}</span>
                 </div>
               ))}
             </div>
           ))}
-        <p className="hint">Spend is not metered on the plugin path (Phase 2b), so
+        <p className="hint rail-honesty">Spend is not metered on the plugin path (Phase 2b), so
         <code>spent</code> can legitimately read zero; <code>maxSteps</code> is the
         trustworthy ceiling.</p>
       </section>
-      <section>
-        <h2>Activity</h2>
+      <section id="activity">
+        <div className="section-head">
+          <h2>Activity</h2>
+          <span className="section-count">{snapshot.feed.length}</span>
+        </div>
         {snapshot.feed.length === 0
           ? <p className="empty">Nothing yet.</p>
           : [...snapshot.feed].reverse().map((entry, i) => (
             <div key={i} className="feed-item">
               <span className="t">{new Date(entry.t).toLocaleTimeString()}</span>
               <span className={`kind k-${entry.kind}`}>{entry.kind}</span>
-              <span>{entry.text}</span>
+              <span className="text">{entry.text}</span>
             </div>
           ))}
       </section>
@@ -349,15 +410,23 @@ function RunPanels({ snapshot }: { snapshot: DashboardSnapshot }): React.ReactEl
 
 function App(): React.ReactElement {
   const snapshot = useSnapshot()
+  usePendingBadge(snapshot?.pending.length ?? 0)
   if (snapshot === null) return <p className="empty">Connecting…</p>
   return (
-    <>
-      <section>
-        <h2>Pending approvals</h2>
+    <div className="dashboard-shell">
+      <section className="stage" id="approvals">
+        <div className="section-head">
+          <h2>Pending approvals</h2>
+          <span className={`section-count${snapshot.pending.length > 0 ? ' hot' : ''}`}>
+            {snapshot.pending.length}
+          </span>
+        </div>
         <ApprovalThread pending={snapshot.pending} />
       </section>
-      <RunPanels snapshot={snapshot} />
-    </>
+      <aside className="rail" aria-label="Run context">
+        <RunPanels snapshot={snapshot} />
+      </aside>
+    </div>
   )
 }
 
