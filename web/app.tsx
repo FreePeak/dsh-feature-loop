@@ -1,40 +1,20 @@
 /**
  * The dashboard's React shell, on assistant-ui.
  *
- * Seam:
- *   pending ask  →  tool-call part with approval gate   [approval-bridge]
- *                →  ApprovalCard / composer feedback
- *                →  onRespondToToolApproval
- *                →  `source.respond(...)`
+ * Seam (unchanged):
+ *   pending ask (SSE snapshot)
+ *     → tool-call part with approval gate   [approval-bridge]
+ *     → ApprovalCard / composer feedback
+ *     → onRespondToToolApproval
+ *     → POST /api/approvals/:id
  *
- * The source is INJECTED. It used to be hardwired to this page's own HTTP
- * server (`EventSource('/api/events')` + `POST /api/approvals/:id`), which
- * only worked while the dashboard was a standalone origin. It is now a page
- * inside the DSH UI, fed by the host remote, so the transport is a parameter
- * and the components below are unchanged — the design, meters, badges and
- * workspace tree are exactly the ones that shipped.
- *
- * Two consequences worth stating, because they are easy to lose in a rewrite:
- *
- *   the buttons are not the model's   the gate's options come from
- *                                     `approval-bridge`, a module with no
- *                                     model input at all. The brief is text
- *                                     *inside* this card, never the card.
- *   a failed POST stays retryable     assistant-ui keeps the gate open when
- *                                     the callback rejects, so a 409 (someone
- *                                     else answered) or a dropped connection
- *                                     leaves the operator able to act rather
- *                                     than staring at a dead button.
+ * Layout: stockbroker-style chat thread — assistant messages carry the
+ * approval card; a sticky composer accepts free-text response/feedback.
+ * Allow once / Reject still settle the gate; typed text is optional and
+ * rides the same POST as `feedback` when present.
  *
  * Bootstrapping: the shell inlines `window.__FL_DASHBOARD_SNAPSHOT__` and
- * `__FL_DASHBOARD_TOKEN__` before this bundle's script tag, so first paint
- * needs no fetch. SSE frames replace the snapshot after that.
- *
- * Layout: the page is an ops console — primary decision stage on the left,
- * run/activity rail on the right. Run cards, the activity feed, and the
- * run-state numbers are plain DOM in React; they were never model-authored,
- * and rendering them through a chat primitive would be the tail wagging the
- * dog.
+ * `__FL_DASHBOARD_TOKEN__` before this bundle's script tag.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -118,18 +98,25 @@ function token(): string {
  * POST a decision. Optional `feedback` is free-text from the composer;
  * the server appends it to the activity feed and ignores empty strings.
  */
-async function respondToApproval(
-  source: DashboardSource,
-  response: {
-    approvalId: string
-    approved?: boolean
-    optionId?: string
-    feedback?: string
-  },
-): Promise<void> {
+async function respondToApproval(response: {
+  approvalId: string
+  approved?: boolean
+  optionId?: string
+  feedback?: string
+}): Promise<void> {
   const outcome = outcomeForResponse(response)
   const feedback = response.feedback?.trim() ?? ''
-  await source.respond(response.approvalId, outcome, feedback)
+  const res = await fetch(`/api/approvals/${encodeURIComponent(response.approvalId)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Dashboard-Token': token() },
+    body: JSON.stringify({
+      outcome,
+      ...feedback === '' ? {} : { feedback },
+    }),
+  })
+  if (!res.ok) {
+    throw new Error(`dashboard refused the decision: HTTP ${String(res.status)}`)
+  }
 }
 
 function BriefNodeView({ node }: { node: BriefNode }): React.ReactElement {
@@ -158,9 +145,31 @@ function BriefView({ ask }: { ask: PendingApproval }): React.ReactElement | null
   )
 }
 
-/** Local wall-clock time for the "asked at" stamp. */
 function formatAsked(askedAt: number): string {
   return new Date(askedAt).toLocaleTimeString()
+}
+
+/**
+ * Shared draft between the card actions and the thread composer.
+ * Typing in the composer is the response/feedback; Allow/Reject still settle.
+ */
+type FeedbackApi = {
+  text: string
+  setText: (next: string) => void
+  clear: () => void
+  /** Park the current draft as a user bubble without settling the gate. */
+  commitLocal: () => void
+}
+
+const FeedbackCtx = React.createContext<FeedbackApi>({
+  text: '',
+  setText: () => undefined,
+  clear: () => undefined,
+  commitLocal: () => undefined,
+})
+
+function useFeedback(): FeedbackApi {
+  return React.useContext(FeedbackCtx)
 }
 
 /** One decision plate: eyebrow, tool, meta, reason, brief, actions. */
@@ -229,6 +238,11 @@ function ApprovalCard(props: ToolCallMessagePartProps): React.ReactElement {
           {busy && <span className="busy-note">Submitting…</span>}
         </div>
       )}
+      {!settled && note !== '' && (
+        <div className="feedback-preview" aria-live="polite">
+          Feedback will be sent with your decision: <em>{note}</em>
+        </div>
+      )}
       {error !== null && <div className="brief-note error" role="alert">{error}</div>}
     </div>
   )
@@ -240,12 +254,17 @@ function useSnapshot(source: DashboardSource): DashboardSnapshot | null {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(
     () => window.__FL_DASHBOARD_SNAPSHOT__ ?? null,
   )
+  const stream = useRef<EventSource | null>(null)
   useEffect(() => {
-    let alive = true
-    const tick = (): void => {
-      source.load()
-        .then(next => { if (alive) setSnapshot(next) })
-        .catch(() => { /* a failed read keeps the last good frame */ })
+    if (stream.current !== null) return
+    const es = new EventSource(`/api/events?token=${encodeURIComponent(token())}`)
+    stream.current = es
+    es.onmessage = (ev) => {
+      try {
+        setSnapshot(JSON.parse(ev.data) as DashboardSnapshot)
+      } catch {
+        /* malformed frame must not kill the page */
+      }
     }
     // The Host pushes `featureLoop/changed` and this re-reads on that signal.
     // The interval is a SAFETY NET for a dropped frame, not the mechanism: at
@@ -259,7 +278,6 @@ function useSnapshot(source: DashboardSource): DashboardSnapshot | null {
   return snapshot
 }
 
-/** Publish the pending count into the page chrome's status badge. */
 function usePendingBadge(count: number): void {
   useEffect(() => {
     const el = document.getElementById('pending-count')
@@ -269,11 +287,78 @@ function usePendingBadge(count: number): void {
   }, [count])
 }
 
+/**
+ * Sticky chat composer — stockbroker shape, controlled draft.
+ *
+ * Owned input (not ComposerPrimitive.Input) so Allow/Reject always see the
+ * same text the operator typed, even without pressing Send first.
+ */
+function ApprovalComposer({ disabled }: { disabled: boolean }): React.ReactElement {
+  const feedback = useFeedback()
+  const onSubmit = (event: React.FormEvent) => {
+    event.preventDefault()
+    if (disabled || feedback.text.trim() === '') return
+    feedback.commitLocal()
+  }
+  return (
+    <form className="hitl-composer-root" onSubmit={onSubmit}>
+      <div className={`hitl-composer-shell${disabled ? ' is-disabled' : ''}`}>
+        <textarea
+          className="hitl-composer-input"
+          placeholder={disabled
+            ? 'No pending approval — waiting for the next gate…'
+            : 'Add response or feedback, then Allow once / Reject — or send to post feedback into the thread…'}
+          rows={2}
+          aria-label="Approval response and feedback"
+          disabled={disabled}
+          value={feedback.text}
+          onChange={(event) => feedback.setText(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault()
+              if (!disabled && feedback.text.trim() !== '') feedback.commitLocal()
+            }
+          }}
+        />
+        <div className="hitl-composer-actions">
+          <span className="hitl-composer-hint">
+            {disabled ? 'Composer idle' : 'Enter posts feedback · Shift+Enter newline · buttons decide'}
+          </span>
+          <button
+            type="submit"
+            className="hitl-composer-send"
+            disabled={disabled || feedback.text.trim() === ''}
+            aria-label="Send feedback"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 19V5M12 5l-6 6M12 5l6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </form>
+  )
+}
+
+function UserBubble(): React.ReactElement {
+  return (
+    <MessagePrimitive.Root className="hitl-user-msg" data-role="user">
+      <div className="hitl-user-bubble">
+        <MessagePrimitive.Parts />
+      </div>
+    </MessagePrimitive.Root>
+  )
+}
+
+function AssistantBubble(): React.ReactElement {
+  return (
+    <MessagePrimitive.Root className="hitl-assistant-msg" data-role="assistant">
+      <MessagePrimitive.Parts components={{ tools: { Override: ApprovalCard } }} />
+    </MessagePrimitive.Root>
+  )
+}
+
 function ApprovalThread({ pending }: { pending: PendingApproval[] }): React.ReactElement {
-  // The renderer receives a part without the domain object behind it, so the
-  // asks are published for lookup by id. This runs during render because the
-  // map must match the messages being rendered in the same pass; it is a
-  // module-level cache of the current frame, not app state.
   ASK_BY_ID.clear()
   for (const ask of pending) ASK_BY_ID.set(ask.id, ask)
 
@@ -317,7 +402,7 @@ function ApprovalThread({ pending }: { pending: PendingApproval[] }): React.Reac
     },
     onRespondToToolApproval: async (options) => {
       const note = draftRef.current.trim()
-      await respondToApproval(source, {
+      await respondToApproval({
         ...options,
         approvalId: options.approvalId,
         ...note === '' ? {} : { feedback: note },
@@ -339,39 +424,34 @@ function ApprovalThread({ pending }: { pending: PendingApproval[] }): React.Reac
       draftRef.current = ''
     },
   })
-  if (pending.length === 0) {
-    return (
-      <div className="empty empty-plate">
-        <p className="empty-title">No pending approval requests.</p>
-        <p className="hint">When a run reaches a review gate, the ask appears here for Allow once / Reject.</p>
-      </div>
-    )
-  }
+
   return (
-    <div className="dashboard-shell">
-      <aside className="sidebar" aria-label="Workspaces and activity">
-        <div className="sidebar-top">
-          <WorkspaceTree
-            snapshot={snapshot}
-            filter={sessionFilter}
-            onSelect={setSessionFilter}
-          />
-        </div>
-        <ActivityFeed snapshot={snapshot} filter={sessionFilter} />
-      </aside>
-      <section className="stage" id="approvals" aria-label="Approvals thread">
-        <div className="section-head">
-          <h2>Approval thread</h2>
-          <span className={`section-count${snapshot.pending.length > 0 ? ' hot' : ''}`}>
-            {snapshot.pending.length}
-          </span>
-        </div>
-        <ApprovalThread pending={snapshot.pending} source={source} />
-      </section>
-      <aside className="rail" aria-label="Grouped runs">
-        <GroupedRunPanels snapshot={snapshot} filter={sessionFilter} />
-      </aside>
-    </div>
+    <FeedbackCtx.Provider value={feedbackApi}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <ThreadPrimitive.Root className="hitl-thread-root" style={{ ['--thread-max-width' as string]: '44rem' }}>
+          <ThreadPrimitive.Viewport className="hitl-thread-viewport" turnAnchor="top">
+            {pending.length === 0 && localMessages.length === 0 ? (
+              <div className="empty empty-plate hitl-welcome">
+                <p className="empty-title">No pending approval requests.</p>
+                <p className="hint">
+                  When a run reaches a review gate, the ask appears in this thread.
+                  Use the composer for response/feedback, then Allow once or Reject.
+                </p>
+              </div>
+            ) : null}
+            <ThreadPrimitive.Messages
+              components={{
+                UserMessage: UserBubble,
+                AssistantMessage: AssistantBubble,
+              }}
+            />
+            <ThreadPrimitive.ViewportFooter className="hitl-thread-footer">
+              <ApprovalComposer disabled={pending.length === 0} />
+            </ThreadPrimitive.ViewportFooter>
+          </ThreadPrimitive.Viewport>
+        </ThreadPrimitive.Root>
+      </AssistantRuntimeProvider>
+    </FeedbackCtx.Provider>
   )
 }
 
@@ -425,24 +505,24 @@ function RunPanels({ snapshot }: { snapshot: DashboardSnapshot }): React.ReactEl
               ))}
             </div>
           ))}
-        <p className="hint rail-honesty">Spend is not metered on the plugin path (Phase 2b), so
-        <code>spent</code> can legitimately read zero; <code>maxSteps</code> is the
-        trustworthy ceiling.</p>
       </section>
       <section id="activity">
         <div className="section-head">
           <h2>Activity</h2>
-          <span className="section-count">{snapshot.feed.length}</span>
         </div>
         {snapshot.feed.length === 0
-          ? <p className="empty">Nothing yet.</p>
-          : [...snapshot.feed].reverse().map((entry, i) => (
-            <div key={i} className="feed-item">
-              <span className="t">{new Date(entry.t).toLocaleTimeString()}</span>
-              <span className={`kind k-${entry.kind}`}>{entry.kind}</span>
-              <span className="text">{entry.text}</span>
-            </div>
-          ))}
+          ? <p className="empty">No activity yet.</p>
+          : (
+            <ul className="feed">
+              {[...snapshot.feed].reverse().map((line, i) => (
+                <li key={`${String(line.t)}-${String(i)}`}>
+                  <span className="feed-t">{new Date(line.t).toLocaleTimeString()}</span>
+                  <span className={`feed-k ${line.kind}`}>{line.kind}</span>
+                  <span className="feed-text">{line.text}</span>
+                </li>
+              ))}
+            </ul>
+          )}
       </section>
     </>
   )
@@ -451,12 +531,14 @@ function RunPanels({ snapshot }: { snapshot: DashboardSnapshot }): React.ReactEl
 function App(): React.ReactElement {
   const snapshot = useSnapshot()
   usePendingBadge(snapshot?.pending.length ?? 0)
-  if (snapshot === null) return <p className="empty">Connecting…</p>
+  if (snapshot === null) {
+    return <p className="empty">Loading…</p>
+  }
   return (
     <div className="dashboard-shell">
-      <section className="stage" id="approvals">
+      <section className="stage" id="approvals" aria-label="Approvals thread">
         <div className="section-head">
-          <h2>Pending approvals</h2>
+          <h2>Approval thread</h2>
           <span className={`section-count${snapshot.pending.length > 0 ? ' hot' : ''}`}>
             {snapshot.pending.length}
           </span>
