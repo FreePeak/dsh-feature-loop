@@ -46,6 +46,11 @@ RUN npm install --no-audit --no-fund
 
 COPY src ./src
 COPY tsconfig.json cordis.patch.yml ./
+# The committed assistant-ui bundle. `npm run build` does NOT produce it (it is
+# generated on the host by `make dashboard-bundle`), and `src/dashboard.ts`
+# reads it at module load — a missing file is a hard error, not a blank page.
+# Without this the runtime image ships a dashboard that refuses to start.
+COPY assets ./assets
 
 RUN npm run build && test -f lib/index.mjs
 
@@ -84,9 +89,18 @@ RUN mkdir -p /opt/dsh-home \
       @deepseek-ai/dsh-experimental-agent-team-profile@0.1.5-alpha.2 \
       @deepseek-ai/dsh-experimental-agent-team-web-profile@0.1.5-alpha.2
 
-# The plugin itself: package.json + built lib + its cordis patch.
-COPY --from=plugin-build /build/lib              /opt/feature-loop/lib
-COPY package.json cordis.patch.yml               /opt/feature-loop/
+# The plugin itself: package.json + built lib + its cordis patch + the
+# dashboard bundle. `src/dashboard.ts` resolves the assets one directory up
+# from `lib/`, i.e. `/opt/feature-loop/assets/assistant-ui/*`.
+COPY --from=plugin-build /build/lib               /opt/feature-loop/lib
+COPY --from=plugin-build /build/assets            /opt/feature-loop/assets
+COPY package.json cordis.patch.yml                /opt/feature-loop/
+
+# Fail the build here rather than at container start with a stack trace. The
+# three files are the exact set `readBundleAsset()` loads eagerly.
+RUN test -f /opt/feature-loop/assets/assistant-ui/dashboard.js \
+ && test -f /opt/feature-loop/assets/assistant-ui/dashboard.css \
+ && test -f /opt/feature-loop/assets/assistant-ui/shell.css
 
 RUN DSH_HOME=/opt/dsh-home dsh plugin --profile dsh-fl add -w file:/opt/feature-loop \
  && DSH_HOME=/opt/dsh-home dsh --profile dsh-fl --dump-config \

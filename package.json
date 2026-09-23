@@ -26,12 +26,11 @@
     "assets/mark-light.svg",
     "assets/mark-mono.svg",
     "assets/mark.svg",
-    "client.js",
+    "bin/dshloop.mjs",
     "cordis.patch.yml",
-    "lib/command.mjs",
+    "lib/cli.mjs",
     "lib/index.d.mts",
-    "lib/index.mjs",
-    "lib/remote.mjs"
+    "lib/index.mjs"
   ],
   "license": "MIT",
   "author": "Linh Doan",
@@ -63,7 +62,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsdown src/index.ts src/remote.ts src/command.ts --format esm --out-dir lib",
+    "build": "tsdown src/index.ts src/cli.ts --format esm --dts --out-dir lib",
     "test": "node --experimental-strip-types --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "demo": "bash demo/run.sh",
@@ -74,7 +73,7 @@
     "lint:workflows": "actionlint .github/workflows/*.yml",
     "test:integration": "bash test/integration/run.sh",
     "dashboard-bundle": "node web/build.mjs",
-    "prepare": "git config core.hooksPath .githooks"
+    "dshloop": "node bin/dshloop.mjs"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.15.21",
@@ -122,5 +121,8 @@
     "@deepseek-ai/dsh-typert-protocol": {
       "optional": true
     }
+  },
+  "bin": {
+    "dshloop": "./bin/dshloop.mjs"
   }
 }
