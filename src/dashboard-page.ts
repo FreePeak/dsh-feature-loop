@@ -32,17 +32,28 @@ export const DASHBOARD_PAGE = `<!doctype html>
 <link rel="stylesheet" nonce="__CSP_NONCE__" href="/assets/dashboard.css">
 </head>
 <body>
+<a class="skip-link" href="#approvals">Skip to approvals</a>
 <header>
-  <h1>feature-loop · HITL approvals</h1>
-  <span id="conn" class="dot"></span><span id="conn-label" class="hint">connecting…</span>
-  <span id="mode" class="badge"></span>
+  <div class="brand">
+    <h1>feature-loop</h1>
+    <span class="sep" aria-hidden="true">·</span>
+    <span class="product">HITL approval thread</span>
+  </div>
+  <div class="header-meta">
+    <span class="conn-wrap">
+      <span id="conn" class="dot"></span>
+      <span id="conn-label" class="hint">connecting…</span>
+    </span>
+    <span id="mode" class="badge"></span>
+    <span id="pending-count" class="badge badge-pending" role="status" aria-live="polite" data-count="0"></span>
+  </div>
 </header>
 <main>
   <div id="auth">The dashboard token is missing or wrong. Open the URL printed by
   <code>make dashboard</code> (it carries <code>?token=…</code>), or the page is
   being served by a different boot than the one that issued the token.</div>
   <div id="root"><p class="empty">Loading…</p></div>
-  <details>
+  <details class="help">
     <summary>Nothing here when you expected a request?</summary>
     <div class="hint">Almost always the permission preset: a session started
     under <code>danger-full-access</code> has approval policy <code>never</code>,
@@ -89,6 +100,13 @@ export const DASHBOARD_PAGE = `<!doctype html>
         ? 'dashboard answers approvals when open'
         : 'observe-only (composer panel answers)';
       mode.className = 'badge' + (snapshot.answers ? ' answer' : '');
+    }
+    var pc = document.getElementById('pending-count');
+    if (pc) {
+      pc.textContent = snapshot.pending && snapshot.pending.length
+        ? snapshot.pending.length + ' pending'
+        : 'idle';
+      pc.setAttribute('data-count', String(snapshot.pending ? snapshot.pending.length : 0));
     }
     var s = document.createElement('script');
     s.src = '/assets/dashboard.js';

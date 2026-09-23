@@ -213,6 +213,32 @@ function runIdOf(agent: Agent | undefined): string {
 }
 
 /**
+ * Absolute workspace cwd from a live agent session header.
+ * Structural read: `Agent` type only guarantees `id`; ReactLoopAgent also
+ * carries `session.header.cwd`. Tests/fakes without a session stay ungrouped.
+ */
+function sessionCwdOf(agent: Agent | undefined): string | undefined {
+  if (agent === undefined) return undefined
+  const session = (agent as { readonly session?: { readonly header?: { readonly cwd?: unknown } } }).session
+  const cwd = session?.header?.cwd
+  if (typeof cwd !== 'string' || cwd === '') return undefined
+  // Absolute POSIX or Windows drive path — reject relative junk.
+  if (cwd.startsWith('/') || /^[A-Za-z]:[\\/]/.test(cwd)) return cwd
+  return undefined
+}
+
+/** Project session/workspace meta onto the dashboard run row. */
+function recordAgentMeta(state: DashboardState, agent: Agent | undefined): string {
+  const runId = runIdOf(agent)
+  const cwd = sessionCwdOf(agent)
+  state.recordMeta(runId, {
+    ...runId === 'agentless' ? {} : { sessionId: runId },
+    ...cwd === undefined ? {} : { cwd },
+  })
+  return runId
+}
+
+/**
  * How a gate-raised review is expressed at the tool boundary.
  *
  * - `ask`  — hand the decision to the approval channel (Web UI prompt). Fails
@@ -1124,7 +1150,7 @@ export function apply(
     const base = await next()
     if (base.kind === 'reject') return base
     const { decision, notices, signals, judgeScore, budget } = await reviewStep(policy, step)
-    const runId = runIdOf(agent)
+    const runId = recordAgentMeta(state, agent)
     state.recordStep(runId, {
       step,
       ...policy.spec === undefined ? {} : { maxSteps: policy.spec.maxSteps },
@@ -1157,8 +1183,9 @@ export function apply(
     spendSettledUsage(policy, agent)
     const routed = routeForStep(policy, step, undefined)
     if (routed?.model !== undefined) {
+      const runId = recordAgentMeta(state, agent)
       state.recordRoute(
-        runIdOf(agent),
+        runId,
         routeLabel({
           ...routed.provider === undefined ? {} : { provider: routed.provider },
           model: routed.model,
@@ -1191,7 +1218,7 @@ export function apply(
       // Only blocks hit the feed: logging every `auto` call would bury the
       // decisions a human opened this page to see.
       state.recordGate(
-        runIdOf(agent),
+        recordAgentMeta(state, agent),
         toolName,
         gate.kind === 'deny' ? 'deny' : 'ask',
         gate.reason,

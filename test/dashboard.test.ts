@@ -21,7 +21,12 @@ import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 
-import { DashboardState, parseDashboardConfig, startDashboard } from '../src/dashboard.ts'
+import {
+  DashboardState,
+  parseDashboardConfig,
+  startDashboard,
+  workspaceLabelOf,
+} from '../src/dashboard.ts'
 import type { DashboardHandle, DashboardSnapshot } from '../src/dashboard.ts'
 // Type-only, so these are erased at runtime: the measurement modules are
 // authored concurrently, and this file must pin their shapes without
@@ -233,6 +238,34 @@ test('the state snapshot has the shape the page renders', async (t) => {
   assert.equal(snapshot.feed[0]?.kind, 'approval')
 })
 
+test('recordMeta projects session/workspace onto the run snapshot', async (t) => {
+  const { dash, state } = await started(t)
+  state.recordMeta('sess-abc', {
+    sessionId: 'sess-abc',
+    cwd: '/Users/linh/work/harvey/freepeak/dsh-feature-loop',
+  })
+  state.recordStep('sess-abc', { step: 1, maxSteps: 8 })
+  // No cwd → ungrouped live session still appears.
+  state.recordStep('agentless-run', { step: 2, maxSteps: 8 })
+
+  const snapshot = await getState(dash)
+  const withWs = snapshot.runs.find((r) => r.runId === 'sess-abc')
+  const bare = snapshot.runs.find((r) => r.runId === 'agentless-run')
+  assert.equal(withWs?.sessionId, 'sess-abc')
+  assert.equal(withWs?.cwd, '/Users/linh/work/harvey/freepeak/dsh-feature-loop')
+  assert.equal(withWs?.workspaceLabel, 'dsh-feature-loop')
+  assert.ok((withWs?.updatedAt ?? 0) > 0)
+  assert.equal(bare?.workspaceLabel, undefined)
+  assert.equal(bare?.cwd, undefined)
+})
+
+test('workspaceLabelOf picks the path basename', () => {
+  assert.equal(workspaceLabelOf('/tmp/proj/'), 'proj')
+  assert.equal(workspaceLabelOf('/'), '/')
+  assert.equal(workspaceLabelOf(undefined), undefined)
+  assert.equal(workspaceLabelOf(''), undefined)
+})
+
 // ── the guard: claim only while a tab is watching ──────────────────────────
 
 test('no connected client: answer delegates to next() and never claims', async (t) => {
@@ -282,6 +315,29 @@ test('a connected client claims; POST allowed-once resolves the ask', async (t) 
   const feed = after.feed.map(line => line.text).join('\n')
   assert.match(feed, /asked: write_file/)
   assert.match(feed, /approved: write_file/)
+})
+
+test('POST feedback rides the decision into the activity feed', async (t) => {
+  const { dash } = await started(t)
+  const close = await connectSse(dash)
+  t.after(close)
+
+  const pending = dash.answer(QUESTION, delegatingNext().next)
+  const { id } = (await getState(dash)).pending[0] as { id: string }
+
+  const res = await post(dash, id, 'rejected', {
+    token: dash.token,
+    body: JSON.stringify({ outcome: 'rejected', feedback: 'path looks wrong; rewrite under src/' }),
+  })
+  assert.equal(res.status, 200)
+  assert.deepEqual(await res.json(), {
+    ok: true,
+    outcome: 'rejected',
+    feedback: 'path looks wrong; rewrite under src/',
+  })
+  assert.equal(await pending, 'rejected')
+  const feed = (await getState(dash)).feed.map(line => line.text).join('\n')
+  assert.match(feed, /rejected: write_file — path looks wrong; rewrite under src\//)
 })
 
 test('POST rejected resolves rejected; a second POST is 409', async (t) => {
