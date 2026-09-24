@@ -287,10 +287,10 @@ estimate is now **denied** rather than dispatched.
 3. **Done — verified completion.** `update_goal(action="complete")` is denied
    before DSH commits it unless the configured verifier exits cleanly. The
    verifier runs through the DSH shell and effective sandbox workspace.
-4. **Done — integration and HITL evidence.** The real DSH tool pipeline has 15
+4. **Done — integration and HITL evidence.** The real DSH tool pipeline has 16
    integration cases, including approval, dashboard delegation, human-gated
-   queue mutations, native goal creation, final-turn spend, and budget blocking.
-   A live isolated Web profile also completed a native goal with
+   queue/action mutations, native goal creation, final-turn spend, and budget
+   blocking. A live isolated Web profile also completed a native goal with
    `onegw/execution` and recorded non-zero spend.
 5. **Done — queue and worktree foundation.** `FeatureQueue` provides a durable
    JSONL log, single-writer locking, fencing claim IDs, campaign reservations,
@@ -310,8 +310,9 @@ estimate is now **denied** rather than dispatched.
 8. **In progress — isolated live acceptance.** The mounted queue tool has now
    passed a real isolated Web run: the model enqueued `live-queue`, the human
    approval was clicked, `feature_queue_list` was readable, and the native
-   goal completed. The remaining acceptance gap is the combined queue →
-   worktree → verifier → PR path; the main profile remains untouched. A queue
+   goal completed. DSH now also exposes claim-fenced worktree and PR/merge
+   action tools, all human-gated; a combined queue → worktree → verifier →
+   PR-plan live run remains. The main profile remains untouched. A queue
    record is never proof that a PR or merge happened.
 9. **Next — decision on `routing.ts`.** Collapse the ladder onto DSH model
    selection or document why spec-level escalation remains distinct.
