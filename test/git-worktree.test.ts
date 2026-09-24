@@ -28,6 +28,7 @@ function repository(t: { after: (fn: () => void) => void }): { root: string, rep
 test('plans a detached worktree without touching Git', (t) => {
   const f = repository(t)
   const plan = planWorktreeAdd({
+    claimId: 'claim-1',
     baseRoot: f.repo,
     worktreePath: join(f.repo, '.worktrees', 'feature'),
     branch: 'dsh/feature',
@@ -36,6 +37,7 @@ test('plans a detached worktree without touching Git', (t) => {
   assert.equal(plan.baseRoot, f.repo)
   assert.equal(plan.branch, 'dsh/feature')
   assert.equal(plan.baseCommit, f.commit)
+  assert.throws(() => createWorktree({ ...plan, baseRoot: f.repo }, { claimId: 'other', scope: 'create-worktree', approvedAt: 1_000 }), /does not match/)
   assert.throws(() => planWorktreeAdd({ ...plan, worktreePath: '/tmp/outside' }), /worktree path/)
   assert.throws(() => planWorktreeAdd({ ...plan, branch: 'main' }), /dsh\/\*/)
   assert.throws(() => planWorktreeAdd({ ...plan, baseCommit: 'abc' }), /40-character/)
@@ -44,11 +46,12 @@ test('plans a detached worktree without touching Git', (t) => {
 test('creates and proves a detached worktree at the pinned commit', (t) => {
   const f = repository(t)
   const proof = createWorktree({
+    claimId: 'claim-1',
     baseRoot: f.repo,
     worktreePath: join(f.repo, '.worktrees', 'feature'),
     branch: 'dsh/feature',
     baseCommit: f.commit,
-  })
+  }, { claimId: 'claim-1', scope: 'create-worktree', approvedAt: 1_000 })
   assert.equal(proof.commit, f.commit)
   assert.equal(proof.detached, true)
   assert.equal(readFileSync(join(proof.path, 'README.md'), 'utf8'), 'base\n')

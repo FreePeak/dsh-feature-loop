@@ -9,11 +9,17 @@
 import { verifyLoopCompletion } from './goal-loop.ts'
 import type { LoopVerificationResult } from './goal-loop.ts'
 import { authorizeMerge } from './pr-gate.ts'
-import type { CommandPlan, MergeApproval, MergePlan } from './pr-gate.ts'
+import type { CommandPlan, MergeApproval, MergePlan, PullRequestPlan } from './pr-gate.ts'
 
 export interface ShellService {
   resolve(request: Record<string, unknown>): unknown
   execute(spec: unknown): Promise<{ result(): Promise<LoopVerificationResult> }>
+}
+
+export interface PullRequestApproval {
+  claimId: string
+  scope: 'create-pull-request'
+  approvedAt: number
 }
 
 export interface FixedCommandSuccess {
@@ -58,6 +64,25 @@ export async function executeCommandPlan(
   } catch {
     return { kind: 'deny', reason: 'fixed command failed before a trustworthy result was available' }
   }
+}
+
+function authorizePullRequest(plan: PullRequestPlan, approval: PullRequestApproval): FixedCommandSuccess | FixedCommandFailure | undefined {
+  if (approval.scope !== 'create-pull-request' || approval.claimId !== plan.claimId) return { kind: 'deny', reason: 'pull request approval does not match this feature claim' }
+  if (!Number.isFinite(approval.approvedAt) || approval.approvedAt < 0) return { kind: 'deny', reason: 'pull request approval has no valid timestamp' }
+  return undefined
+}
+
+/** A PR creation plan is executable only after matching claim-scoped approval. */
+export async function executePullRequestPlan(
+  shell: ShellService,
+  plan: PullRequestPlan,
+  approval: PullRequestApproval,
+  signal: AbortSignal,
+  sandboxPolicy?: unknown,
+): Promise<FixedCommandSuccess | FixedCommandFailure> {
+  const denied = authorizePullRequest(plan, approval)
+  if (denied !== undefined) return denied
+  return await executeCommandPlan(shell, plan, signal, sandboxPolicy)
 }
 
 /** A merge plan is executable only after matching claim-scoped human approval. */

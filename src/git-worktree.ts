@@ -12,11 +12,18 @@ import { spawnSync } from 'node:child_process'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 
 export interface WorktreePlan {
+  claimId: string
   baseRoot: string
   worktreeRoot: string
   worktreePath: string
   branch: string
   baseCommit: string
+}
+
+export interface WorktreeApproval {
+  claimId: string
+  scope: 'create-worktree'
+  approvedAt: number
 }
 
 export interface WorktreeProof {
@@ -36,6 +43,12 @@ function branch(value: string): string {
   if (!/^dsh\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(result) || result.includes('..')) {
     throw new TypeError('worktree branch must be a dsh/* branch without path traversal')
   }
+  return result
+}
+
+function claim(value: string): string {
+  const result = text(value, 'queue claim id')
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(result)) throw new TypeError('queue claim id contains unsafe characters')
   return result
 }
 
@@ -65,6 +78,7 @@ function noSymlinkPath(candidate: string, root: string): void {
 
 /** Validate and normalize a worktree plan without touching Git or the filesystem. */
 export function planWorktreeAdd(input: {
+  claimId: string
   baseRoot: string
   worktreeRoot?: string
   worktreePath: string
@@ -75,7 +89,7 @@ export function planWorktreeAdd(input: {
   const worktreeRoot = resolve(input.worktreeRoot === undefined ? resolve(baseRoot, '.worktrees') : text(input.worktreeRoot, 'worktree root'))
   const worktreePath = safeChild(worktreeRoot, resolve(text(input.worktreePath, 'worktree path')), 'worktree path')
   noSymlinkPath(worktreePath, worktreeRoot)
-  return { baseRoot, worktreeRoot, worktreePath, branch: branch(input.branch), baseCommit: commit(input.baseCommit) }
+  return { claimId: claim(input.claimId), baseRoot, worktreeRoot, worktreePath, branch: branch(input.branch), baseCommit: commit(input.baseCommit) }
 }
 
 function git(cwd: string, args: readonly string[]): { stdout: string, stderr: string } {
@@ -119,8 +133,14 @@ export function verifyWorktree(plan: WorktreePlan): WorktreeProof {
  * The branch is intentionally not created here: branch creation is a separate
  * gated operation after the human approves the queue item.
  */
-export function createWorktree(input: Parameters<typeof planWorktreeAdd>[0]): WorktreeProof {
+function authorizeWorktree(plan: WorktreePlan, approval: WorktreeApproval): void {
+  if (approval.scope !== 'create-worktree' || approval.claimId !== plan.claimId) throw new Error('worktree approval does not match this feature claim')
+  if (!Number.isFinite(approval.approvedAt) || approval.approvedAt < 0) throw new Error('worktree approval has no valid timestamp')
+}
+
+export function createWorktree(input: Parameters<typeof planWorktreeAdd>[0], approval: WorktreeApproval): WorktreeProof {
   const plan = planWorktreeAdd(input)
+  authorizeWorktree(plan, approval)
   const root = repoRoot(plan.baseRoot)
   if (!existsSync(resolve(root, '.git'))) throw new Error('base root is not a Git repository')
   git(root, ['rev-parse', '--verify', `${plan.baseCommit}^{commit}`])

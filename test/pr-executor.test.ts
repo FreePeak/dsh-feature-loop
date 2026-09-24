@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { planMerge, planPullRequest } from '../src/pr-gate.ts'
-import { executeCommandPlan, executeMergePlan, type ShellService } from '../src/pr-executor.ts'
+import { executeCommandPlan, executeMergePlan, executePullRequestPlan, type ShellService } from '../src/pr-executor.ts'
 
 function shell(result: { exitCode: number, signal?: string | null, sandbox?: { denied?: boolean } } = { exitCode: 0 }) {
   const requests: Record<string, unknown>[] = []
@@ -40,6 +40,17 @@ test('executes fixed plans through DSH shell with POSIX quoting', async () => {
   assert.equal(h.requests[0]?.workdir, cwd)
   assert.equal((h.requests[0]?.command as string).includes("'/tmp/isolated/body file.md'"), true)
   assert.deepEqual(h.requests[0]?.sandboxPolicy, { workspaceRoot: cwd })
+})
+
+test('PR creation also requires claim-scoped approval', async () => {
+  const h = shell()
+  const plan = prPlan()
+  const denied = await executePullRequestPlan(h.service, plan, { claimId: 'other', scope: 'create-pull-request', approvedAt: 1 }, new AbortController().signal)
+  assert.equal(denied.kind, 'deny')
+  assert.equal(h.requests.length, 0)
+  const allowed = await executePullRequestPlan(h.service, plan, { claimId, scope: 'create-pull-request', approvedAt: 1 }, new AbortController().signal)
+  assert.equal(allowed.kind, 'allow')
+  assert.equal(h.requests.length, 1)
 })
 
 test('nonzero shell results fail closed without raw output', async () => {
