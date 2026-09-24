@@ -27,9 +27,9 @@
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
-import { MessageId } from '@deepseek-ai/dsh-llm'
+import { MessageId, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { LlmCallConfig, UserMessage } from '@deepseek-ai/dsh-llm'
-import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
+import type { PreToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import { LoopBudget } from './budget.ts'
 import type { BudgetSnapshot, UsageReading } from './budget.ts'
 import { ModelLadder, routeLabel } from './routing.ts'
@@ -152,17 +152,13 @@ export interface FeatureLoopPolicy {
   /** The step history the detectors read. */
   history: StepObservation[]
   /**
-   * The tool call observed since the last step boundary, not yet committed to
-   * `history`.
-   *
-   * A tool call is observed at `tools/pre-execute` — where its name and
-   * arguments are finally known — but it belongs to the step that is *currently*
-   * running. The detectors read completed steps, so it is held here and
-   * committed at the next step boundary. Without this the history stays empty
-   * and every detector silently reads nothing, which is exactly the defect the
-   * old fork had with `error-cascade`.
+   * Tool calls observed since the last step boundary, keyed by immutable DSH
+   * call id. A step may dispatch several calls in parallel, so one shared
+   * pending slot would silently drop all but the last observation.
    */
-  pending: { tool: string, argsKey: string, error: boolean } | undefined
+  pending: Map<string, { tool: string, argsKey: string, error: boolean }>
+  /** The step currently allowed to dispatch tools, or `undefined` at a boundary. */
+  currentStep: number | undefined
   /** The last step's judgement, reused by the gate. */
   lastConfidence: number | undefined
   /**
@@ -369,9 +365,35 @@ export function createPolicy(options: CreatePolicyOptions): FeatureLoopPolicy {
     judge: options.judge ?? NO_JUDGE,
     explainer: options.explainer ?? NO_EXPLAINER,
     history: [],
-    pending: undefined,
+    pending: new Map(),
+    currentStep: undefined,
     lastConfidence: undefined,
   }
+}
+
+/**
+ * Commit the active step's authoritative tool results into detector history.
+ *
+ * `tools/result` carries the final outcome for every call, including calls the
+ * approval gate blocked and calls that ran in parallel. Aggregating here keeps
+ * step counting (one model step) separate from call counting (many tool calls).
+ */
+function commitPendingStep(policy: FeatureLoopPolicy, requestedIndex?: number): void {
+  if (policy.currentStep === undefined && policy.pending.size === 0) return
+  const calls = [...policy.pending.values()]
+  const index = policy.currentStep ?? requestedIndex ?? policy.history.length + 1
+  policy.pending.clear()
+  policy.currentStep = undefined
+  policy.history.push({
+    index,
+    tool: calls.length === 0 ? undefined : calls.map(call => call.tool).join('+'),
+    argsKey: calls.length === 0 ? undefined : JSON.stringify(calls.map(call => [call.tool, call.argsKey])),
+    costUSD: 0,
+    error: calls.some(call => call.error),
+  })
+  policy.router.observeStep()
+  if (calls.some(call => call.error)) policy.ladder?.recordFailure()
+  else policy.ladder?.recordSuccess()
 }
 
 /**
@@ -396,22 +418,10 @@ export async function reviewStep(
 }> {
   const notices: string[] = []
 
-  // Commit the previous step's observed tool call before the detectors run, so
-  // they read a complete history. A step that ran no tool still gets an
-  // observation: "a step that did nothing" is itself a signal worth detecting,
-  // and skipping it would let a silent spin loop look like a healthy one.
-  if (step > 1) {
-    const pending = policy.pending
-    policy.history.push({
-      index: step - 1,
-      tool: pending?.tool,
-      argsKey: pending?.argsKey,
-      costUSD: 0,
-      error: pending?.error ?? false,
-    })
-    policy.pending = undefined
-    policy.router.observeStep()
-  }
+  // Commit the previous step's authoritative tool results before the detectors
+  // run. A step that ran no tool still gets an observation: doing nothing is a
+  // signal, and skipping it would hide a silent spin loop.
+  if (step > 1) commitPendingStep(policy, step - 1)
 
   // The snapshot is taken before the stop check so a ceiling stop still
   // reports where the run stood when it was cut — the dashboard's most
@@ -430,6 +440,7 @@ export async function reviewStep(
       budget: snapshot,
     }
   }
+  policy.currentStep = step
   if (verdict?.kind === 'warn') notices.push(budgetWarnText(verdict.reason))
 
   const preparation = prepareReview({
@@ -477,7 +488,11 @@ export function routeForStep(
 ): Partial<LlmCallConfig> | undefined {
   if (policy.ladder === undefined) return undefined
   const decision = policy.ladder.forStep(step, lastStepUSD)
-  return { provider: decision.route.provider, model: decision.route.model }
+  return {
+    ...decision.route.provider === undefined ? {} : { provider: decision.route.provider },
+    model: decision.route.model,
+    ...decision.route.reasoningEffort === undefined ? {} : { reasoningEffort: ReasoningEffortId(decision.route.reasoningEffort) },
+  }
 }
 
 /**
@@ -696,6 +711,7 @@ export function isTurnEnd(event: unknown): { turn: number, reasonKind: string } 
  */
 interface TurnRecordInput {
   session: unknown
+  agent: Agent | undefined
   event: { turn: number, reasonKind: string }
   options: Parameters<typeof createPolicy>[0] & { dashboard?: DashboardConfig }
   policyFor: (agent: Agent | undefined) => FeatureLoopPolicy
@@ -758,9 +774,8 @@ function outcomeOf(reasonKind: string, policy: FeatureLoopPolicy): RunOutcome {
  * @param input - the closed turn and everything the record is built from.
  */
 async function recordTurn(input: TurnRecordInput): Promise<void> {
-  const { session, event, options, policyFor, state, historyPath } = input
+  const { session, agent, event, options, policyFor, state, historyPath } = input
   const runlog = await import('./runlog.ts')
-  const agent = agentOfSession(session)
   const policy = policyFor(agent)
   const snapshot = policy.budget?.snapshot()
   const spec = policy.spec ?? options.spec
@@ -795,30 +810,6 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
   // reader, never thrown — the panel shows a smaller history, not an error.
   const { records, malformed } = runlog.readRecords(historyPath)
   state.setMetrics(summarize(records, { malformed }))
-}
-
-/**
- * The agent behind a session, when the harness can resolve one.
- *
- * `session/event` hands the session, not the agent — but the per-agent policy
- * (budget, spec, history) is keyed by agent. Rather than importing the agents
- * service (a second service injection for one lookup), this reads the session's
- * owner structurally: the harness sets `session.owner`/`session.agentId`
- * depending on the release, and neither is stable enough to depend on. When
- * neither resolves, the record falls back to the agent-less policy — the same
- * fail-closed stance `policyFor` takes for agent-less calls: shared ceilings,
- * honestly labelled, rather than no record at all.
- *
- * ponytail: O(n) scan over the policy map per turn is avoided by NOT caching
- * here at all — the lookup below is O(1) only when the harness exposes the
- * agent directly on the session. Ceiling: when it does not, every turn records
- * against the shared agent-less policy, so per-agent spend splits are lost and
- * concurrent agents' records share one budget's numbers. Upgrade path: inject
- * the `agents` service and resolve `session.id` through it (the
- * `goal-round-driver` precedent: `ctx.agents.get(session.id)`).
- */
-function agentOfSession(_session: unknown): Agent | undefined {
-  return undefined
 }
 
 /**
@@ -1025,6 +1016,10 @@ export function apply(
     }
     return policy
   }
+  const agentForSession = (session: unknown): Agent | undefined => {
+    const agents = (ctx as unknown as { agents?: { get?: (id: string) => Agent | undefined } }).agents
+    return agents?.get?.(sessionIdOf(session))
+  }
 
   // The dashboard is process-wide (one server, one feed), not per agent — it
   // lives here rather than in `createPolicy`, whose policies are per-run.
@@ -1194,27 +1189,21 @@ export function apply(
   // exactly-once delivery is a property of the loop's append, not of this
   // listener.
   const recordedTurns = new Set<string>()
-  // `historyEnabled` narrows `historyPath` to non-empty, but the closure
-  // below cannot see that — so the path is captured once, inside the branch,
-  // rather than asserted at the call site. A `!` here would trade a load-time
-  // guarantee for a reader's trust exercise.
-  const disposeSession = !historyEnabled ? undefined : (() => {
-    const path: string = historyPath
-    return ctx.on('session/event', (session: unknown, event: unknown) => {
-      const end = asTurnEnd(event)
-      if (end === undefined) return
-      const key = `${sessionIdOf(session)}#${String(end.turn)}`
-      if (recordedTurns.has(key)) return
-      recordedTurns.add(key)
-      void recordTurn({ session, event: end, options, policyFor, state, historyPath: path })
-        .catch((error: unknown) => {
-          // A failed append must never fail the turn: the record is
-          // evidence, not control. The feed line says so in the harness's
-          // own words, and the next turn tries again.
-          state.note('note', `run history append failed: ${error instanceof Error ? error.message : String(error)}`)
-        })
-    })
-  })()
+  const path: string = historyPath
+  const disposeSession = ctx.on('session/event', (session: unknown, event: unknown) => {
+    const end = asTurnEnd(event)
+    if (end === undefined) return
+    const agent = agentForSession(session)
+    if (agent !== undefined) commitPendingStep(policyFor(agent))
+    if (!historyEnabled) return
+    const key = `${sessionIdOf(session)}#${String(end.turn)}`
+    if (recordedTurns.has(key)) return
+    recordedTurns.add(key)
+    void recordTurn({ session, agent, event: end, options, policyFor, state, historyPath: path })
+      .catch((error: unknown) => {
+        state.note('note', `run history append failed: ${error instanceof Error ? error.message : String(error)}`)
+      })
+  })
 
   const disposeStep = ctx.on('agent/pre-step', async ({ agent, turn, step }, next) => {
     const policy = policyFor(agent)
@@ -1273,12 +1262,13 @@ export function apply(
 
   const disposeTools = ctx.on(
     'tools/pre-execute',
-    async ({ agent, name: toolName, arguments: rawArgs }: ToolExecution, next: () => Promise<PreToolDecision>) => {
+    async ({ agent, callId, name: toolName, arguments: rawArgs }: ToolExecution, next: () => Promise<PreToolDecision>) => {
       const policy = policyFor(agent)
 
       // Record the call here: this is the only point where the tool name and its
-      // parsed arguments are both known. The step's outcome is filled in below.
-      policy.pending = { tool: toolName, argsKey: argsKey(rawArgs), error: false }
+      // parsed arguments are both known. The immutable call id preserves every
+      // parallel call until `tools/result` supplies the authoritative outcome.
+      policy.pending.set(String(callId), { tool: toolName, argsKey: argsKey(rawArgs), error: false })
 
       const gate = gateForTool(policy, toolName)
       if (gate.kind === 'proceed') return next()
@@ -1286,11 +1276,6 @@ export function apply(
       // The call is blocked either way, and the call is *answered* rather than
       // dropped so the assistant's tool-call block still gets a result and
       // session replay stays valid.
-      //
-      // A blocked call is a step that made no progress, so `error-cascade`
-      // counts it. Treating a block as success would let a repeatedly-blocked
-      // loop read as a healthy one.
-      policy.pending.error = true
       // Only blocks hit the feed: logging every `auto` call would bury the
       // decisions a human opened this page to see.
       state.recordGate(
@@ -1305,10 +1290,20 @@ export function apply(
     },
   )
 
+  const disposeResult = ctx.on(
+    'tools/result',
+    (exec: ToolExecution, result: ToolExecutionResult): undefined => {
+      const pending = policyFor(exec.agent).pending.get(String(exec.callId))
+      if (pending !== undefined) pending.error = result.isError
+      return undefined
+    },
+  )
+
   return () => {
     disposeStep()
     disposeRequest()
     disposeTools()
+    disposeResult()
     disposeSession?.()
     disposeApproval?.()
     if (dashboard !== undefined) void dashboard.stop()

@@ -182,17 +182,9 @@ test('a call with no agent is still gated, not silently delegated', async () => 
 test('the handler is registered on the harness tool-boundary event', async () => {
   const { ctx, registered } = fakeCtx()
   const dispose = apply(ctx as never, { spec: SPEC, dashboard: { enabled: false } })
-  // Registration order follows apply(): the approval answerer is attached
-  // first (it owns the asks), then the session/event recorder, then the
-  // step/request/tool hooks. The answerer is always present now — the in-UI
-  // page is a claimer, and an unwatched ask must still delegate downstream.
-  assert.deepEqual(registered(), [
-    'approval/request',
-    'session/event',
-    'agent/pre-step',
-    'agent/request',
-    'tools/pre-execute',
-  ])
+  // Registration order follows apply(): the session/event recorder is
+  // registered before the step/request/tool hooks.
+  assert.deepEqual(registered(), ['session/event', 'agent/pre-step', 'agent/request', 'tools/pre-execute', 'tools/result'])
   dispose()
 })
 
@@ -211,7 +203,7 @@ test('the dashboard starts by default; enabled:false opts out', async () => {
   }
 })
 
-test('history records by default; history:"" disables it', async () => {
+test('history records by default; history:"" disables only the record append', async () => {
   {
     const { ctx, registered } = fakeCtx()
     const dispose = apply(ctx as never, { spec: SPEC, dashboard: { enabled: false } })
@@ -225,7 +217,9 @@ test('history records by default; history:"" disables it', async () => {
       dashboard: { enabled: false },
       optimize: { history: '' },
     })
-    assert.ok(!registered().includes('session/event'), `registered: ${registered().join(', ')}`)
+    // The lifecycle listener remains for final-step commits; only its
+    // fire-and-forget history append is disabled.
+    assert.ok(registered().includes('session/event'), `registered: ${registered().join(', ')}`)
     dispose()
   }
 })

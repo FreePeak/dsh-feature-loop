@@ -439,11 +439,8 @@ test('with no standalone flag, no server starts but the in-UI answerer does', ()
   // watching. See test/approvals.test.ts for the claim guard itself.
   const { ctx, registered } = fakeCtx()
   const dispose = apply(ctx as never, { spec: SPEC, dashboard: { enabled: false, port: 0 } })
-  assert.ok(
-    registered().includes('approval/request'),
-    'the in-UI page must still be able to claim an ask',
-  )
-  assert.ok(registered().includes('agent/pre-step'), 'and the policies still attach')
+  assert.deepEqual(registered(), ['session/event', 'agent/pre-step', 'agent/request', 'tools/pre-execute', 'tools/result'])
+  assert.ok(!registered().includes('approval/request'), 'disabled dashboard answers nothing')
   dispose()
 })
 
