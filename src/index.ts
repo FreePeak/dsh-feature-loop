@@ -87,22 +87,6 @@ export interface Config {
    */
   dashboard?: DashboardConfig
   /**
-   * Which judge scores review-worthiness, and how to reach it.
-   *
-   * `none` (detectors only) | `chat` (metered) | `laya` (local, free). The
-   * settings page and the status panel both read these keys, so they are part
-   * of the row's public surface rather than a CLI-only extra.
-   */
-  judge?: 'none' | 'chat' | 'laya'
-  /** System One provider base URL. Defaults to `http://127.0.0.1:8091`. */
-  judgeBaseURL?: string
-  /** Model alias the System One provider routes to. Defaults to `laya`. */
-  systemOneModel?: string
-  /** Model the `chat` judge uses. */
-  judgeModel?: string
-  /** Deadline for one judge call, in ms. */
-  judgeTimeoutMs?: number
-  /**
    * The optimization block (`loops`, `derive`, `history`, `judge`,
    * `totalBudgetUSD`). The block is validated at load and forwarded to the
    * plugin, which uses it for exactly what a deployed loop can use: `derive`
@@ -112,6 +96,27 @@ export interface Config {
    * `runRefined`), not to a step waterfall. See `OptimizePolicyOptions`.
    */
   optimize?: OptimizeConfig
+  /**
+   * Which judge scores review-worthiness, and how to reach it.
+   *
+   * `none` (detectors only) | `chat` (metered) | `laya` (local, free). Defaults
+   * to `none`, so an existing row that says nothing keeps its current
+   * detector-only behaviour. Set `laya` to use the local System One sidecar —
+   * point `judgeBaseURL` at a hosted Jev/TypeSafe endpoint and the same wire
+   * carries it, with only the URL and model alias changing.
+   *
+   * The plugin-side twin of the CLI's `judge`/`judgeBaseURL` keys, so one
+   * config file can drive both surfaces.
+   */
+  judge?: 'none' | 'chat' | 'laya'
+  /** System One provider base URL. Defaults to `http://127.0.0.1:8091`. */
+  judgeBaseURL?: string
+  /** Model alias the System One provider routes to. Defaults to `laya`. */
+  systemOneModel?: string
+  /** Model the `chat` judge uses. Defaults to `xiaomi/mimo-v2.5`. */
+  judgeModel?: string
+  /** Deadline for one judge call, in ms. Defaults to 5000. */
+  judgeTimeoutMs?: number
 }
 
 /**
@@ -132,7 +137,7 @@ export const Config: z<Config> = z.object({
   gateMode: z.union([z.const('ask'), z.const('deny')]),
   dashboard: z.any(),
   optimize: z.any(),
-  judge: z.string(),
+  judge: z.union([z.const('none'), z.const('chat'), z.const('laya')]),
   judgeBaseURL: z.string(),
   systemOneModel: z.string(),
   judgeModel: z.string(),
@@ -186,3 +191,13 @@ export default apply
 
 /** Re-exported for callers that hold a policy and want its type. */
 export type { FeatureLoopPolicy as Policy }
+export { FeatureQueue, readQueueEvents, DEFAULT_QUEUE_PATH } from './feature-queue.ts'
+export type { FeatureInput, FeatureItem, FeatureQueueOptions, FeatureStatus } from './feature-queue.ts'
+export { createWorktree, planWorktreeAdd, verifyWorktree } from './git-worktree.ts'
+export type { WorktreeApproval, WorktreePlan, WorktreeProof } from './git-worktree.ts'
+export { authorizeMerge, planMerge, planPullRequest } from './pr-gate.ts'
+export type { CommandPlan, MergeApproval, MergePlan, PullRequestPlan } from './pr-gate.ts'
+export { executeCommandPlan, executeMergePlan, executePullRequestPlan } from './pr-executor.ts'
+export type { ShellService, FixedCommandFailure, FixedCommandSuccess, PullRequestApproval } from './pr-executor.ts'
+export { settleVerifiedQueueItem } from './queue-settlement.ts'
+export type { QueueSettlementFailure, QueueSettlementSuccess } from './queue-settlement.ts'

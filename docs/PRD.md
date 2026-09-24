@@ -1,6 +1,6 @@
 # PRD — `@freepeak/dsh-feature-loop`
 
-**Status:** Phase 1 complete (de-fork executed). Phase 2 not started.
+**Status:** Phase 2 in progress — native DSH goals, verified completion, and durable queue foundations are implemented and tested.
 **Owner:** Linh Doan
 **Last updated:** 2026-09-22
 
@@ -263,10 +263,10 @@ estimate is now **denied** rather than dispatched.
   at versions CI cannot resolve. It is typechecked locally against the prebuilt
   packages. Closing this needs a lockfile, which needs published harness
   versions.
-- **Spend is observed, not metered by the plugin.** `LoopBudget.spend()` must be
-  called with real usage for the cost ceiling to mean anything; the plugin
-  currently reads spend from the budget snapshot rather than pricing each settled
-  attempt from `agent/request` usage. **This is the largest correctness gap.**
+- **Spend is observed per DSH turn.** The plugin prices settled successful and
+  retry attempts from the durable Session log through `TurnRunRegistry`, including
+  route attribution and unpriced-attempt counts. `LoopBudget` remains the
+  standalone runner's policy primitive.
 - **`run_tests` timeouts kill the direct child, not grandchildren** (marked
   `ponytail:` in `tools.ts`; upgrade path is detached spawn + `kill(-pid)`).
 - **The price table is an estimate.** `mimo-v2.5` runs on a subscription plan,
@@ -275,24 +275,57 @@ estimate is now **denied** rather than dispatched.
 
 ---
 
-## 9. Phase 2 (not started)
+## 9. Phase 2 (in progress)
 
-1. **Wire real spend into `LoopBudget`.** Price each settled attempt from the
-   `agent/request` response usage so the cost ceiling is load-bearing rather
-   than decorative. Closes the gap in §8.
-2. **Decide the fate of `routing.ts`.** Either collapse the ladder onto
-   `model-selection` or document why spec-level escalation is distinct.
-3. **Reach `agent/turn-stopping`** so `spec.termination.successCommand` drives
-   termination rather than the runner checking it after each step.
-4. **Test the plugin path.** `src/plugin.ts` has no test today; the policy
-   decisions it calls are covered by `agent-policy.test.ts` (27 tests), but the
-   wiring is not. §7.1 and §7.2 are the evidence that this matters: one wiring
-   bug silently disabled every detector, and another left the gate **fail-open**
-   on the irreversible path. Both were found by reading and by manual
-   verification, not by CI. A fake-context harness driving the three hooks would
-   close this, and is the highest-value remaining work.
-5. **Phase 3 — Laya.** Deploy the `systemone` provider in onegw, switch
-   `--judge laya`.
+1. **Done — real spend.** The plugin binds `TurnRunRegistry` to the live
+   Session, replays it on resume, records final and retry attempts, and writes a
+   non-zero cost to run history. The tiny-budget integration case blocks the
+   second model request.
+2. **Done — native `/loop`.** The command creates a DSH goal through the goal
+   service. The goal-round driver owns continuation; the command never submits a
+   synthetic composer turn.
+3. **Done — verified completion.** `update_goal(action="complete")` is denied
+   before DSH commits it unless the configured verifier exits cleanly. The
+   verifier runs through the DSH shell and effective sandbox workspace.
+4. **Done — integration and HITL evidence.** The real DSH tool pipeline has 16
+   integration cases, including approval, dashboard delegation, human-gated
+   queue/action mutations, native goal creation, final-turn spend, and budget
+   blocking. A live isolated Web profile also completed a native goal with
+   `onegw/execution` and recorded non-zero spend.
+5. **Done — queue and worktree foundation.** `FeatureQueue` provides a durable
+   JSONL log, single-writer locking, fencing claim IDs, campaign reservations,
+   human-waiting transitions, pinned base commits, and symlink-safe admission.
+   `git-worktree.ts` now runs only fixed, shell-free Git commands, creates a
+   detached worktree at the pinned commit, and proves its HEAD and ownership.
+6. **Done — PR and merge DSH executor.** `pr-gate.ts` validates repository,
+   branch, commit, and body-file inputs; constructs fixed shell-free `gh`
+   commands; and `pr-executor.ts` sends them through the DSH sandbox-aware
+   shell service. Both PR creation and merge require claim-scoped human
+   approval; the model cannot settle a queue item directly.
+7. **Done — host settlement bridge.** `queue-settlement.ts` runs a queue
+   item's verification command through DSH shell and settles the campaign
+   reservation only after a clean result. A temporary-repository host-flow
+   test covers queue → worktree → PR plan → verified settlement. Settlement is
+   intentionally not a model tool.
+8. **Done — isolated live action acceptance.** The mounted queue and action
+   tools passed a real isolated Web run on a temporary Git workspace: the model
+   enqueued and claimed `live-actions`, human approvals were clicked, the
+   detached worktree was created, `feature_pr_plan` ran without network access,
+   and the native goal completed. Temporary queue/worktree artifacts were
+   removed. The main profile remains untouched. A queue record is never proof
+   that a PR or merge happened.
+9. **Done — routing decision.** `docs/ROUTING-AUDIT.md` keeps `ModelLadder` as
+   the feature-loop policy layer and DSH model selection as the request
+   mechanism. Collapsing them would remove standalone-runner behavior, duplicate
+   policy, or lose escalation evidence; revisit only after DSH grows equivalent
+   policy hooks.
+
+The queue remains admission/accounting only. The worktree runner creates a
+detached checkout after claim-scoped approval. The PR executor can run fixed
+plans through DSH shell after matching approval, but it is not automatically
+invoked by the queue. Branches, commits, pushes, PRs, and merges remain
+separate command-gated boundaries; queue records are not proof of those
+operations.
 
 ---
 

@@ -1,22 +1,20 @@
 /**
  * The dashboard's React shell, on assistant-ui.
  *
- * Seam:
- *   pending ask  →  tool-call part with approval gate   [approval-bridge]
- *                →  ApprovalCard / composer feedback
- *                →  onRespondToToolApproval
- *                →  `source.respond(...)`
- *
- * The source is INJECTED. It used to be hardwired to this page's own HTTP
- * server (`EventSource('/api/events')` + `POST /api/approvals/:id`), which
- * only worked while the dashboard was a standalone origin. It is now a page
- * inside the DSH UI, fed by the host remote, so the transport is a parameter
- * and the components below are unchanged — the design, meters, badges and
- * workspace tree are exactly the ones that shipped.
+ * Seam (unchanged):
+ *   pending ask (SSE snapshot)
+ *     → tool-call part with approval gate   [approval-bridge]
+ *     → ApprovalCard / composer feedback
+ *     → onRespondToToolApproval
+ *     → POST /api/approvals/:id
  *
  * Layout: stockbroker-style chat thread — assistant messages carry the
  * approval card; a sticky composer accepts free-text response/feedback.
- * Allow once / Reject still settle the gate.
+ * Allow once / Reject still settle the gate; typed text is optional and
+ * rides the same POST as `feedback` when present.
+ *
+ * Bootstrapping: the shell inlines `window.__FL_DASHBOARD_SNAPSHOT__` and
+ * `__FL_DASHBOARD_TOKEN__` before this bundle's script tag.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -100,18 +98,25 @@ function token(): string {
  * POST a decision. Optional `feedback` is free-text from the composer;
  * the server appends it to the activity feed and ignores empty strings.
  */
-async function respondToApproval(
-  source: DashboardSource,
-  response: {
-    approvalId: string
-    approved?: boolean
-    optionId?: string
-    feedback?: string
-  },
-): Promise<void> {
+async function respondToApproval(response: {
+  approvalId: string
+  approved?: boolean
+  optionId?: string
+  feedback?: string
+}): Promise<void> {
   const outcome = outcomeForResponse(response)
   const feedback = response.feedback?.trim() ?? ''
-  await source.respond(response.approvalId, outcome, feedback)
+  const res = await fetch(`/api/approvals/${encodeURIComponent(response.approvalId)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Dashboard-Token': token() },
+    body: JSON.stringify({
+      outcome,
+      ...feedback === '' ? {} : { feedback },
+    }),
+  })
+  if (!res.ok) {
+    throw new Error(`dashboard refused the decision: HTTP ${String(res.status)}`)
+  }
 }
 
 function BriefNodeView({ node }: { node: BriefNode }): React.ReactElement {
@@ -249,12 +254,17 @@ function useSnapshot(source: DashboardSource): DashboardSnapshot | null {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(
     () => window.__FL_DASHBOARD_SNAPSHOT__ ?? null,
   )
+  const stream = useRef<EventSource | null>(null)
   useEffect(() => {
-    let alive = true
-    const tick = (): void => {
-      source.load()
-        .then(next => { if (alive) setSnapshot(next) })
-        .catch(() => { /* a failed read keeps the last good frame */ })
+    if (stream.current !== null) return
+    const es = new EventSource(`/api/events?token=${encodeURIComponent(token())}`)
+    stream.current = es
+    es.onmessage = (ev) => {
+      try {
+        setSnapshot(JSON.parse(ev.data) as DashboardSnapshot)
+      } catch {
+        /* malformed frame must not kill the page */
+      }
     }
     // The Host pushes `featureLoop/changed` and this re-reads on that signal.
     // The interval is a SAFETY NET for a dropped frame, not the mechanism: at
@@ -348,10 +358,7 @@ function AssistantBubble(): React.ReactElement {
   )
 }
 
-function ApprovalThread({ pending, source }: {
-  pending: PendingApproval[]
-  source: DashboardSource
-}): React.ReactElement {
+function ApprovalThread({ pending }: { pending: PendingApproval[] }): React.ReactElement {
   ASK_BY_ID.clear()
   for (const ask of pending) ASK_BY_ID.set(ask.id, ask)
 
@@ -395,7 +402,7 @@ function ApprovalThread({ pending, source }: {
     },
     onRespondToToolApproval: async (options) => {
       const note = draftRef.current.trim()
-      await respondToApproval(source, {
+      await respondToApproval({
         ...options,
         approvalId: options.approvalId,
         ...note === '' ? {} : { feedback: note },
@@ -637,10 +644,7 @@ function WorkspaceTree({
                   {group.sessions.map((session) => {
                     const pending = pendingByRun.get(session.runId) ?? 0
                     const selected = filter === session.runId
-                    // A run's own label — the task a human typed — is what a tree
-                  // row should read as. The id stays as the tooltip, because it
-                  // is what an operator needs when matching a log entry.
-                  const label = session.label ?? session.sessionId ?? session.runId
+                    const label = session.sessionId ?? session.runId
                     return (
                       <li key={session.runId}>
                         <button
@@ -648,7 +652,7 @@ function WorkspaceTree({
                           className={`ws-session${selected ? ' is-active' : ''}${pending > 0 ? ' is-pending' : ''}`}
                           role="treeitem"
                           aria-current={selected ? 'true' : undefined}
-                          title={`${label}\n${session.runId}${session.cwd === undefined ? '' : `\n${session.cwd}`}`}
+                          title={session.cwd ? `${label}\n${session.cwd}` : label}
                           onClick={() => onSelect(session.runId)}
                         >
                           <span className="ws-session-id mono">{shortSessionId(label)}</span>
@@ -831,8 +835,8 @@ function ActivityFeed({
   )
 }
 
-export function DashboardApp({ source }: { source: DashboardSource }): React.ReactElement {
-  const snapshot = useSnapshot(source)
+function App(): React.ReactElement {
+  const snapshot = useSnapshot()
   const [sessionFilter, setSessionFilter] = useState<SessionFilter>('all')
   usePendingBadge(snapshot?.pending.length ?? 0)
 
@@ -866,7 +870,7 @@ export function DashboardApp({ source }: { source: DashboardSource }): React.Rea
             {snapshot.pending.length}
           </span>
         </div>
-        <ApprovalThread pending={snapshot.pending} source={source} />
+        <ApprovalThread pending={snapshot.pending} />
       </section>
       <aside className="rail" aria-label="Grouped runs">
         <GroupedRunPanels snapshot={snapshot} filter={sessionFilter} />
@@ -874,3 +878,6 @@ export function DashboardApp({ source }: { source: DashboardSource }): React.Rea
     </div>
   )
 }
+
+const root = document.getElementById('root')
+if (root !== null) createRoot(root).render(<App />)

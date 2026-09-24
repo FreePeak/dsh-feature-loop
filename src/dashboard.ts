@@ -37,6 +37,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ReviewSignal } from './signals.ts'
+import { clearWatcher, noteWatcher, watcherActive } from './approvals.ts'
 import type { ApprovalRegistry } from './approvals.ts'
 // Type-only on purpose: the measurement modules are authored concurrently by
 // other seams, and type-only imports are erased at runtime, so this module
@@ -119,15 +120,7 @@ export interface RunSnapshot {
   cwd?: string
   /** Basename of `cwd` for workspace grouping; absent when ungrouped. */
   workspaceLabel?: string
-  /**
-   * What this run was asked to do, in the words the human typed.
-   *
-   * Absent until something labels it. `runId` is an agent id, which tells a
-   * person nothing; this is what makes a run in the workspace tree
-   * self-describing. Deliberately a display label, NOT a policy input: the
-   * loop's `goal` still comes from the spec, so a task can never widen its own
-   * ceilings by naming them.
-   */
+  /** Human-entered task label, display-only. */
   label?: string
   /** Last time this run's numbers or meta were touched (epoch ms). */
   updatedAt?: number
@@ -422,30 +415,23 @@ export class DashboardState {
   private readonly feedList: FeedEntry[] = []
   private metricsSummary: MetricsSummary | undefined
   private recommendationList: Recommendation[] | undefined
-  /**
-   * Every change subscriber.
-   *
-   * A Set, not one slot: the standalone server's SSE broadcast is a subscriber,
-   * and so is the Host→browser event bridge. A single slot made the second
-   * `onChange` call SILENTLY REPLACE the first — which is exactly the bug that
-   * would have made the bridge look broken with no error anywhere. A Set cannot
-   * be clobbered by accident, and unsubscribe is the same handle it arrived on.
-   */
   private readonly listeners = new Set<() => void>()
 
   /**
-   * Subscribe to changes. The returned function unsubscribes, so a caller that
-   * owns a lifetime (the server, the event bridge) releases on teardown.
-   *
-   * @param listener - called after every mutation.
-   * @returns an unsubscribe function; calling it twice is a no-op.
+   * Subscribe to changes. Multiple subscribers are retained; the returned
+   * function unsubscribes exactly this listener. Passing `undefined` clears
+   * the legacy single-listener call site.
    */
-  onChange(listener: () => void): () => void {
+  onChange(listener: (() => void) | undefined): () => void {
+    if (listener === undefined) {
+      this.listeners.clear()
+      return () => {}
+    }
     this.listeners.add(listener)
     return () => { this.listeners.delete(listener) }
   }
 
-  /** Drop every subscriber. Only for a process that is going away. */
+  /** Drop every subscriber. */
   clearListeners(): void {
     this.listeners.clear()
   }
@@ -490,11 +476,11 @@ export class DashboardState {
    */
   recordMeta(
     runId: string,
-    meta: { sessionId?: string, cwd?: string, workspaceLabel?: string, label?: string },
+    meta: { sessionId?: string, label?: string, cwd?: string, workspaceLabel?: string },
   ): void {
     const run = this.run(runId)
     if (meta.sessionId !== undefined && meta.sessionId !== '') run.sessionId = meta.sessionId
-    if (meta.label !== undefined && meta.label !== '') run.label = firstLine(meta.label, 120)
+    if (meta.label !== undefined && meta.label !== '') run.label = meta.label.slice(0, 120)
     if (meta.cwd !== undefined && meta.cwd !== '') {
       run.cwd = meta.cwd
       run.workspaceLabel = meta.workspaceLabel ?? workspaceLabelOf(meta.cwd) ?? run.workspaceLabel
@@ -749,7 +735,7 @@ export function startDashboard(
     const frame = `data: ${JSON.stringify(snapshot())}\n\n`
     for (const res of clients) res.write(frame)
   }
-  const unsubscribeBroadcast = state.onChange(broadcast)
+  state.onChange(broadcast)
 
   const server = createServer((req, res) => {
     void route(req, res).catch((error: unknown) => {
@@ -817,6 +803,7 @@ export function startDashboard(
     // Registered before any await: the moment this tab exists, `answer` may
     // claim requests. That single fact is the whole precedence rule.
     clients.add(res)
+    noteWatcher('standalone')
     const keepalive = setInterval(() => res.write(': ping\n\n'), KEEPALIVE_MS)
     keepalive.unref()
     req.on('close', () => {
@@ -825,7 +812,14 @@ export function startDashboard(
       // Last tab gone: pending asks must not hang the run. Failing closed to
       // `unavailable` is the seam's own no-answerer behaviour.
       if (clients.size === 0) {
-        for (const entry of [...pending.values()]) entry.settle('unavailable')
+        clearWatcher('standalone')
+        if (!watcherActive()) {
+          if (ownsItsOwnAsks) {
+            for (const entry of [...pending.values()]) entry.settle('unavailable')
+          } else {
+            for (const entry of registry.pendingSnapshot()) registry.settleApproval(entry.id, 'unavailable')
+          }
+        }
       }
     })
   }
@@ -951,8 +945,13 @@ export function startDashboard(
   const stop = async (): Promise<void> => {
     if (stopped) return
     stopped = true
-    for (const entry of [...pending.values()]) entry.settle('unavailable')
-    unsubscribeBroadcast()
+    clearWatcher('standalone')
+    if (ownsItsOwnAsks) {
+      for (const entry of [...pending.values()]) entry.settle('unavailable')
+    } else if (!watcherActive()) {
+      for (const entry of registry.pendingSnapshot()) registry.settleApproval(entry.id, 'unavailable')
+    }
+    state.onChange(undefined)
     for (const res of clients) res.end()
     clients.clear()
     await new Promise<void>(resolve => {

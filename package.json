@@ -14,6 +14,8 @@
     "./package.json": "./package.json",
     "./remote": "./lib/remote.mjs",
     "./command": "./lib/command.mjs",
+    "./queue": "./lib/queue-tool.mjs",
+    "./actions": "./lib/action-tool.mjs",
     "./client": "./client.js"
   },
   "files": [
@@ -26,9 +28,11 @@
     "assets/mark-light.svg",
     "assets/mark-mono.svg",
     "assets/mark.svg",
+    "bin/dshloop.mjs",
     "client.js",
+    "lib",
     "cordis.patch.yml",
-    "lib/command.mjs",
+    "lib/cli.mjs",
     "lib/index.d.mts",
     "lib/index.mjs",
     "lib/remote.mjs"
@@ -63,7 +67,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsdown src/index.ts src/remote.ts src/command.ts --format esm --out-dir lib",
+    "build": "tsdown src/index.ts src/cli.ts src/remote.ts src/command.ts src/queue-tool.ts src/action-tool.ts --format esm --out-dir lib",
     "test": "node --experimental-strip-types --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "demo": "bash demo/run.sh",
@@ -74,7 +78,7 @@
     "lint:workflows": "actionlint .github/workflows/*.yml",
     "test:integration": "bash test/integration/run.sh",
     "dashboard-bundle": "node web/build.mjs",
-    "prepare": "git config core.hooksPath .githooks"
+    "dshloop": "node bin/dshloop.mjs"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.15.21",
@@ -89,7 +93,7 @@
     "@deepseek-ai/dsh-agent": ">=0.1.0-rc.6",
     "@deepseek-ai/dsh-llm": ">=0.0.1-rc.1",
     "@deepseek-ai/dsh-tools": ">=0.0.1-rc.1",
-    "@deepseek-ai/dsh-typert-protocol": ">=0.1.0-rc.6"
+    "@deepseek-ai/dsh-typert-protocol": ">=0.1.0"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-typert-protocol": "0.1.0-rc.6",
@@ -122,5 +126,8 @@
     "@deepseek-ai/dsh-typert-protocol": {
       "optional": true
     }
+  },
+  "bin": {
+    "dshloop": "./bin/dshloop.mjs"
   }
 }

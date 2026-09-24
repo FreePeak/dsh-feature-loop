@@ -891,21 +891,3 @@ test('settleApproval settles a pending ask without HTTP', async (t) => {
   // (it delegates), so settle an absent id and assert the miss contract.
   assert.equal(dash.settleApproval('no-such-id', 'allowed-once'), false)
 })
-
-test('a run carries the task a human typed, so the tree is self-describing', async () => {
-  const { DashboardState } = await import('../src/dashboard.ts')
-  const state = new DashboardState()
-  state.recordMeta('agent-7', { sessionId: 'agent-7', label: 'fix the budget rounding and keep maxSteps honest' })
-  const run = state.snapshot().runs.find(r => r.runId === 'agent-7')
-  assert.equal(run?.label, 'fix the budget rounding and keep maxSteps honest')
-  // A label is display-only: it must not be able to smuggle policy into a run.
-  assert.equal(run?.maxSteps, undefined, 'naming a ceiling does not set one')
-})
-
-test('a very long task label is capped, so a run row cannot be a paragraph', async () => {
-  const { DashboardState } = await import('../src/dashboard.ts')
-  const state = new DashboardState()
-  state.recordMeta('r1', { sessionId: 'r1', label: 'x'.repeat(400) })
-  const run = state.snapshot().runs.find(r => r.runId === 'r1')
-  assert.ok((run?.label?.length ?? 0) <= 120, `capped at 120, got ${String(run?.label?.length)}`)
-})

@@ -27,9 +27,9 @@
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
-import { MessageId } from '@deepseek-ai/dsh-llm'
+import { CONTEXT_SUMMARY_MAX_CHARS, MessageId, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { LlmCallConfig, UserMessage } from '@deepseek-ai/dsh-llm'
-import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
+import type { PreToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import { LoopBudget } from './budget.ts'
 import type { BudgetSnapshot, UsageReading } from './budget.ts'
 import { ModelLadder, routeLabel } from './routing.ts'
@@ -39,7 +39,6 @@ import { detectSignals } from './signals.ts'
 import type { ReviewSignal, StepObservation } from './signals.ts'
 import { parseDashboardConfig, pendingIdFor, startDashboard, DashboardState } from './dashboard.ts'
 import { createApprovalRegistry, clearWatcher, watcherActive } from './approvals.ts'
-import { createChangeEmitter } from './change-event.ts'
 import type { ApprovalRegistry } from './approvals.ts'
 import type { ApprovalOutcome, ApprovalQuestion, BriefNode, DashboardConfig, DashboardHandle, DashboardSnapshot } from './dashboard.ts'
 import { prepareReview, resolveReversibility } from './agent-policy.ts'
@@ -47,8 +46,8 @@ import { validateSpec } from './spec.ts'
 import type { LoopSpec } from './spec.ts'
 import type { OptimizeConfig } from './spec.ts'
 import { NO_JUDGE, OnegwJudge } from './laya.ts'
-import { createChatJudge } from './judge.ts'
 import type { Judge } from './laya.ts'
+import { createChatJudge } from './judge.ts'
 import { createChatExplainer, NO_EXPLAINER } from './explainer.ts'
 import type { BriefInput, Explainer } from './explainer.ts'
 import { normalizeBrief } from './brief.ts'
@@ -56,6 +55,10 @@ import { createOnegwClient } from './llm.ts'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { TurnRunRegistry, turnBudgetVerdict } from './turn-ledger.ts'
+import type { TurnRunSnapshot } from './turn-ledger.ts'
+import { createLoopObjective, verifyLoopCompletion } from './goal-loop.ts'
+import type { LoopVerificationResult } from './goal-loop.ts'
 import { budgetStopText, budgetWarnText, escalationText, reviewText } from './messages.ts'
 // Type-only: `summarize` reads data, never the disk, so the module ships no
 // fs imports into the plugin's graph (the same stance `metrics.ts` documents
@@ -100,6 +103,38 @@ declare module '@deepseek-ai/cordis' {
 }
 
 /**
+ * This plugin's own message-source kind.
+ *
+ * The harness's `MessageSourceMap` is a merge-extensible sum type where **each
+ * producer declares its own `kind` in its own module, and there is deliberately
+ * no shared catch-all `plugin` kind**. The v4 session format enforces that at
+ * the log boundary: `session-format-v3-to-v4/src/message-sources.ts` refuses
+ * `source.kind === 'plugin'` outright as a retired wrapper, and a turn whose
+ * message carries one fails with
+ *
+ *   format v4 message requires a producer-owned source kind
+ *
+ * which is a hard turn failure, not a warning. So the attribution below is not
+ * decoration: without it, every notice this plugin injects breaks the session.
+ *
+ * `form: 'notice'` is the other half — it tells consumers *what kind of thing*
+ * this is (a one-off account of something that just happened, superseding
+ * nothing), which is independent of who produced it.
+ */
+export interface FeatureLoopMessageSource {
+  readonly kind: 'feature-loop'
+  /** One-line account, shown without expanding the row. Bounded by the harness. */
+  readonly form: 'notice'
+  readonly summary: string
+}
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'feature-loop': FeatureLoopMessageSource
+  }
+}
+
+/**
  * Wrap notice text as a plugin-sourced user message.
  *
  * The notices reach both the model and the human reading the transcript, which
@@ -114,7 +149,28 @@ function notice(text: string): UserMessage {
     id: MessageId(randomUUID()),
     role: 'user',
     content: [{ type: 'text', text }],
-    source: { kind: 'plugin', plugin: name },
+    source: featureLoopSource(text),
+  }
+}
+
+/**
+ * Build this plugin's message source.
+ *
+ * Exported so the invariant can be asserted directly: a test that had to go
+ * through a live agent hook to see this object is a test nobody runs, and this
+ * exact shape once broke every session it touched.
+ *
+ * @param text - the notice text.
+ * @returns the producer-owned source for one notice.
+ */
+export function featureLoopSource(text: string): FeatureLoopMessageSource {
+  return {
+    kind: 'feature-loop',
+    form: 'notice',
+    // The harness bounds the durable summary itself; truncating here keeps the
+    // row honest about what it holds rather than relying on a downstream clip
+    // that would silently differ from the transcript.
+    summary: text.replace(/\s+/g, ' ').slice(0, CONTEXT_SUMMARY_MAX_CHARS),
   }
 }
 
@@ -129,6 +185,8 @@ export interface FeatureLoopPolicy {
   /** The spec, when the deployment configured one. */
   spec: LoopSpec | undefined
   budget: LoopBudget | undefined
+  /** Exact DSH turn ledger, bound to the live agent's Session on first use. */
+  runs: TurnRunRegistry | undefined
   /**
    * Session-log cursor: the first seq this policy has not yet priced into
    * `budget`.
@@ -152,17 +210,13 @@ export interface FeatureLoopPolicy {
   /** The step history the detectors read. */
   history: StepObservation[]
   /**
-   * The tool call observed since the last step boundary, not yet committed to
-   * `history`.
-   *
-   * A tool call is observed at `tools/pre-execute` — where its name and
-   * arguments are finally known — but it belongs to the step that is *currently*
-   * running. The detectors read completed steps, so it is held here and
-   * committed at the next step boundary. Without this the history stays empty
-   * and every detector silently reads nothing, which is exactly the defect the
-   * old fork had with `error-cascade`.
+   * Tool calls observed since the last step boundary, keyed by immutable DSH
+   * call id. A step may dispatch several calls in parallel, so one shared
+   * pending slot would silently drop all but the last observation.
    */
-  pending: { tool: string, argsKey: string, error: boolean } | undefined
+  pending: Map<string, { tool: string, argsKey: string, error: boolean }>
+  /** The step currently allowed to dispatch tools, or `undefined` at a boundary. */
+  currentStep: number | undefined
   /** The last step's judgement, reused by the gate. */
   lastConfidence: number | undefined
   /**
@@ -214,6 +268,40 @@ function argsKey(args: unknown): string {
 function runIdOf(agent: Agent | undefined): string {
   const id = agent === undefined ? undefined : (agent as { readonly id?: unknown }).id
   return typeof id === 'string' && id !== '' ? id : 'agentless'
+}
+
+/** Bind and replay the exact per-turn ledger for one live DSH Session. */
+function bindRunLedger(policy: FeatureLoopPolicy, agent: Agent | undefined): void {
+  if (agent === undefined || policy.spec === undefined || policy.runs !== undefined) return
+  const session = (agent as { session?: { id?: unknown, snapshotEvents?: () => readonly unknown[] } }).session
+  if (session === undefined) return
+  const sessionId = session.id
+  if (typeof sessionId !== 'string' || sessionId === '' || typeof session.snapshotEvents !== 'function') return
+  const runs = new TurnRunRegistry({
+    sessionId,
+    ...policy.spec.prices === undefined ? {} : { prices: policy.spec.prices },
+    ...policy.spec.unpricedFallback === undefined ? {} : { unpricedFallback: policy.spec.unpricedFallback },
+  })
+  runs.rebuild(session.snapshotEvents())
+  policy.runs = runs
+}
+
+/** Project the current exact DSH turn into the policy's budget view. */
+function budgetSnapshotOf(policy: FeatureLoopPolicy): BudgetSnapshot | undefined {
+  const run = policy.runs?.current()
+  if (run === undefined) return policy.budget?.snapshot()
+  const budgetUSD = policy.spec?.costBudgetUSD ?? 0
+  return {
+    steps: run.steps,
+    spentUSD: run.spentUSD,
+    budgetUSD,
+    fraction: budgetUSD === 0 ? Number.POSITIVE_INFINITY : run.spentUSD / budgetUSD,
+    unpricedSteps: run.unpricedAttempts,
+    byRoute: Object.fromEntries(Object.entries(run.byRoute).map(([route, row]) => [
+      route,
+      { steps: row.attempts, usd: row.usd },
+    ])),
+  }
 }
 
 /**
@@ -361,6 +449,7 @@ export function createPolicy(options: CreatePolicyOptions): FeatureLoopPolicy {
   return {
     spec,
     budget,
+    runs: undefined,
     pricedThroughSeq: undefined,
     ladder,
     router,
@@ -369,9 +458,35 @@ export function createPolicy(options: CreatePolicyOptions): FeatureLoopPolicy {
     judge: options.judge ?? NO_JUDGE,
     explainer: options.explainer ?? NO_EXPLAINER,
     history: [],
-    pending: undefined,
+    pending: new Map(),
+    currentStep: undefined,
     lastConfidence: undefined,
   }
+}
+
+/**
+ * Commit the active step's authoritative tool results into detector history.
+ *
+ * `tools/result` carries the final outcome for every call, including calls the
+ * approval gate blocked and calls that ran in parallel. Aggregating here keeps
+ * step counting (one model step) separate from call counting (many tool calls).
+ */
+function commitPendingStep(policy: FeatureLoopPolicy, requestedIndex?: number): void {
+  if (policy.currentStep === undefined && policy.pending.size === 0) return
+  const calls = [...policy.pending.values()]
+  const index = policy.currentStep ?? requestedIndex ?? policy.history.length + 1
+  policy.pending.clear()
+  policy.currentStep = undefined
+  policy.history.push({
+    index,
+    tool: calls.length === 0 ? undefined : calls.map(call => call.tool).join('+'),
+    argsKey: calls.length === 0 ? undefined : JSON.stringify(calls.map(call => [call.tool, call.argsKey])),
+    costUSD: 0,
+    error: calls.some(call => call.error),
+  })
+  policy.router.observeStep()
+  if (calls.some(call => call.error)) policy.ladder?.recordFailure()
+  else policy.ladder?.recordSuccess()
 }
 
 /**
@@ -396,32 +511,24 @@ export async function reviewStep(
 }> {
   const notices: string[] = []
 
-  // Commit the previous step's observed tool call before the detectors run, so
-  // they read a complete history. A step that ran no tool still gets an
-  // observation: "a step that did nothing" is itself a signal worth detecting,
-  // and skipping it would let a silent spin loop look like a healthy one.
-  if (step > 1) {
-    const pending = policy.pending
-    policy.history.push({
-      index: step - 1,
-      tool: pending?.tool,
-      argsKey: pending?.argsKey,
-      costUSD: 0,
-      error: pending?.error ?? false,
-    })
-    policy.pending = undefined
-    policy.router.observeStep()
-  }
+  // Commit the previous step's authoritative tool results before the detectors
+  // run. A step that ran no tool still gets an observation: doing nothing is a
+  // signal, and skipping it would hide a silent spin loop.
+  if (step > 1) commitPendingStep(policy, step - 1)
 
   // The snapshot is taken before the stop check so a ceiling stop still
   // reports where the run stood when it was cut — the dashboard's most
   // interesting frame is the one at the moment of stopping.
-  const snapshot = policy.budget?.snapshot()
-  const verdict = policy.budget?.verdict(step)
+  const run = policy.runs?.current()
+  const snapshot = budgetSnapshotOf(policy)
+  const verdict = run === undefined || policy.spec === undefined
+    ? policy.budget?.verdict(step)
+    : turnBudgetVerdict(policy.spec, run, step)
 
   // A ceiling is the one thing that stops the run rather than annotating it:
   // continuing would spend money the deployment already said it would not.
   if (verdict?.kind === 'stop') {
+    policy.runs?.markCurrentStop(verdict.reason)
     return {
       decision: { kind: 'reject', reason: verdict.reason } as PreStepDecision,
       notices: [budgetStopText(verdict.reason)],
@@ -430,6 +537,7 @@ export async function reviewStep(
       budget: snapshot,
     }
   }
+  policy.currentStep = step
   if (verdict?.kind === 'warn') notices.push(budgetWarnText(verdict.reason))
 
   const preparation = prepareReview({
@@ -477,7 +585,11 @@ export function routeForStep(
 ): Partial<LlmCallConfig> | undefined {
   if (policy.ladder === undefined) return undefined
   const decision = policy.ladder.forStep(step, lastStepUSD)
-  return { provider: decision.route.provider, model: decision.route.model }
+  return {
+    ...decision.route.provider === undefined ? {} : { provider: decision.route.provider },
+    model: decision.route.model,
+    ...decision.route.reasoningEffort === undefined ? {} : { reasoningEffort: ReasoningEffortId(decision.route.reasoningEffort) },
+  }
 }
 
 /**
@@ -527,6 +639,48 @@ export function gateForTool(
   return policy.gateMode === 'deny'
     ? { kind: 'deny', reason }
     : { kind: 'ask', reason }
+}
+
+interface LoopShellService {
+  resolve(request: Record<string, unknown>): unknown
+  execute(spec: unknown): Promise<{ result(): Promise<LoopVerificationResult> }>
+}
+
+interface LoopSandboxPolicyService {
+  resolve(input: { session: unknown }): { workspaceRoot?: string } | undefined
+}
+
+/** Verify `update_goal complete` before DSH commits the goal transition. */
+async function verifyGoalCompletion(
+  ctx: Context,
+  agent: Agent | undefined,
+  execution: ToolExecution,
+): Promise<{ kind: 'deny', reason: string } | undefined> {
+  const command = currentLoopVerifier()
+  if (command === undefined) {
+    return { kind: 'deny', reason: 'Completion denied: no independent verifier is configured.' }
+  }
+  const get = (ctx as unknown as { get?: (key: string) => unknown }).get
+  const shell = get?.call(ctx, 'shell') as LoopShellService | undefined
+  if (shell === undefined) {
+    return { kind: 'deny', reason: 'Completion denied: the DSH shell service is unavailable.' }
+  }
+  const session = (agent as { session?: { header?: { cwd?: string } } } | undefined)?.session
+  const sandbox = get?.call(ctx, 'sandboxPolicy') as LoopSandboxPolicyService | undefined
+  const policy = session === undefined ? undefined : sandbox?.resolve({ session })
+  const workdir = policy?.workspaceRoot ?? session?.header?.cwd
+  try {
+    const running = await shell.execute(shell.resolve({
+      command,
+      ...workdir === undefined ? {} : { workdir },
+      signal: execution.signal,
+      ...policy === undefined ? {} : { sandboxPolicy: policy },
+    }))
+    const decision = verifyLoopCompletion(await running.result())
+    return decision.kind === 'deny' ? decision : undefined
+  } catch {
+    return { kind: 'deny', reason: 'Completion denied: verification infrastructure failed.' }
+  }
 }
 
 /**
@@ -696,6 +850,7 @@ export function isTurnEnd(event: unknown): { turn: number, reasonKind: string } 
  */
 interface TurnRecordInput {
   session: unknown
+  agent: Agent | undefined
   event: { turn: number, reasonKind: string }
   options: Parameters<typeof createPolicy>[0] & { dashboard?: DashboardConfig }
   policyFor: (agent: Agent | undefined) => FeatureLoopPolicy
@@ -718,19 +873,11 @@ interface TurnRecordInput {
  * @param policy - the agent's policy, for the budget verdict when present.
  * @returns the run outcome to record.
  */
-function outcomeOf(reasonKind: string, policy: FeatureLoopPolicy): RunOutcome {
-  if (reasonKind === 'aborted') return 'aborted'
+function outcomeOf(reasonKind: string, run?: TurnRunSnapshot): RunOutcome {
+  if (reasonKind === 'aborted' || reasonKind === 'interrupted') return 'aborted'
   if (reasonKind === 'error') return 'error'
+  if (run?.stopReason !== undefined) return 'budget-stop'
   if (reasonKind === 'blocked') return 'blocked'
-  // `completed`, `max-tokens` and `interrupted` all say the transport closed
-  // the turn without refusing it. Whether the loop *succeeded* is then a
-  // question for the ceilings: a turn the harness calls completed that spent
-  // past its budget is a budget-stop in every sense that matters to the next
-  // derivation. With no budget configured there is no ceiling to have hit, so
-  // `completed` reads as goal-met only in the literal harness sense — the
-  // loop's own success check lives in the CLI runner, not in this hook.
-  const spent = policy.budget?.snapshot()
-  if (spent !== undefined && policy.budget?.verdict(spent.steps).kind === 'stop') return 'budget-stop'
   if (reasonKind === 'completed') return 'goal-met'
   return 'model-stop'
 }
@@ -758,28 +905,30 @@ function outcomeOf(reasonKind: string, policy: FeatureLoopPolicy): RunOutcome {
  * @param input - the closed turn and everything the record is built from.
  */
 async function recordTurn(input: TurnRecordInput): Promise<void> {
-  const { session, event, options, policyFor, state, historyPath } = input
+  const { session, agent, event, options, policyFor, state, historyPath } = input
   const runlog = await import('./runlog.ts')
-  const agent = agentOfSession(session)
   const policy = policyFor(agent)
-  const snapshot = policy.budget?.snapshot()
+  const run = policy.runs?.get(event.turn) ?? policy.runs?.current()
   const spec = policy.spec ?? options.spec
   const now = Date.now()
-  const steps = snapshot?.steps ?? 0
+  const steps = run?.steps ?? 0
   const record: RunRecord = {
-    runId: sessionIdOf(session),
+    runId: `${sessionIdOf(session)}#${String(event.turn)}`,
     startedAt: now,
     endedAt: now,
     pass: 1,
     passes: 1,
     taskKey: spec === undefined ? 'none' : runlog.taskKeyOf(spec.goal),
-    outcome: outcomeOf(event.reasonKind, policy),
+    outcome: outcomeOf(event.reasonKind, run),
     steps,
     maxSteps: spec?.maxSteps ?? 0,
-    costUSD: snapshot?.spentUSD ?? 0,
+    costUSD: run?.spentUSD ?? 0,
     budgetUSD: spec?.costBudgetUSD ?? 0,
-    unpricedSteps: snapshot?.unpricedSteps ?? 0,
-    byRoute: snapshot === undefined ? {} : { ...snapshot.byRoute },
+    unpricedSteps: run?.unpricedAttempts ?? 0,
+    byRoute: run === undefined ? {} : Object.fromEntries(Object.entries(run.byRoute).map(([route, row]) => [
+      route,
+      { steps: row.attempts, usd: row.usd },
+    ])),
     stepLatencyMs: [],
     wallMs: 0,
     latencyKind: 'round-trip',
@@ -795,30 +944,6 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
   // reader, never thrown — the panel shows a smaller history, not an error.
   const { records, malformed } = runlog.readRecords(historyPath)
   state.setMetrics(summarize(records, { malformed }))
-}
-
-/**
- * The agent behind a session, when the harness can resolve one.
- *
- * `session/event` hands the session, not the agent — but the per-agent policy
- * (budget, spec, history) is keyed by agent. Rather than importing the agents
- * service (a second service injection for one lookup), this reads the session's
- * owner structurally: the harness sets `session.owner`/`session.agentId`
- * depending on the release, and neither is stable enough to depend on. When
- * neither resolves, the record falls back to the agent-less policy — the same
- * fail-closed stance `policyFor` takes for agent-less calls: shared ceilings,
- * honestly labelled, rather than no record at all.
- *
- * ponytail: O(n) scan over the policy map per turn is avoided by NOT caching
- * here at all — the lookup below is O(1) only when the harness exposes the
- * agent directly on the session. Ceiling: when it does not, every turn records
- * against the shared agent-less policy, so per-agent spend splits are lost and
- * concurrent agents' records share one budget's numbers. Upgrade path: inject
- * the `agents` service and resolve `session.id` through it (the
- * `goal-round-driver` precedent: `ctx.agents.get(session.id)`).
- */
-function agentOfSession(_session: unknown): Agent | undefined {
-  return undefined
 }
 
 /**
@@ -941,6 +1066,79 @@ function readCredentialsKey(): string | undefined {
   return match?.[2]
 }
 
+/** Default System One endpoint: the shared Laya sidecar on this machine. */
+const DEFAULT_JUDGE_BASE_URL = 'http://127.0.0.1:8091'
+
+/** Default System One model alias. */
+const DEFAULT_SYSTEMONE_MODEL = 'laya'
+
+/** How a deployed plugin picks its judge, from the patch row. */
+export interface JudgeConfig {
+  /** `none` (detectors only) | `chat` (metered) | `laya` (local, free). */
+  judge?: 'none' | 'chat' | 'laya'
+  /** System One base URL — Laya, or hosted Jev/TypeSafe on the same wire. */
+  judgeBaseURL?: string
+  /** Model alias the System One provider routes to. */
+  systemOneModel?: string
+  /** Model the `chat` judge uses. */
+  judgeModel?: string
+  /** Deadline for one judge call, in ms. Defaults to 5000. */
+  judgeTimeoutMs?: number
+}
+
+/**
+ * Build the judge a deployment configured.
+ *
+ * Before this existed the plugin hardcoded `NO_JUDGE`, so a profile could
+ * configure `judge: laya`, see no error, and get detector-only reviews forever
+ * — a silent no-op, which is the failure mode this repo's config blocks
+ * otherwise refuse to allow. Now the kind is read and the client is real.
+ *
+ * `laya` needs nothing but a reachable sidecar, so it is built optimistically:
+ * `OnegwJudge` latches itself off after one failed call and reports the reason
+ * rather than stalling every step, so an unreachable Laya costs one timeout and
+ * then degrades to the detectors — the documented posture in `laya.ts`.
+ *
+ * `chat` costs money per judged step, so it fails at *load* when no gateway key
+ * is present, the same rule the brief explainer follows: a configured judge
+ * that silently never runs is worse than a loud refusal to start.
+ *
+ * @param config - the judge fields from the patch row.
+ * @returns the judge, and a label naming which one for the dashboard's status.
+ * @throws Error when `chat` was asked for with no reachable key.
+ */
+export function resolveJudge(config: JudgeConfig): { judge: Judge, label: string } {
+  const kind = config.judge ?? 'none'
+  if (kind === 'none') return { judge: NO_JUDGE, label: 'none (detectors only)' }
+  if (kind === 'laya') {
+    const baseURL = config.judgeBaseURL ?? process.env.SYSTEMONE_BASE_URL ?? DEFAULT_JUDGE_BASE_URL
+    const model = config.systemOneModel ?? process.env.SYSTEMONE_MODEL ?? DEFAULT_SYSTEMONE_MODEL
+    return {
+      judge: new OnegwJudge({ baseURL, model, timeoutMs: config.judgeTimeoutMs ?? 5_000 }),
+      label: `systemone (${model} @ ${baseURL})`,
+    }
+  }
+  const apiKey = process.env.ONEGW_API_KEY ?? process.env.ONEGE_API_KEY ?? readCredentialsKey()
+  if (apiKey === undefined) {
+    throw new Error(
+      'judge is "chat" but no gateway key was found: set ONEGW_API_KEY (or ONEGE_API_KEY) '
+      + 'in the environment, or add it to ~/.dsh/.credentials.yaml. '
+      + 'Use judge: laya for a local judge that needs no key, or judge: none for detectors only.',
+    )
+  }
+  const model = config.judgeModel ?? 'xiaomi/mimo-v2.5'
+  return {
+    judge: createChatJudge({
+      llm: createOnegwClient({
+        baseURL: process.env.ONEGE_BASE_URL ?? 'http://127.0.0.1:8080/v1',
+        apiKey,
+      }),
+      model,
+    }),
+    label: `chat (${model})`,
+  }
+}
+
 /**
  * Build the brief explainer from the dashboard's `brief:` row, or return
  * `NO_EXPLAINER` when briefs are off.
@@ -972,6 +1170,20 @@ function resolveBriefExplainer(brief: DashboardConfig['brief']): Explainer {
     timeoutMs: brief.timeoutMs,
   })
 }
+
+let loopVerifierCommand: string | undefined
+
+/** Configure the process-wide verifier used by the separate `/loop` command row. */
+export function configureLoopVerifier(command: string | undefined): void {
+  const trimmed = command?.trim()
+  loopVerifierCommand = trimmed === '' ? undefined : trimmed
+}
+
+/** Read the verifier currently published by the feature-loop policy row. */
+export function currentLoopVerifier(): string | undefined {
+  return loopVerifierCommand
+}
+
 export const name = 'feature-loop'
 
 /** The services this plugin reads. */
@@ -992,6 +1204,7 @@ export function apply(
   ctx: Context,
   options: Parameters<typeof createPolicy>[0] & { dashboard?: DashboardConfig, rowConfig?: Record<string, unknown> } = {},
 ): () => void {
+  configureLoopVerifier(options.spec?.termination.successCommand)
   const policies = new WeakMap<Agent, FeatureLoopPolicy>()
   const fresh = (): FeatureLoopPolicy => createPolicy(options)
   /**
@@ -1021,9 +1234,14 @@ export function apply(
     let policy = policies.get(agent)
     if (policy === undefined) {
       policy = fresh()
+      bindRunLedger(policy, agent)
       policies.set(agent, policy)
     }
     return policy
+  }
+  const agentForSession = (session: unknown): Agent | undefined => {
+    const agents = (ctx as unknown as { agents?: { get?: (id: string) => Agent | undefined } }).agents
+    return agents?.get?.(sessionIdOf(session))
   }
 
   // The dashboard is process-wide (one server, one feed), not per agent — it
@@ -1036,18 +1254,6 @@ export function apply(
   // keeps working either way — the answerer claims a request only while a
   // dashboard tab is actually connected.
   const state = new DashboardState()
-  // Bridge every state change to the browser as one coalesced event, so the
-  // dashboard re-reads on change instead of polling. Returns an unsubscribe;
-  // released with the plugin so a reload never leaves a listener behind.
-  // Guarded: a context without `emit` (a narrow test double, or a host that
-  // mounts the policies without the event surface) must not crash on every
-  // state change. A missed event degrades to the client's safety-net poll,
-  // which is the right failure; a thrown event kills the run.
-  const emitChanged = typeof (ctx as { emit?: unknown }).emit === 'function'
-    ? () => { (ctx as unknown as { emit(name: 'featureLoop/changed'): void }).emit('featureLoop/changed') }
-    : undefined
-  const notifyChanged = emitChanged === undefined ? () => undefined : createChangeEmitter(emitChanged)
-  const unsubscribeChanged = state.onChange(notifyChanged)
   // Validate even when the dashboard is off: a bad field is a typo someone
   // will flip `enabled: true` on later, and it must fail at load, then —
   // not silently refuse to bind. `startDashboard` re-parses below; the
@@ -1066,7 +1272,7 @@ export function apply(
     hasWatcher: () => watcherActive(),
   })
   const dashboard = dashboardConfig.standalone === true
-    ? startDashboard({ ...dashboardConfig, answers: false, enabled: true }, state, registry)
+    ? startDashboard({ ...dashboardConfig, enabled: true }, state, registry)
     : undefined
   // Publish the live state for the remote row (`feature-loop-remote`) to
   // serve the in-UI dashboard page. Published unconditionally: the in-UI page
@@ -1085,11 +1291,6 @@ export function apply(
       }
     },
     pendingApprovals: () => registry.pendingSnapshot(),
-    // A run's name is the task a human typed, so the workspace tree lists runs
-    // someone can recognise instead of agent ids.
-    labelRun: (sessionId: string, task: string): void => {
-      state.recordMeta(sessionId, { sessionId, label: task })
-    },
     answers: () => dashboardConfig.answers ?? true,
     settleApproval: (id: string, outcome: 'allowed-once' | 'rejected', feedback?: string): boolean =>
       registry.settleApproval(id, outcome, feedback),
@@ -1194,27 +1395,43 @@ export function apply(
   // exactly-once delivery is a property of the loop's append, not of this
   // listener.
   const recordedTurns = new Set<string>()
-  // `historyEnabled` narrows `historyPath` to non-empty, but the closure
-  // below cannot see that — so the path is captured once, inside the branch,
-  // rather than asserted at the call site. A `!` here would trade a load-time
-  // guarantee for a reader's trust exercise.
-  const disposeSession = !historyEnabled ? undefined : (() => {
-    const path: string = historyPath
-    return ctx.on('session/event', (session: unknown, event: unknown) => {
-      const end = asTurnEnd(event)
-      if (end === undefined) return
-      const key = `${sessionIdOf(session)}#${String(end.turn)}`
-      if (recordedTurns.has(key)) return
-      recordedTurns.add(key)
-      void recordTurn({ session, event: end, options, policyFor, state, historyPath: path })
-        .catch((error: unknown) => {
-          // A failed append must never fail the turn: the record is
-          // evidence, not control. The feed line says so in the harness's
-          // own words, and the next turn tries again.
-          state.note('note', `run history append failed: ${error instanceof Error ? error.message : String(error)}`)
-        })
-    })
-  })()
+  const path: string = historyPath
+  const recordClosedTurn = (session: unknown, agent: Agent | undefined, end: { turn: number, reasonKind: string }): void => {
+    if (!historyEnabled) return
+    const key = `${sessionIdOf(session)}#${String(end.turn)}`
+    if (recordedTurns.has(key)) return
+    recordedTurns.add(key)
+    void recordTurn({ session, agent, event: end, options, policyFor, state, historyPath: path })
+      .catch((error: unknown) => {
+        state.note('note', `run history append failed: ${error instanceof Error ? error.message : String(error)}`)
+      })
+  }
+  const eventContext = (ctx as unknown as { root?: Context }).root ?? ctx
+  const disposeSession = eventContext.on('session/event', (session: unknown, event: unknown) => {
+    const agent = agentForSession(session)
+    const policy = agent === undefined ? undefined : policyFor(agent)
+    policy?.runs?.consume(event)
+    const end = asTurnEnd(event)
+    if (end === undefined) return
+    if (policy !== undefined) commitPendingStep(policy)
+    recordClosedTurn(session, agent, end)
+  })
+  // Session events are scope-owned in a Web profile. The agent's idle boundary
+  // is global enough for the policy fiber and always follows the turn/end append.
+  const disposeStatus = ctx.on('agent/status', ({ agent, status }: { agent: Agent, status: string }): void => {
+    if (status !== 'idle') return
+    const session = (agent as { session?: { snapshotEvents?: () => readonly unknown[] } }).session
+    if (typeof session?.snapshotEvents !== 'function') return
+    const events = session.snapshotEvents()
+    const end = asTurnEnd(events.findLast(event => (event as { type?: unknown } | undefined)?.type === 'turn/end'))
+    if (end === undefined) return
+    const policy = policyFor(agent)
+    const priorStop = policy.runs?.get(end.turn)?.stopReason
+    policy.runs?.rebuild(events)
+    if (priorStop !== undefined) policy.runs?.markCurrentStop(priorStop)
+    commitPendingStep(policy)
+    recordClosedTurn(agent.session, agent, end)
+  })
 
   const disposeStep = ctx.on('agent/pre-step', async ({ agent, turn, step }, next) => {
     const policy = policyFor(agent)
@@ -1273,12 +1490,25 @@ export function apply(
 
   const disposeTools = ctx.on(
     'tools/pre-execute',
-    async ({ agent, name: toolName, arguments: rawArgs }: ToolExecution, next: () => Promise<PreToolDecision>) => {
+    async (execution: ToolExecution, next: () => Promise<PreToolDecision>) => {
+      const { agent, callId, name: toolName, arguments: rawArgs } = execution
       const policy = policyFor(agent)
 
       // Record the call here: this is the only point where the tool name and its
-      // parsed arguments are both known. The step's outcome is filled in below.
-      policy.pending = { tool: toolName, argsKey: argsKey(rawArgs), error: false }
+      // parsed arguments are both known. The immutable call id preserves every
+      // parallel call until `tools/result` supplies the authoritative outcome.
+      policy.pending.set(String(callId), { tool: toolName, argsKey: argsKey(rawArgs), error: false })
+
+      const action = rawArgs !== null && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
+        ? (rawArgs as { action?: unknown }).action
+        : undefined
+      if (toolName === 'update_goal' && action === 'complete') {
+        const denial = await verifyGoalCompletion(ctx, agent, execution)
+        if (denial !== undefined) {
+          state.recordGate(recordAgentMeta(state, agent), toolName, 'deny', denial.reason)
+          return { kind: 'deny', reason: denial.reason }
+        }
+      }
 
       const gate = gateForTool(policy, toolName)
       if (gate.kind === 'proceed') return next()
@@ -1286,11 +1516,6 @@ export function apply(
       // The call is blocked either way, and the call is *answered* rather than
       // dropped so the assistant's tool-call block still gets a result and
       // session replay stays valid.
-      //
-      // A blocked call is a step that made no progress, so `error-cascade`
-      // counts it. Treating a block as success would let a repeatedly-blocked
-      // loop read as a healthy one.
-      policy.pending.error = true
       // Only blocks hit the feed: logging every `auto` call would bury the
       // decisions a human opened this page to see.
       state.recordGate(
@@ -1305,14 +1530,27 @@ export function apply(
     },
   )
 
+  const disposeResult = ctx.on(
+    'tools/result',
+    (exec: ToolExecution, result: ToolExecutionResult): undefined => {
+      const pending = policyFor(exec.agent).pending.get(String(exec.callId))
+      if (pending !== undefined) pending.error = result.isError
+      return undefined
+    },
+  )
+
   return () => {
     disposeStep()
     disposeRequest()
     disposeTools()
+    disposeResult()
     disposeSession?.()
+    disposeStatus()
     disposeApproval?.()
+    configureLoopVerifier(undefined)
+    clearWatcher('in-ui')
+    clearWatcher('standalone')
     if (dashboard !== undefined) void dashboard.stop()
-    unsubscribeChanged()
     if (liveSource !== undefined) {
       void import('./remote.ts').then(m => m.unpublishLiveState(liveSource)).catch(() => undefined)
     }
@@ -1334,97 +1572,17 @@ export type { BriefConfig, BriefState } from './dashboard.ts'
  * apply to it exactly as they do to any typed request.
  */
 export interface LoopCommandOutcome {
-  /** The task text to run the bounded loop over. */
-  task: string
+  /** Durable goal objective, including non-secret completion guidance. */
+  objective: string
 }
 
 /**
- * Execute the `/loop` host command: `/loop <task>`.
+ * Prepare `/loop <objective>` for the native DSH goal service.
  *
- * A bare `/loop` with no task is a usage error, not a silent no-op. The
- * task text is returned for the composer to submit as the turn — that is
- * what makes the feature-loop policies apply: the policies hang off the
- * agent loop's own hooks, so any turn runs bounded and gated, and `/loop`
- * is just the entry point that names the task.
- *
- * @param rawInput - exact text following the `/loop` command name.
- * @returns a success carrying the task text, or a usage error when empty.
+ * The goal-round driver owns continuation. This function only validates input
+ * and fails closed when the deployment has no independent completion verifier.
  */
 export function executeLoopCommand(rawInput: string): LoopCommandOutcome | { kind: 'error', text: string } {
-  const task = rawInput.trim()
-  if (task.length === 0) {
-    return { kind: 'error', text: 'Usage: /loop <task> — describe what the bounded loop should do.' }
-  }
-  return { task }
-}
-/** Default System One endpoint — the shared Laya sidecar on this machine. */
-const DEFAULT_JUDGE_BASE_URL = process.env.SYSTEMONE_BASE_URL ?? 'http://127.0.0.1:8091'
-
-/** Default System One model alias. */
-const DEFAULT_SYSTEMONE_MODEL = process.env.SYSTEMONE_MODEL ?? 'laya'
-
-/**
- * Build the judge a deployment configured.
- *
- * Before this existed the plugin hardcoded `NO_JUDGE`, so a profile could
- * configure `judge: laya`, see no error, and get detector-only reviews forever
- * — a silent no-op, which is the failure mode this repo's config blocks
- * otherwise refuse to allow. Now the kind is read and the client is real.
- *
- * `laya` needs nothing but a reachable sidecar, so it is built optimistically:
- * `OnegwJudge` latches itself off after one failed call and reports the reason
- * rather than stalling every step, so an unreachable Laya costs one timeout and
- * then degrades to the detectors — the documented posture in `laya.ts`.
- *
- * `chat` costs money per judged step, so it fails at *load* when no gateway key
- * is present, the same rule the brief explainer follows: a configured judge
- * that silently never runs is worse than a loud refusal to start.
- *
- * @param config - the judge fields from the patch row.
- * @returns the judge, and a label naming which one for the dashboard's status.
- * @throws Error when `chat` was asked for with no reachable key.
- */
-export function resolveJudge(config: JudgeConfig): { judge: Judge, label: string } {
-  const kind = config.judge ?? 'none'
-  if (kind === 'none') return { judge: NO_JUDGE, label: 'none (detectors only)' }
-  if (kind === 'laya') {
-    const baseURL = config.judgeBaseURL ?? process.env.SYSTEMONE_BASE_URL ?? DEFAULT_JUDGE_BASE_URL
-    const model = config.systemOneModel ?? process.env.SYSTEMONE_MODEL ?? DEFAULT_SYSTEMONE_MODEL
-    return {
-      judge: new OnegwJudge({ baseURL, model, timeoutMs: config.judgeTimeoutMs ?? 5_000 }),
-      label: `systemone (${model} @ ${baseURL})`,
-    }
-  }
-  const apiKey = process.env.ONEGW_API_KEY ?? process.env.ONEGE_API_KEY ?? readCredentialsKey()
-  if (apiKey === undefined) {
-    throw new Error(
-      'judge is "chat" but no gateway key was found: set ONEGW_API_KEY (or ONEGE_API_KEY) '
-      + 'in the environment, or add it to ~/.dsh/.credentials.yaml. '
-      + 'Use judge: laya for a local judge that needs no key, or judge: none for detectors only.',
-    )
-  }
-  const model = config.judgeModel ?? 'xiaomi/mimo-v2.5'
-  return {
-    judge: createChatJudge({
-      llm: createOnegwClient({
-        baseURL: process.env.ONEGE_BASE_URL ?? 'http://127.0.0.1:8080/v1',
-        apiKey,
-      }),
-      model,
-    }),
-    label: `chat (${model})`,
-  }
-}
-/** How a deployed plugin picks its judge, from the patch row. */
-export interface JudgeConfig {
-  /** `none` (detectors only) | `chat` (metered) | `laya` (local, free). */
-  judge?: 'none' | 'chat' | 'laya'
-  /** System One base URL — Laya, or hosted Jev/TypeSafe on the same wire. */
-  judgeBaseURL?: string
-  /** Model alias the System One provider routes to. */
-  systemOneModel?: string
-  /** Model the `chat` judge uses. */
-  judgeModel?: string
-  /** Deadline for one judge call, in ms. Defaults to 5000. */
-  judgeTimeoutMs?: number
+  const prepared = createLoopObjective({ rawInput, successCommand: currentLoopVerifier() })
+  return prepared.kind === 'error' ? prepared : { objective: prepared.objective }
 }

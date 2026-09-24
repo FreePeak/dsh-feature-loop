@@ -104,8 +104,6 @@ export interface LiveSource {
   config(): Record<string, unknown>
   /** Whether the deployment allows this front end to answer at all. */
   answers(): boolean
-  /** Name a run after the task a human submitted for it. */
-  labelRun(sessionId: string, task: string): void
 }
 
 /**
@@ -449,24 +447,8 @@ export class FeatureLoopRemote extends TypertRemoteService {
     // Every poll is a heartbeat: the in-UI page has no socket to hold open,
     // so "is someone watching" is what the plugin reads to decide whether it
     // may claim an ask or must delegate to the composer panel.
-    noteWatcher()
+    noteWatcher('in-ui')
     return Promise.resolve(projectLive(liveState))
-  }
-
-  /**
-   * Name a run after the task a human typed for it.
-   *
-   * Called just before the task is submitted, so the label is in place by the
-   * time the first frame arrives. A display label only — the loop's ceilings
-   * come from the spec, so a task naming a bigger budget changes nothing.
-   *
-   * @param sessionId - the session the run will belong to.
-   * @param task - what the human asked for.
-   */
-  labelRun(sessionId: string, task: string): void {
-    noteWatcher()
-    if (liveState === undefined) return
-    liveState.labelRun(sessionId, task)
   }
 
   /**
@@ -475,7 +457,7 @@ export class FeatureLoopRemote extends TypertRemoteService {
    * tool is released or refused identically to the standalone page.
    */
   answer(id: string, outcome: 'allowed-once' | 'rejected', feedback?: string): Promise<{ settled: boolean }> {
-    noteWatcher()
+    noteWatcher('in-ui')
     return Promise.resolve({ settled: answerLive(liveState, id, outcome, feedback) })
   }
 
@@ -488,7 +470,6 @@ export class FeatureLoopRemote extends TypertRemoteService {
 markRemote(FeatureLoopRemote.prototype, 'status')
 markRemote(FeatureLoopRemote.prototype, 'live')
 markRemote(FeatureLoopRemote.prototype, 'answer')
-markRemote(FeatureLoopRemote.prototype, 'labelRun')
 markRemote(FeatureLoopRemote.prototype, 'save')
 
 export default FeatureLoopRemote

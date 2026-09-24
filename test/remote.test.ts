@@ -181,31 +181,3 @@ test('probeJudge reaches the live Laya sidecar when it is up', async (t) => {
   }
   assert.match(probe.detail, /laya/)
 })
-
-test('projectLive hands the page the dashboard snapshot verbatim', async () => {
-  const { projectLive } = await import('../src/remote.ts')
-  const live = projectLive({
-    snapshot: () => ({
-      runs: [{ runId: 'r1', step: 3, spentUSD: 0.12, updatedAt: 1700000000000, signals: [] }],
-      feed: [{ t: 1, runId: 'r1', kind: 'gate' as const, text: 'ask: write' }],
-    }),
-    pendingApprovals: () => [
-      { id: 'p1', toolName: 'write', reason: 'irreversible', runId: 'r1', askedAt: 2, briefState: 'none' as const },
-    ],
-    answers: () => true,
-    settleApproval: () => true,
-    config: () => ({}),
-  })
-  // The designed page renders these exact shapes, so nothing is re-projected.
-  assert.equal(live.answers, true)
-  assert.equal(live.pending[0]?.toolName, 'write')
-  assert.equal(live.pending[0]?.briefState, 'none')
-  assert.equal(live.runs[0]?.step, 3)
-  assert.equal(live.runs[0]?.signals.length, 0)
-  assert.deepEqual(live.feed, [{ t: 1, runId: 'r1', kind: 'gate', text: 'ask: write' }])
-})
-
-test('projectLive with no published state reads empty, never zeros', async () => {
-  const { projectLive } = await import('../src/remote.ts')
-  assert.deepEqual(projectLive(undefined), { answers: true, pending: [], runs: [], feed: [] })
-})

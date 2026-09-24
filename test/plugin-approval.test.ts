@@ -189,9 +189,11 @@ test('the handler is registered on the harness tool-boundary event', async () =>
   assert.deepEqual(registered(), [
     'approval/request',
     'session/event',
+    'agent/status',
     'agent/pre-step',
     'agent/request',
     'tools/pre-execute',
+    'tools/result',
   ])
   dispose()
 })
@@ -211,7 +213,7 @@ test('the dashboard starts by default; enabled:false opts out', async () => {
   }
 })
 
-test('history records by default; history:"" disables it', async () => {
+test('history records by default; history:"" disables only the record append', async () => {
   {
     const { ctx, registered } = fakeCtx()
     const dispose = apply(ctx as never, { spec: SPEC, dashboard: { enabled: false } })
@@ -225,7 +227,9 @@ test('history records by default; history:"" disables it', async () => {
       dashboard: { enabled: false },
       optimize: { history: '' },
     })
-    assert.ok(!registered().includes('session/event'), `registered: ${registered().join(', ')}`)
+    // The lifecycle listener remains for final-step commits; only its
+    // fire-and-forget history append is disabled.
+    assert.ok(registered().includes('session/event'), `registered: ${registered().join(', ')}`)
     dispose()
   }
 })

@@ -1,6 +1,6 @@
 # The feature-loop plugin's patch layer.
 #
-# Applied after the profile's own bundles, this inserts TWO rows: the plugin
+# Applied after the profile's own bundles, this inserts THREE rows: the plugin
 # itself, and the `/loop` host command. It does not disable or replace the
 # harness's agent loop — that is the
 # whole point of the de-fork. The loop keeps running upstream's implementation,
@@ -68,6 +68,8 @@
           grep: auto
           edit: auto-if-confident
           write: auto-if-confident
+          feature_queue_list: auto
+          feature_pr_plan: auto
 
         # How a review reaches a human. `ask` (the default) prompts in the Web
         # UI's conversation composer, so you can approve or reject the step.
@@ -199,3 +201,14 @@
     # `commands`, and the policy row must not inject it.
     - id: feature-loop-command
       name: '@freepeak/dsh-feature-loop/command'
+
+    # Durable queue tools. `feature_queue` is intentionally unclassified and
+    # therefore human-gated by the policy row; `feature_queue_list` is the
+    # read-only inspection path. Settlement is not exposed as a model tool.
+    - id: feature-loop-queue
+      name: '@freepeak/dsh-feature-loop/queue'
+
+    # Worktree and PR/merge actions. Every action except the read-only plan is
+    # unclassified and therefore human-gated by the feature-loop policy row.
+    - id: feature-loop-actions
+      name: '@freepeak/dsh-feature-loop/actions'

@@ -29,6 +29,9 @@ trap cleanup EXIT
 
 sed \
   -e "s#from '\.\./\.\./src/plugin\.ts'#from '$HERE/../../src/plugin.ts'#" \
+  -e "s#from '\.\./\.\./src/command\.ts'#from '$HERE/../../src/command.ts'#" \
+  -e "s#from '\.\./\.\./src/queue-tool\.ts'#from '$HERE/../../src/queue-tool.ts'#" \
+  -e "s#from '\.\./\.\./src/action-tool\.ts'#from '$HERE/../../src/action-tool.ts'#" \
   -e "s#from '\.\./\.\./src/spec\.ts'#from '$HERE/../../src/spec.ts'#" \
   "$HERE/plugin-in-dsh.spec.ts" > "$STAGED"
 
