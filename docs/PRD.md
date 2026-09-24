@@ -314,8 +314,11 @@ estimate is now **denied** rather than dispatched.
    and the native goal completed. Temporary queue/worktree artifacts were
    removed. The main profile remains untouched. A queue record is never proof
    that a PR or merge happened.
-9. **Next — decision on `routing.ts`.** Collapse the ladder onto DSH model
-   selection or document why spec-level escalation remains distinct.
+9. **Done — routing decision.** `docs/ROUTING-AUDIT.md` keeps `ModelLadder` as
+   the feature-loop policy layer and DSH model selection as the request
+   mechanism. Collapsing them would remove standalone-runner behavior, duplicate
+   policy, or lose escalation evidence; revisit only after DSH grows equivalent
+   policy hooks.
 
 The queue remains admission/accounting only. The worktree runner creates a
 detached checkout after claim-scoped approval. The PR executor can run fixed

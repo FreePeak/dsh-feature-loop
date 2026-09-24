@@ -100,6 +100,5 @@ was opened or merged.
 
 ## Next work
 
-1. Decide whether `routing.ts` collapses onto DSH model selection.
-2. If PR/merge rollout is enabled, run a separately approved isolated network
+1. If PR/merge rollout is enabled, run a separately approved isolated network
    acceptance test; never use the main profile for that test.
