@@ -77,6 +77,12 @@ function text(value: unknown, label: string, max = 10_000): string {
   return value.trim()
 }
 
+function commandText(value: unknown, label: string, max = 10_000): string {
+  const result = text(value, label, max)
+  if (/[\u0000-\u001f\u007f]/.test(result)) throw new TypeError(`${label} must be a single-line command`)
+  return result
+}
+
 function id(value: string): string {
   const result = text(value, 'feature id', 100)
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(result)) throw new TypeError('feature id contains unsafe characters')
@@ -115,7 +121,7 @@ function parseItem(value: unknown): FeatureItem {
   const item: FeatureItem = {
     id: id(text(value.id, 'feature id', 100)),
     objective: text(value.objective, 'feature objective'),
-    verificationCommand: text(value.verificationCommand, 'verification command'),
+    verificationCommand: commandText(value.verificationCommand, 'verification command'),
     worktreePath: text(value.worktreePath, 'worktree path', 2_000),
     branch: branch(text(value.branch, 'worktree branch', 200)),
     baseCommit: baseCommit(text(value.baseCommit, 'base commit', 100)),
@@ -201,7 +207,7 @@ export class FeatureQueue {
       const item: FeatureItem = {
         id: id(input.id),
         objective: text(input.objective, 'feature objective'),
-        verificationCommand: text(input.verificationCommand, 'verification command'),
+        verificationCommand: commandText(input.verificationCommand, 'verification command'),
         worktreePath: this.validateWorktree(input.worktreePath),
         branch: branch(input.branch),
         baseCommit: baseCommit(input.baseCommit),

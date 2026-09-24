@@ -78,6 +78,7 @@ test('rejects unsafe worktrees, branches, and feature ids at admission', (t) => 
   assert.throws(() => q.enqueue({ ...item(f.root, 'outside'), worktreePath: '/tmp/outside' }), /worktree path/)
   assert.throws(() => q.enqueue({ ...item(f.root, 'branch'), branch: 'main', worktreePath: join(f.root, '.worktrees', 'branch') }), /dsh\/\*/)
   assert.throws(() => q.enqueue({ ...item(f.root, '../escape'), worktreePath: join(f.root, '.worktrees', 'escape') }), /feature id/)
+  assert.throws(() => q.enqueue({ ...item(f.root, 'command'), verificationCommand: 'true\nrm -rf /tmp/x' }), /single-line/)
   mkdirSync(join(f.root, '.worktrees'), { recursive: true })
   const outside = join(f.root, 'outside')
   mkdirSync(outside)
