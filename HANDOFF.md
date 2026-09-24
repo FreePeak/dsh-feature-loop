@@ -82,7 +82,11 @@ Current verified result before the documentation-only update:
   spend. A second isolated Web run drove the model through the real
   `feature_queue` mutation tool, clicked its human approval, listed the queue,
   and completed the goal; the temporary queue artifact was removed afterward.
-  The main `3081` profile was not started or changed.
+  A third isolated Web run used the real `feature_worktree_create` and
+  `feature_pr_plan` actions on a temporary Git workspace, clicked the human
+  gates, and completed without creating a network PR or merge. All temporary
+  workspace artifacts were removed afterward. The main `3081` profile was not
+  started or changed.
 
 ## Queue boundary
 
@@ -96,8 +100,6 @@ was opened or merged.
 
 ## Next work
 
-1. Run a real isolated queue → worktree → human gate → verifier → PR-plan
-   acceptance test through the mounted DSH action tools. Do not execute a real
-   network merge in the test.
-2. Keep the main `3081` profile unchanged until that acceptance test passes.
-3. Decide whether `routing.ts` collapses onto DSH model selection.
+1. Decide whether `routing.ts` collapses onto DSH model selection.
+2. If PR/merge rollout is enabled, run a separately approved isolated network
+   acceptance test; never use the main profile for that test.

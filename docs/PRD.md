@@ -307,13 +307,13 @@ estimate is now **denied** rather than dispatched.
    reservation only after a clean result. A temporary-repository host-flow
    test covers queue → worktree → PR plan → verified settlement. Settlement is
    intentionally not a model tool.
-8. **In progress — isolated live acceptance.** The mounted queue tool has now
-   passed a real isolated Web run: the model enqueued `live-queue`, the human
-   approval was clicked, `feature_queue_list` was readable, and the native
-   goal completed. DSH now also exposes claim-fenced worktree and PR/merge
-   action tools, all human-gated; a combined queue → worktree → verifier →
-   PR-plan live run remains. The main profile remains untouched. A queue
-   record is never proof that a PR or merge happened.
+8. **Done — isolated live action acceptance.** The mounted queue and action
+   tools passed a real isolated Web run on a temporary Git workspace: the model
+   enqueued and claimed `live-actions`, human approvals were clicked, the
+   detached worktree was created, `feature_pr_plan` ran without network access,
+   and the native goal completed. Temporary queue/worktree artifacts were
+   removed. The main profile remains untouched. A queue record is never proof
+   that a PR or merge happened.
 9. **Next — decision on `routing.ts`.** Collapse the ladder onto DSH model
    selection or document why spec-level escalation remains distinct.
 
