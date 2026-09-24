@@ -297,10 +297,14 @@ estimate is now **denied** rather than dispatched.
    human-waiting transitions, pinned base commits, and symlink-safe admission.
    `git-worktree.ts` now runs only fixed, shell-free Git commands, creates a
    detached worktree at the pinned commit, and proves its HEAD and ownership.
-6. **In progress — PR and merge gate.** PR creation and merge remain outside the
-   queue. They need a separate fixed-command runner and explicit human approval;
-   a queue record is never proof that a PR or merge happened.
-7. **Next — decision on `routing.ts`.** Collapse the ladder onto DSH model
+6. **Done — PR and merge gate plans.** `pr-gate.ts` validates repository,
+   branch, commit, and body-file inputs; constructs fixed shell-free `gh`
+   commands; and requires claim-scoped human approval before authorizing a
+   squash merge. It does not execute the commands or contact a network.
+7. **Next — audited PR/merge execution.** Connect the fixed plans to a
+   separately gated runner after the DSH shell boundary is available. A queue
+   record is never proof that a PR or merge happened.
+8. **Next — decision on `routing.ts`.** Collapse the ladder onto DSH model
    selection or document why spec-level escalation remains distinct.
 
 The queue remains admission/accounting only. The worktree runner does not create

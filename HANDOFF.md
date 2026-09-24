@@ -8,7 +8,7 @@ container or another session's uncommitted work.
 - Worktree: `.worktrees/feature-loop-trust-seams`
 - Branch: `dsh/feature-loop-trust-seams`
 - Base: latest `origin/main` captured as `af24efca`
-- Current implementation tip: `7250a27` plus any uncommitted documentation
+- Current implementation tip: `adc96a9` plus any uncommitted documentation
   changes in this worktree
 - Main checkout and DSH profile at `http://127.0.0.1:3081/` were not modified.
 - Do not edit the original `hitl-pro-ui` worktree; its WIP was reconciled into
@@ -45,6 +45,10 @@ container or another session's uncommitted work.
 - `git-worktree.ts` runs fixed, shell-free Git commands to create a detached
   worktree at the pinned base commit and proves its HEAD and ownership. It does
   not create branches, push, open PRs, or merge.
+- `pr-gate.ts` builds fixed shell-free `gh pr create` and squash-merge plans,
+  validates repository/branch/commit/body inputs, and requires claim-scoped
+  human approval for merge authorization. It does not execute `gh` or contact a
+  network.
 
 ## Evidence
 
@@ -72,16 +76,17 @@ Current verified result before the documentation-only update:
 ## Queue boundary
 
 `FeatureQueue` is admission and accounting only. The detached worktree runner
-creates and verifies an isolated checkout. Neither component creates a branch,
-pushes code, opens a PR, or merges. Those operations must be a separately
-audited command runner with their own human gate. Queue records are not proof
-that a PR was opened.
+creates and verifies an isolated checkout. The PR/merge module only plans fixed
+commands and authorizes a merge after a matching human approval. None of these
+components executes `gh`, pushes code, opens a PR, or merges. Those operations
+must remain behind the DSH human gate and a separately audited runner. Queue
+records are not proof that a PR was opened.
 
 ## Next work
 
-1. Add fixed-command PR and merge-gate planning with no network execution yet.
-2. Connect that gate to the queue only after proving the pinned base commit and
-   isolated branch.
+1. Add the DSH-shell-backed executor for the already-fixed PR/merge plans.
+2. Connect that executor to the queue only after proving the pinned base commit,
+   isolated branch, and claim-scoped approval.
 3. Decide whether `routing.ts` collapses onto DSH model selection.
 4. Keep the main `3081` profile unchanged until a final isolated acceptance run
    covers queue → worktree → human gate → verifier → PR/merge gate.
