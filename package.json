@@ -1,6 +1,6 @@
 {
   "name": "@freepeak/dsh-feature-loop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A book-shaped policy layer for bug-fixing and small features: budget ceilings, cheap-first routing, step-level review gate, and the Laya local judge. Hosts on the DeepSeek Harness agent loop rather than forking it.",
   "type": "module",
   "main": "lib/index.mjs",
