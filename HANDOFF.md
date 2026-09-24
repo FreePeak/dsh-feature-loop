@@ -8,7 +8,7 @@ container or another session's uncommitted work.
 - Worktree: `.worktrees/feature-loop-trust-seams`
 - Branch: `dsh/feature-loop-trust-seams`
 - Base: latest `origin/main` captured as `af24efca`
-- Current implementation tip: `c29010d` plus any uncommitted documentation
+- Current implementation tip: `1c37f59` plus any uncommitted documentation
   changes in this worktree
 - Main checkout and DSH profile at `http://127.0.0.1:3081/` were not modified.
 - Do not edit the original `hitl-pro-ui` worktree; its WIP was reconciled into
@@ -51,7 +51,9 @@ container or another session's uncommitted work.
   validates repository/branch/commit/body inputs, and requires claim-scoped
   human approval. `pr-executor.ts` sends those fixed plans through the DSH
   sandbox-aware shell service, POSIX-quotes every argument, and never invokes
-  `gh` directly.
+  `gh` directly. `queue-settlement.ts` runs the item verifier through that
+  same DSH shell and settles campaign funds only after a clean result; it is not
+  a model tool.
 
 ## Evidence
 
@@ -68,7 +70,7 @@ git diff --check
 
 Current verified result before the documentation-only update:
 
-- unit: 405 passed, 0 failed
+- unit: 408 passed, 0 failed
 - DSH integration: 15 passed
 - build: passed
 - security scan: clean
@@ -82,15 +84,13 @@ Current verified result before the documentation-only update:
 through the human-gated `feature_queue` tool and its inspection through the
 read-only `feature_queue_list` tool. The detached worktree runner creates and
 verifies an isolated checkout after claim-scoped approval. The PR/merge
-executor can run fixed `gh` plans through DSH shell after matching approval, but
-it is not automatically wired to queue settlement. No queue record is proof
-that a PR was opened or merged.
+executor and settlement bridge run only after matching human approval; neither
+is automatically exposed as a model action. No queue record is proof that a PR
+was opened or merged.
 
 ## Next work
 
-1. Connect the verifier/executor to queue settlement only after proving the
-   pinned base commit, isolated branch, and claim-scoped approval.
-2. Add a real isolated queue → worktree → human gate → verifier → PR acceptance
-   run without touching the main profile.
+1. Run a real isolated queue → worktree → human gate → verifier acceptance
+   test using the mounted DSH queue tools and host settlement bridge.
+2. Keep the main `3081` profile unchanged until that acceptance test passes.
 3. Decide whether `routing.ts` collapses onto DSH model selection.
-4. Keep the main `3081` profile unchanged until that final acceptance run passes.
