@@ -76,7 +76,10 @@ Current verified result before the documentation-only update:
 - security scan: clean
 - live isolated Web profile: native `/loop` reached
   `Completed successfully`, verifier passed, and run history recorded non-zero
-  spend. The main `3081` profile was not started or changed.
+  spend. A second isolated Web run drove the model through the real
+  `feature_queue` mutation tool, clicked its human approval, listed the queue,
+  and completed the goal; the temporary queue artifact was removed afterward.
+  The main `3081` profile was not started or changed.
 
 ## Queue boundary
 
