@@ -27,6 +27,7 @@ export {
   escalationForStep,
   gateForTool,
   detectSignals,
+  executeLoopCommand,
 } from './plugin.ts'
 export type { CreatePolicyOptions, FeatureLoopPolicy } from './plugin.ts'
 
@@ -134,6 +135,11 @@ export function apply(ctx: Context, config: Config = {}): (() => void) | void {
   const optimize = config.optimize === undefined ? undefined : parseOptimizeConfig(config.optimize)
   return applyFeatureLoop(ctx, {
     spec: config.spec,
+    judge,
+    // The deployment's own config, verbatim. The panel must show what the row
+    // says (`judge: laya`), not the resolved internals — `options.judge` is a
+    // constructed Judge, which no status page can render as a setting.
+    rowConfig: { ...config },
     confidenceThreshold: config.confidenceThreshold,
     gatePolicies: config.gatePolicies,
     gateMode: config.gateMode,

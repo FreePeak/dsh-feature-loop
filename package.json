@@ -11,21 +11,29 @@
       "default": "./lib/index.mjs"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./remote": "./lib/remote.mjs",
+    "./command": "./lib/command.mjs",
+    "./client": "./client.js"
   },
   "files": [
-    "lib/index.mjs",
-    "lib/index.d.mts",
-    "cordis.patch.yml",
-    "assets/mark.svg",
+    "assets/assistant-ui/MANIFEST.txt",
+    "assets/assistant-ui/dashboard.css",
+    "assets/assistant-ui/dashboard.js",
+    "assets/assistant-ui/shell.css",
+    "assets/favicon.svg",
+    "assets/logo.svg",
     "assets/mark-light.svg",
     "assets/mark-mono.svg",
-    "assets/logo.svg",
-    "assets/favicon.svg",
-    "assets/assistant-ui/dashboard.js",
-    "assets/assistant-ui/dashboard.css",
-    "assets/assistant-ui/shell.css",
-    "assets/assistant-ui/MANIFEST.txt"
+    "assets/mark.svg",
+    "bin/dshloop.mjs",
+    "client.js",
+    "cordis.patch.yml",
+    "lib/cli.mjs",
+    "lib/command.mjs",
+    "lib/index.d.mts",
+    "lib/index.mjs",
+    "lib/remote.mjs"
   ],
   "license": "MIT",
   "author": "Linh Doan",
@@ -57,7 +65,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsdown src/index.ts --format esm --dts --out-dir lib",
+    "build": "tsdown src/index.ts src/cli.ts src/remote.ts src/command.ts --format esm --out-dir lib",
     "test": "node --experimental-strip-types --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "demo": "bash demo/run.sh",
@@ -68,6 +76,7 @@
     "lint:workflows": "actionlint .github/workflows/*.yml",
     "test:integration": "bash test/integration/run.sh",
     "dashboard-bundle": "node web/build.mjs",
+    "dshloop": "node bin/dshloop.mjs",
     "prepare": "git config core.hooksPath .githooks"
   },
   "dependencies": {
@@ -75,15 +84,18 @@
     "@assistant-ui/styles": "^0.3.7",
     "@deepseek-ai/schemastery": "^3.18.2",
     "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "react-dom": "^19.3.0",
+    "yaml": "^2.9.1"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=0.4.0",
     "@deepseek-ai/dsh-agent": ">=0.1.0-rc.6",
     "@deepseek-ai/dsh-llm": ">=0.0.1-rc.1",
-    "@deepseek-ai/dsh-tools": ">=0.0.1-rc.1"
+    "@deepseek-ai/dsh-tools": ">=0.0.1-rc.1",
+    "@deepseek-ai/dsh-typert-protocol": ">=0.1.0-rc.6"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-typert-protocol": "0.1.0-rc.6",
     "@types/node": "^22.0.0",
     "esbuild": "^0.28.2",
     "tsdown": "^0.23.0",
@@ -92,6 +104,9 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
     }
   },
   "peerDependenciesMeta": {
@@ -106,6 +121,12 @@
     },
     "@deepseek-ai/dsh-tools": {
       "optional": true
+    },
+    "@deepseek-ai/dsh-typert-protocol": {
+      "optional": true
     }
+  },
+  "bin": {
+    "dshloop": "./bin/dshloop.mjs"
   }
 }

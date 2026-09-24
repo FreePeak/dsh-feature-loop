@@ -26,21 +26,58 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const outDir = join(root, 'assets/assistant-ui')
 mkdirSync(outDir, { recursive: true })
 
-buildSync({
-  entryPoints: [join(root, 'web/app.tsx')],
+// assistant-ui ships precompiled Tailwind v4 output, so no Tailwind toolchain
+// is needed — the stylesheet is consumed verbatim. It MUST be refreshed before
+// the bundle runs, because the entry inlines it: copy afterwards and the
+// artifact silently carries the previous build's CSS.
+copyFileSync(
+  join(root, 'node_modules/@assistant-ui/styles/dist/styles/index.css'),
+  join(outDir, 'dashboard.css'),
+)
+copyFileSync(join(root, 'web/shell.css'), join(outDir, 'shell.css'))
+
+// React is EXTERNAL, and deliberately so. The DSH web shell already runs a
+// React; bundling a second copy would give the dashboard its own reconciler,
+// its own context and its own hooks cache — which does not render reliably
+// inside someone else's tree. The harness hands us its `require`, and the
+// factory below closes over it.
+const result = buildSync({
+  entryPoints: [join(root, 'web/entry.tsx')],
   bundle: true,
   minify: true,
   format: 'iife',
+  globalName: '__flPlugin',
   platform: 'browser',
   target: 'es2020',
   jsx: 'automatic',
+  // The designed shell's CSS rides inside the bundle: the dashboard is a page
+  // of the DSH UI now, so there is no second origin to fetch a stylesheet from.
+  loader: { '.css': 'text' },
+  external: ['react', 'react-dom', 'react-dom/client'],
   // Production React: without this, esbuild leaves NODE_ENV reads that
   // resolve to development React (slower, and dev-only warnings on a page
   // an operator is using during an incident).
   define: { 'process.env.NODE_ENV': '"production"' },
-  outfile: join(outDir, 'dashboard.js'),
+  write: false,
   logLevel: 'info',
 })
+
+// The harness loads a client file that REGISTERS itself through the published
+// `window.__ModuleLoader__` protocol — the same shape the harness's own
+// in-repo fixtures use, and what the previous hand-written `client.js` did.
+// The bundle is wrapped in that factory, with the host's `require` in scope
+// for the externals above.
+const [output] = result.outputFiles
+writeFileSync(join(root, 'client.js'), [
+  'window.__ModuleLoader__.load({',
+  "  id: '@freepeak/dsh-feature-loop',",
+  '  factory(require) {',
+  output.text.replace(/^var __flPlugin = /, '__flPlugin = '),
+  '    return __flPlugin.default || __flPlugin;',
+  '  },',
+  '});',
+  '',
+].join('\n'))
 
 // assistant-ui ships precompiled Tailwind v4 output, so no Tailwind toolchain
 // is needed — the stylesheet is copied verbatim like any other asset.
@@ -50,7 +87,7 @@ copyFileSync(
 )
 copyFileSync(join(root, 'web/shell.css'), join(outDir, 'shell.css'))
 
-const js = readFileSync(join(outDir, 'dashboard.js'), 'utf8')
+const js = readFileSync(join(root, 'client.js'), 'utf8')
 const kb = (path) => `${String(Math.round(statSync(path).size / 1024))} KB`
 
 /**
@@ -85,6 +122,8 @@ writeFileSync(
   join(outDir, 'MANIFEST.txt'),
   [
     `built: ${new Date().toISOString()}`,
+    'entry: web/entry.tsx (dashboard + settings, mounted as a DSH UI page)',
+    `client.js: ${kb(join(root, 'client.js'))}`,
     `react: ${pkg('react')}`,
     `react-dom: ${pkg('react-dom')}`,
     `assistant-ui/react: ${pkg('@assistant-ui/react')}`,
