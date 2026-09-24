@@ -17,8 +17,8 @@ export const inject = ['tools']
 
 function sessionRoot(agent: unknown): string {
   const cwd = (agent as { session?: { header?: { cwd?: unknown } } } | undefined)?.session?.header?.cwd
-  if (typeof cwd !== 'string' || cwd === '') throw new Error('queue tools require a session workspace')
-  return cwd
+  if (typeof cwd === 'string' && cwd !== '') return cwd
+  return process.cwd()
 }
 
 function output() {

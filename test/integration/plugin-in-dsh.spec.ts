@@ -66,6 +66,7 @@ import { MockAdapter, textResponse, toolCallResponse } from '../../agent-loop/te
 // dashboard types, re-exported through `plugin.ts`) must ride along with them.
 import { apply as applyFeatureLoop } from '../../src/plugin.ts'
 import * as CommandLoop from '../../src/command.ts'
+import * as QueueTools from '../../src/queue-tool.ts'
 import type { DashboardSnapshot } from '../../src/plugin.ts'
 import type { LoopSpec } from '../../src/spec.ts'
 
@@ -567,6 +568,39 @@ describe('feature-loop gate inside a real DSH pipeline', () => {
       const result = await execution
       expect(result.isError).toBe(false)
       closeTab()
+    } finally {
+      dispose()
+    }
+  })
+
+  it('QUEUE GATE: queue mutations pass through the DSH human gate, while listing is read-only', async () => {
+    const { ctx, dispose } = await featureLoopSetup({ gatePolicies: { feature_queue_list: 'auto' } })
+    try {
+      await ctx.plugin(QueueTools)
+      const agent = await ctx.agentLoop.create(SessionId('queue-gate'), { provider: 'mock', model: 'mock' })
+      const denied = await ctx.tools.execute({
+        callId: ToolCallId('queue-mutation'),
+        name: 'feature_queue',
+        arguments: {
+          action: 'enqueue',
+          id: 'one',
+          objective: 'ship one',
+          verificationCommand: 'true',
+          branch: 'dsh/one',
+          baseCommit: 'a'.repeat(40),
+        },
+        agent,
+        signal: testToolSignal,
+      })
+      expect(denied.isError).toBe(true)
+      const listed = await ctx.tools.execute({
+        callId: ToolCallId('queue-list'),
+        name: 'feature_queue_list',
+        arguments: {},
+        agent,
+        signal: testToolSignal,
+      })
+      expect(listed.isError).toBe(false)
     } finally {
       dispose()
     }
