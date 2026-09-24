@@ -8,7 +8,7 @@ container or another session's uncommitted work.
 - Worktree: `.worktrees/feature-loop-trust-seams`
 - Branch: `dsh/feature-loop-trust-seams`
 - Base: latest `origin/main` captured as `af24efca`
-- Current implementation tip: `2c14760` plus any uncommitted documentation
+- Current implementation tip: `c29010d` plus any uncommitted documentation
   changes in this worktree
 - Main checkout and DSH profile at `http://127.0.0.1:3081/` were not modified.
 - Do not edit the original `hitl-pro-ui` worktree; its WIP was reconciled into
@@ -40,7 +40,9 @@ container or another session's uncommitted work.
   - human-waiting transitions;
   - full base-commit pinning;
   - worktree paths constrained below `.worktrees`;
-  - symlink escape rejection.
+  - symlink escape rejection;
+  - DSH `feature_queue` mutations routed through the human gate and a separate
+    read-only `feature_queue_list` tool.
 - Packed npm artifacts include all generated runtime chunks.
 - `git-worktree.ts` runs fixed, shell-free Git commands to create a detached
   worktree at the pinned base commit and proves its HEAD and ownership. It does
@@ -66,8 +68,8 @@ git diff --check
 
 Current verified result before the documentation-only update:
 
-- unit: 403 passed, 0 failed
-- DSH integration: 14 passed
+- unit: 405 passed, 0 failed
+- DSH integration: 15 passed
 - build: passed
 - security scan: clean
 - live isolated Web profile: native `/loop` reached
@@ -76,17 +78,18 @@ Current verified result before the documentation-only update:
 
 ## Queue boundary
 
-`FeatureQueue` is admission and accounting only. The detached worktree runner
-creates and verifies an isolated checkout after claim-scoped approval. The
-PR/merge executor can run fixed `gh` plans through DSH shell, but it is not
-automatically wired to a queue item or a network action. It still requires
-claim-scoped human approval, and no queue record is proof that a PR was opened
-or merged.
+`FeatureQueue` is admission and accounting only. DSH exposes its mutations
+through the human-gated `feature_queue` tool and its inspection through the
+read-only `feature_queue_list` tool. The detached worktree runner creates and
+verifies an isolated checkout after claim-scoped approval. The PR/merge
+executor can run fixed `gh` plans through DSH shell after matching approval, but
+it is not automatically wired to queue settlement. No queue record is proof
+that a PR was opened or merged.
 
 ## Next work
 
-1. Connect the existing DSH-shell executor to a gated queue tool only after
-   proving the pinned base commit, isolated branch, and claim-scoped approval.
+1. Connect the verifier/executor to queue settlement only after proving the
+   pinned base commit, isolated branch, and claim-scoped approval.
 2. Add a real isolated queue → worktree → human gate → verifier → PR acceptance
    run without touching the main profile.
 3. Decide whether `routing.ts` collapses onto DSH model selection.

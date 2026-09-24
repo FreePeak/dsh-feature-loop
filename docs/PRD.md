@@ -287,29 +287,34 @@ estimate is now **denied** rather than dispatched.
 3. **Done — verified completion.** `update_goal(action="complete")` is denied
    before DSH commits it unless the configured verifier exits cleanly. The
    verifier runs through the DSH shell and effective sandbox workspace.
-4. **Done — integration and HITL evidence.** The real DSH tool pipeline has 14
-   integration cases, including approval, dashboard delegation, native goal
-   creation, final-turn spend, and budget blocking. A live isolated Web profile
-   also completed a native goal with `onegw/execution` and recorded non-zero
-   spend.
+4. **Done — integration and HITL evidence.** The real DSH tool pipeline has 15
+   integration cases, including approval, dashboard delegation, human-gated
+   queue mutations, native goal creation, final-turn spend, and budget blocking.
+   A live isolated Web profile also completed a native goal with
+   `onegw/execution` and recorded non-zero spend.
 5. **Done — queue and worktree foundation.** `FeatureQueue` provides a durable
    JSONL log, single-writer locking, fencing claim IDs, campaign reservations,
    human-waiting transitions, pinned base commits, and symlink-safe admission.
    `git-worktree.ts` now runs only fixed, shell-free Git commands, creates a
    detached worktree at the pinned commit, and proves its HEAD and ownership.
-6. **Done — PR and merge gate plans.** `pr-gate.ts` validates repository,
+6. **Done — PR and merge DSH executor.** `pr-gate.ts` validates repository,
    branch, commit, and body-file inputs; constructs fixed shell-free `gh`
-   commands; and requires claim-scoped human approval before authorizing a
-   squash merge. It does not execute the commands or contact a network.
-7. **Next — audited PR/merge execution.** Connect the fixed plans to a
-   separately gated runner after the DSH shell boundary is available. A queue
-   record is never proof that a PR or merge happened.
+   commands; and `pr-executor.ts` sends them through the DSH sandbox-aware
+   shell service. Both PR creation and merge require claim-scoped human
+   approval; the model cannot settle a queue item directly.
+7. **In progress — queue-to-executor wiring.** The DSH queue tools are mounted
+   and human-gated, but the verifier/executor must still settle items and
+   connect the worktree/PR plans to the queue lifecycle. A queue record is
+   never proof that a PR or merge happened.
 8. **Next — decision on `routing.ts`.** Collapse the ladder onto DSH model
    selection or document why spec-level escalation remains distinct.
 
-The queue remains admission/accounting only. The worktree runner does not create
-branches, commit, push, open PRs, or merge. Those operations remain separate
-command-gated boundaries.
+The queue remains admission/accounting only. The worktree runner creates a
+detached checkout after claim-scoped approval. The PR executor can run fixed
+plans through DSH shell after matching approval, but it is not automatically
+invoked by the queue. Branches, commits, pushes, PRs, and merges remain
+separate command-gated boundaries; queue records are not proof of those
+operations.
 
 ---
 
