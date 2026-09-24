@@ -45,20 +45,27 @@
 
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import LlmRuntime, { ToolCallId } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import SessionStore, { Session, SessionId } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import ApprovalService, { type ApprovalOutcome, type ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
+import Commands from '@deepseek-ai/dsh-commands'
+import Goal from '@deepseek-ai/dsh-goal'
 import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { MockAdapter, textResponse, toolCallResponse } from '../../agent-loop/tests/mock-adapter.ts'
 
 // The real plugin under test, resolved through this repo's package export.
 // `test/integration/run.sh` rewrites ONLY these two import specifiers when it
 // stages this file into the harness tree — every other import (including the
 // dashboard types, re-exported through `plugin.ts`) must ride along with them.
 import { apply as applyFeatureLoop } from '../../src/plugin.ts'
+import { apply as applyCommand } from '../../src/command.ts'
 import type { DashboardSnapshot } from '../../src/plugin.ts'
 import type { LoopSpec } from '../../src/spec.ts'
 
@@ -108,6 +115,17 @@ interface DashboardProbe {
 }
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => { setTimeout(resolve, ms) })
+
+async function waitForRunRecord(path: string): Promise<Record<string, unknown>> {
+  for (let attempt = 0; attempt < 400; attempt++) {
+    try {
+      return JSON.parse(readFileSync(path, 'utf8').trim().split('\n').at(-1) ?? '{}') as Record<string, unknown>
+    } catch {
+      await sleep(10)
+    }
+  }
+  throw new Error('run history record never landed')
+}
 
 /** Fetch `/api/state`; the same read the page makes over SSE. */
 async function apiState(probe: DashboardProbe): Promise<DashboardSnapshot> {
@@ -176,6 +194,8 @@ async function featureLoopSetup(options: {
   gatePolicies?: Record<string, 'auto' | 'auto-if-confident' | 'always-approve'>
   dashboard?: boolean
   explainer?: { explain: (input: unknown) => Promise<string | undefined> }
+  spec?: LoopSpec
+  history?: string
 } = {}): Promise<{ ctx: Context, dispose: () => void, dashboard?: DashboardProbe }> {
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
@@ -202,9 +222,10 @@ async function featureLoopSetup(options: {
     }
     // The plugin under test. Returning `{kind:'ask'}` here is the whole change.
     dispose = applyFeatureLoop(ctx, {
-      spec: SPEC,
+      spec: options.spec ?? SPEC,
       gateMode: options.gateMode ?? 'ask',
       gatePolicies: options.gatePolicies ?? {},
+      ...options.history === undefined ? {} : { optimize: { history: options.history } },
       ...options.explainer === undefined ? {} : { explainer: options.explainer as never },
       ...(options.dashboard === true ? { dashboard: { enabled: true, port: 0 } } : {}),
     })
@@ -548,6 +569,81 @@ describe('feature-loop gate inside a real DSH pipeline', () => {
       closeTab()
     } finally {
       dispose()
+    }
+  })
+
+  it('GOAL COMMAND: /loop creates and arms a native DSH goal without a direct followup', async () => {
+    const { ctx, dispose } = await featureLoopSetup()
+    try {
+      await ctx.plugin(Commands)
+      await ctx.plugin(Goal)
+      applyCommand(ctx as never)
+      const agent = await ctx.agentLoop.create(SessionId('goal-command'), { provider: 'mock', model: 'mock' })
+
+      const execution = await ctx.commands.execute(agent, '/loop ship the queue', [], new AbortController().signal)
+      expect(execution?.result.kind).toBe('success')
+      const goal = ctx.goals.get(agent)
+      expect(goal).toMatchObject({ phase: 'active', activation: 'armed' })
+      expect(goal?.objective).toContain('ship the queue')
+      expect(goal?.objective).toContain('independently verified')
+      const events = agent.session.snapshotEvents()
+      expect(events.filter(event => event.type === 'goal/change')).toHaveLength(1)
+      expect(events.filter(event => event.type === 'user/message')).toHaveLength(0)
+    } finally {
+      dispose()
+    }
+  })
+
+  it('BUDGET FINAL: a final text turn records real spend without inventing a stop', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fl-final-budget-'))
+    const history = join(dir, 'runs.jsonl')
+    const adapter = new MockAdapter([textResponse('done')])
+    const { ctx, dispose } = await featureLoopSetup({
+      spec: { ...SPEC, costBudgetUSD: 0.000001 },
+      history,
+    })
+    try {
+      ctx.llm.registerAdapter(['p'], adapter)
+      const agent = await ctx.agentLoop.create(SessionId('budget-final'), { provider: 'mock', model: 'mock' })
+      agent.followup(createUserMessage({ content: [{ type: 'text', text: 'finish' }], source: { kind: 'user' } }))
+      await agent.whenIdle()
+      const record = await waitForRunRecord(history)
+      expect(adapter.requests).toHaveLength(1)
+      expect(record.runId).toBe('budget-final#1')
+      expect(record.steps).toBe(1)
+      expect(record.costUSD).toBeGreaterThan(0)
+      expect(record.outcome).toBe('goal-met')
+    } finally {
+      dispose()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('BUDGET STOP: a priced first step blocks the second model request and records the veto', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fl-budget-stop-'))
+    const history = join(dir, 'runs.jsonl')
+    const adapter = new MockAdapter([
+      toolCallResponse('cost-call', 'write_file', { path: '/tmp/cost' }),
+      textResponse('must not run'),
+    ])
+    const { ctx, dispose } = await featureLoopSetup({
+      spec: { ...SPEC, costBudgetUSD: 0.000001 },
+      gatePolicies: { write_file: 'auto' },
+      history,
+    })
+    try {
+      ctx.llm.registerAdapter(['p'], adapter)
+      const agent = await ctx.agentLoop.create(SessionId('budget-stop'), { provider: 'mock', model: 'mock' })
+      agent.followup(createUserMessage({ content: [{ type: 'text', text: 'work' }], source: { kind: 'user' } }))
+      await agent.whenIdle()
+      const record = await waitForRunRecord(history)
+      expect(adapter.requests).toHaveLength(1)
+      expect(record.steps).toBe(1)
+      expect(record.costUSD).toBeGreaterThan(0)
+      expect(record.outcome).toBe('budget-stop')
+    } finally {
+      dispose()
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 })

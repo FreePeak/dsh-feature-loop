@@ -295,6 +295,18 @@ export class TurnRunRegistry {
     this.currentRun()?.consume(event)
   }
 
+  /** Rebuild all known turns from an ordered Session log snapshot. */
+  rebuild(events: readonly unknown[]): void {
+    this.runs.clear()
+    this.currentTurn = undefined
+    for (const event of events) this.consume(event)
+  }
+
+  /** Mark the current turn's explicit plugin veto. */
+  markCurrentStop(reason: string): void {
+    this.currentRun()?.markStop(reason)
+  }
+
   /** Return one completed or in-flight turn, or `undefined` before it starts. */
   get(turn: number): TurnRunSnapshot | undefined {
     return this.runs.get(turn)?.snapshot()

@@ -56,6 +56,10 @@ import { createOnegwClient } from './llm.ts'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { TurnRunRegistry, turnBudgetVerdict } from './turn-ledger.ts'
+import type { TurnRunSnapshot } from './turn-ledger.ts'
+import { createLoopObjective, verifyLoopCompletion } from './goal-loop.ts'
+import type { LoopVerificationResult } from './goal-loop.ts'
 import { budgetStopText, budgetWarnText, escalationText, reviewText } from './messages.ts'
 // Type-only: `summarize` reads data, never the disk, so the module ships no
 // fs imports into the plugin's graph (the same stance `metrics.ts` documents
@@ -182,6 +186,8 @@ export interface FeatureLoopPolicy {
   /** The spec, when the deployment configured one. */
   spec: LoopSpec | undefined
   budget: LoopBudget | undefined
+  /** Exact DSH turn ledger, bound to the live agent's Session on first use. */
+  runs: TurnRunRegistry | undefined
   /**
    * Session-log cursor: the first seq this policy has not yet priced into
    * `budget`.
@@ -263,6 +269,40 @@ function argsKey(args: unknown): string {
 function runIdOf(agent: Agent | undefined): string {
   const id = agent === undefined ? undefined : (agent as { readonly id?: unknown }).id
   return typeof id === 'string' && id !== '' ? id : 'agentless'
+}
+
+/** Bind and replay the exact per-turn ledger for one live DSH Session. */
+function bindRunLedger(policy: FeatureLoopPolicy, agent: Agent | undefined): void {
+  if (agent === undefined || policy.spec === undefined || policy.runs !== undefined) return
+  const session = (agent as { session?: { id?: unknown, snapshotEvents?: () => readonly unknown[] } }).session
+  if (session === undefined) return
+  const sessionId = session.id
+  if (typeof sessionId !== 'string' || sessionId === '' || typeof session.snapshotEvents !== 'function') return
+  const runs = new TurnRunRegistry({
+    sessionId,
+    ...policy.spec.prices === undefined ? {} : { prices: policy.spec.prices },
+    ...policy.spec.unpricedFallback === undefined ? {} : { unpricedFallback: policy.spec.unpricedFallback },
+  })
+  runs.rebuild(session.snapshotEvents())
+  policy.runs = runs
+}
+
+/** Project the current exact DSH turn into the policy's budget view. */
+function budgetSnapshotOf(policy: FeatureLoopPolicy): BudgetSnapshot | undefined {
+  const run = policy.runs?.current()
+  if (run === undefined) return policy.budget?.snapshot()
+  const budgetUSD = policy.spec?.costBudgetUSD ?? 0
+  return {
+    steps: run.steps,
+    spentUSD: run.spentUSD,
+    budgetUSD,
+    fraction: budgetUSD === 0 ? Number.POSITIVE_INFINITY : run.spentUSD / budgetUSD,
+    unpricedSteps: run.unpricedAttempts,
+    byRoute: Object.fromEntries(Object.entries(run.byRoute).map(([route, row]) => [
+      route,
+      { steps: row.attempts, usd: row.usd },
+    ])),
+  }
 }
 
 /**
@@ -395,6 +435,7 @@ export function createPolicy(options: CreatePolicyOptions): FeatureLoopPolicy {
   return {
     spec,
     budget,
+    runs: undefined,
     pricedThroughSeq: undefined,
     ladder,
     router,
@@ -464,12 +505,16 @@ export async function reviewStep(
   // The snapshot is taken before the stop check so a ceiling stop still
   // reports where the run stood when it was cut — the dashboard's most
   // interesting frame is the one at the moment of stopping.
-  const snapshot = policy.budget?.snapshot()
-  const verdict = policy.budget?.verdict(step)
+  const run = policy.runs?.current()
+  const snapshot = budgetSnapshotOf(policy)
+  const verdict = run === undefined || policy.spec === undefined
+    ? policy.budget?.verdict(step)
+    : turnBudgetVerdict(policy.spec, run, step)
 
   // A ceiling is the one thing that stops the run rather than annotating it:
   // continuing would spend money the deployment already said it would not.
   if (verdict?.kind === 'stop') {
+    policy.runs?.markCurrentStop(verdict.reason)
     return {
       decision: { kind: 'reject', reason: verdict.reason } as PreStepDecision,
       notices: [budgetStopText(verdict.reason)],
@@ -772,19 +817,11 @@ interface TurnRecordInput {
  * @param policy - the agent's policy, for the budget verdict when present.
  * @returns the run outcome to record.
  */
-function outcomeOf(reasonKind: string, policy: FeatureLoopPolicy): RunOutcome {
-  if (reasonKind === 'aborted') return 'aborted'
+function outcomeOf(reasonKind: string, run?: TurnRunSnapshot): RunOutcome {
+  if (reasonKind === 'aborted' || reasonKind === 'interrupted') return 'aborted'
   if (reasonKind === 'error') return 'error'
+  if (run?.stopReason !== undefined) return 'budget-stop'
   if (reasonKind === 'blocked') return 'blocked'
-  // `completed`, `max-tokens` and `interrupted` all say the transport closed
-  // the turn without refusing it. Whether the loop *succeeded* is then a
-  // question for the ceilings: a turn the harness calls completed that spent
-  // past its budget is a budget-stop in every sense that matters to the next
-  // derivation. With no budget configured there is no ceiling to have hit, so
-  // `completed` reads as goal-met only in the literal harness sense — the
-  // loop's own success check lives in the CLI runner, not in this hook.
-  const spent = policy.budget?.snapshot()
-  if (spent !== undefined && policy.budget?.verdict(spent.steps).kind === 'stop') return 'budget-stop'
   if (reasonKind === 'completed') return 'goal-met'
   return 'model-stop'
 }
@@ -815,24 +852,27 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
   const { session, agent, event, options, policyFor, state, historyPath } = input
   const runlog = await import('./runlog.ts')
   const policy = policyFor(agent)
-  const snapshot = policy.budget?.snapshot()
+  const run = policy.runs?.get(event.turn) ?? policy.runs?.current()
   const spec = policy.spec ?? options.spec
   const now = Date.now()
-  const steps = snapshot?.steps ?? 0
+  const steps = run?.steps ?? 0
   const record: RunRecord = {
-    runId: sessionIdOf(session),
+    runId: `${sessionIdOf(session)}#${String(event.turn)}`,
     startedAt: now,
     endedAt: now,
     pass: 1,
     passes: 1,
     taskKey: spec === undefined ? 'none' : runlog.taskKeyOf(spec.goal),
-    outcome: outcomeOf(event.reasonKind, policy),
+    outcome: outcomeOf(event.reasonKind, run),
     steps,
     maxSteps: spec?.maxSteps ?? 0,
-    costUSD: snapshot?.spentUSD ?? 0,
+    costUSD: run?.spentUSD ?? 0,
     budgetUSD: spec?.costBudgetUSD ?? 0,
-    unpricedSteps: snapshot?.unpricedSteps ?? 0,
-    byRoute: snapshot === undefined ? {} : { ...snapshot.byRoute },
+    unpricedSteps: run?.unpricedAttempts ?? 0,
+    byRoute: run === undefined ? {} : Object.fromEntries(Object.entries(run.byRoute).map(([route, row]) => [
+      route,
+      { steps: row.attempts, usd: row.usd },
+    ])),
     stepLatencyMs: [],
     wallMs: 0,
     latencyKind: 'round-trip',
@@ -1123,6 +1163,7 @@ export function apply(
     let policy = policies.get(agent)
     if (policy === undefined) {
       policy = fresh()
+      bindRunLedger(policy, agent)
       policies.set(agent, policy)
     }
     return policy
@@ -1302,10 +1343,12 @@ export function apply(
   const recordedTurns = new Set<string>()
   const path: string = historyPath
   const disposeSession = ctx.on('session/event', (session: unknown, event: unknown) => {
+    const agent = agentForSession(session)
+    const policy = agent === undefined ? undefined : policyFor(agent)
+    policy?.runs?.consume(event)
     const end = asTurnEnd(event)
     if (end === undefined) return
-    const agent = agentForSession(session)
-    if (agent !== undefined) commitPendingStep(policyFor(agent))
+    if (policy !== undefined) commitPendingStep(policy)
     if (!historyEnabled) return
     const key = `${sessionIdOf(session)}#${String(end.turn)}`
     if (recordedTurns.has(key)) return
