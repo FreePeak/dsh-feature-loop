@@ -627,6 +627,48 @@ export function gateForTool(
     : { kind: 'ask', reason }
 }
 
+interface LoopShellService {
+  resolve(request: Record<string, unknown>): unknown
+  execute(spec: unknown): Promise<{ result(): Promise<LoopVerificationResult> }>
+}
+
+interface LoopSandboxPolicyService {
+  resolve(input: { session: unknown }): { workspaceRoot?: string } | undefined
+}
+
+/** Verify `update_goal complete` before DSH commits the goal transition. */
+async function verifyGoalCompletion(
+  ctx: Context,
+  agent: Agent | undefined,
+  execution: ToolExecution,
+): Promise<{ kind: 'deny', reason: string } | undefined> {
+  const command = currentLoopVerifier()
+  if (command === undefined) {
+    return { kind: 'deny', reason: 'Completion denied: no independent verifier is configured.' }
+  }
+  const get = (ctx as unknown as { get?: (key: string) => unknown }).get
+  const shell = get?.call(ctx, 'shell') as LoopShellService | undefined
+  if (shell === undefined) {
+    return { kind: 'deny', reason: 'Completion denied: the DSH shell service is unavailable.' }
+  }
+  const session = (agent as { session?: { header?: { cwd?: string } } } | undefined)?.session
+  const sandbox = get?.call(ctx, 'sandboxPolicy') as LoopSandboxPolicyService | undefined
+  const policy = session === undefined ? undefined : sandbox?.resolve({ session })
+  const workdir = policy?.workspaceRoot ?? session?.header?.cwd
+  try {
+    const running = await shell.execute(shell.resolve({
+      command,
+      ...workdir === undefined ? {} : { workdir },
+      signal: execution.signal,
+      ...policy === undefined ? {} : { sandboxPolicy: policy },
+    }))
+    const decision = verifyLoopCompletion(await running.result())
+    return decision.kind === 'deny' ? decision : undefined
+  } catch {
+    return { kind: 'deny', reason: 'Completion denied: verification infrastructure failed.' }
+  }
+}
+
 /**
  * The gate's verdict for one tool call.
  *
@@ -1342,13 +1384,7 @@ export function apply(
   // listener.
   const recordedTurns = new Set<string>()
   const path: string = historyPath
-  const disposeSession = ctx.on('session/event', (session: unknown, event: unknown) => {
-    const agent = agentForSession(session)
-    const policy = agent === undefined ? undefined : policyFor(agent)
-    policy?.runs?.consume(event)
-    const end = asTurnEnd(event)
-    if (end === undefined) return
-    if (policy !== undefined) commitPendingStep(policy)
+  const recordClosedTurn = (session: unknown, agent: Agent | undefined, end: { turn: number, reasonKind: string }): void => {
     if (!historyEnabled) return
     const key = `${sessionIdOf(session)}#${String(end.turn)}`
     if (recordedTurns.has(key)) return
@@ -1357,6 +1393,32 @@ export function apply(
       .catch((error: unknown) => {
         state.note('note', `run history append failed: ${error instanceof Error ? error.message : String(error)}`)
       })
+  }
+  const eventContext = (ctx as unknown as { root?: Context }).root ?? ctx
+  const disposeSession = eventContext.on('session/event', (session: unknown, event: unknown) => {
+    const agent = agentForSession(session)
+    const policy = agent === undefined ? undefined : policyFor(agent)
+    policy?.runs?.consume(event)
+    const end = asTurnEnd(event)
+    if (end === undefined) return
+    if (policy !== undefined) commitPendingStep(policy)
+    recordClosedTurn(session, agent, end)
+  })
+  // Session events are scope-owned in a Web profile. The agent's idle boundary
+  // is global enough for the policy fiber and always follows the turn/end append.
+  const disposeStatus = ctx.on('agent/status', ({ agent, status }: { agent: Agent, status: string }): void => {
+    if (status !== 'idle') return
+    const session = (agent as { session?: { snapshotEvents?: () => readonly unknown[] } }).session
+    if (typeof session?.snapshotEvents !== 'function') return
+    const events = session.snapshotEvents()
+    const end = asTurnEnd(events.findLast(event => (event as { type?: unknown } | undefined)?.type === 'turn/end'))
+    if (end === undefined) return
+    const policy = policyFor(agent)
+    const priorStop = policy.runs?.get(end.turn)?.stopReason
+    policy.runs?.rebuild(events)
+    if (priorStop !== undefined) policy.runs?.markCurrentStop(priorStop)
+    commitPendingStep(policy)
+    recordClosedTurn(agent.session, agent, end)
   })
 
   const disposeStep = ctx.on('agent/pre-step', async ({ agent, turn, step }, next) => {
@@ -1459,6 +1521,7 @@ export function apply(
     disposeTools()
     disposeResult()
     disposeSession?.()
+    disposeStatus()
     disposeApproval?.()
     if (dashboard !== undefined) void dashboard.stop()
     unsubscribeChanged()

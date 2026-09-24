@@ -108,6 +108,77 @@ function harness(sessionId = 'a1'): Harness {
   }
 }
 
+function completionHarness(result: { exitCode: number | null, signal?: string | null, timedOut?: boolean, aborted?: boolean, sandbox?: { denied?: boolean, runnerFailed?: boolean } }) {
+  const handlers = new Map<string, (...args: never[]) => unknown>()
+  const requests: Record<string, unknown>[] = []
+  const agent = { id: 'goal-session', session: { header: { cwd: '/session/workspace' } } }
+  const shell = {
+    resolve(request: Record<string, unknown>) {
+      requests.push(request)
+      return request
+    },
+    async execute() {
+      return { async result() { return result } }
+    },
+  }
+  const ctx = {
+    agents: { get: () => agent },
+    get: (key: string) => key === 'shell'
+      ? shell
+      : key === 'sandboxPolicy'
+        ? { resolve: () => ({ workspaceRoot: '/sandbox/workspace' }) }
+        : undefined,
+    on(event: string, handler: (...args: never[]) => unknown): () => void {
+      handlers.set(event, handler)
+      return () => { handlers.delete(event) }
+    },
+  }
+  const dispose = apply(ctx as never, { spec: SPEC, dashboard: { enabled: false }, optimize: { history: '' } })
+  const handler = handlers.get('tools/pre-execute') as WaterfallHandler | undefined
+  assert.ok(handler !== undefined)
+  return {
+    agent,
+    requests,
+    dispose,
+    async complete() {
+      return await handler(
+        {
+          agent,
+          callId: 'goal-call',
+          name: 'update_goal',
+          arguments: { goal_id: 'g1', revision: 1, action: 'complete' },
+          signal: new AbortController().signal,
+        },
+        async () => ({ kind: 'allow' }),
+      )
+    },
+  }
+}
+
+test('goal completion runs the verifier in the effective sandbox workspace before human gating', async (t) => {
+  const h = completionHarness({ exitCode: 0, signal: null })
+  t.after(h.dispose)
+  const decision = await h.complete()
+  assert.equal(decision.kind, 'ask', 'passing verification still reaches the normal irreversible gate')
+  assert.equal(h.requests.length, 1)
+  assert.equal(h.requests[0]?.command, 'true')
+  assert.equal(h.requests[0]?.workdir, '/sandbox/workspace')
+  assert.deepEqual(h.requests[0]?.sandboxPolicy, { workspaceRoot: '/sandbox/workspace' })
+})
+
+test('failed or unavailable verification denies update_goal complete before the human gate', async (t) => {
+  const failed = completionHarness({ exitCode: 1, signal: null })
+  t.after(failed.dispose)
+  assert.equal((await failed.complete()).kind, 'deny')
+
+  const unavailable = completionHarness({ exitCode: 0 })
+  unavailable.dispose()
+  configureLoopVerifier(undefined)
+  const decision = await unavailable.complete()
+  assert.equal(decision.kind, 'deny')
+  assert.match((decision as { reason: string }).reason, /no independent verifier/)
+})
+
 test('a provider-less ladder rung preserves the resolved provider and applies reasoning effort', async (t) => {
   const h = harness()
   t.after(h.dispose)

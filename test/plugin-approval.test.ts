@@ -182,9 +182,19 @@ test('a call with no agent is still gated, not silently delegated', async () => 
 test('the handler is registered on the harness tool-boundary event', async () => {
   const { ctx, registered } = fakeCtx()
   const dispose = apply(ctx as never, { spec: SPEC, dashboard: { enabled: false } })
-  // Registration order follows apply(): the session/event recorder is
-  // registered before the step/request/tool hooks.
-  assert.deepEqual(registered(), ['session/event', 'agent/pre-step', 'agent/request', 'tools/pre-execute', 'tools/result'])
+  // Registration order follows apply(): the approval answerer is attached
+  // first (it owns the asks), then the session/event recorder, then the
+  // step/request/tool hooks. The answerer is always present now — the in-UI
+  // page is a claimer, and an unwatched ask must still delegate downstream.
+  assert.deepEqual(registered(), [
+    'approval/request',
+    'session/event',
+    'agent/status',
+    'agent/pre-step',
+    'agent/request',
+    'tools/pre-execute',
+    'tools/result',
+  ])
   dispose()
 })
 
