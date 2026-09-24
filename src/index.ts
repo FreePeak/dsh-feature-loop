@@ -203,3 +203,5 @@ export default apply
 
 /** Re-exported for callers that hold a policy and want its type. */
 export type { FeatureLoopPolicy as Policy }
+export { FeatureQueue, readQueueEvents, DEFAULT_QUEUE_PATH } from './feature-queue.ts'
+export type { FeatureInput, FeatureItem, FeatureQueueOptions, FeatureStatus } from './feature-queue.ts'
