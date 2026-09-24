@@ -26,10 +26,8 @@
     "assets/mark-light.svg",
     "assets/mark-mono.svg",
     "assets/mark.svg",
-    "bin/dshloop.mjs",
     "client.js",
     "cordis.patch.yml",
-    "lib/cli.mjs",
     "lib/command.mjs",
     "lib/index.d.mts",
     "lib/index.mjs",
@@ -65,7 +63,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsdown src/index.ts src/cli.ts src/remote.ts src/command.ts --format esm --out-dir lib",
+    "build": "tsdown src/index.ts src/remote.ts src/command.ts --format esm --out-dir lib",
     "test": "node --experimental-strip-types --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "demo": "bash demo/run.sh",
@@ -76,7 +74,6 @@
     "lint:workflows": "actionlint .github/workflows/*.yml",
     "test:integration": "bash test/integration/run.sh",
     "dashboard-bundle": "node web/build.mjs",
-    "dshloop": "node bin/dshloop.mjs",
     "prepare": "git config core.hooksPath .githooks"
   },
   "dependencies": {
@@ -125,8 +122,5 @@
     "@deepseek-ai/dsh-typert-protocol": {
       "optional": true
     }
-  },
-  "bin": {
-    "dshloop": "./bin/dshloop.mjs"
   }
 }

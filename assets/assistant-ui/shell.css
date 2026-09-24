@@ -165,8 +165,8 @@ header .header-meta {
 }
 .badge.badge-pending {
   color: var(--text);
-  background: color-mix(in srgb, var(--warn) 22%, var(--panel));
-  border-color: color-mix(in srgb, var(--warn) 50%, var(--border));
+  background: color-mix(in srgb, var(--warn) 14%, var(--panel));
+  border-color: color-mix(in srgb, var(--warn) 40%, var(--border));
   font-weight: 650;
 }
 .badge.badge-pending[data-count="0"] {
@@ -477,7 +477,7 @@ h2 {
 }
 .section-count.hot {
   color: var(--text);
-  background: var(--dsw-alias-state-warn-primary, var(--badge));
+  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary, var(--badge)) 20%, var(--panel));
   border-radius: 999px;
   padding: 1px 8px;
   font-weight: 650;
@@ -666,9 +666,9 @@ button.allow:hover:not(:disabled) {
   border-color: var(--ok);
 }
 button.reject {
-  background: transparent;
-  border-color: color-mix(in srgb, var(--bad) 70%, var(--border));
-  color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 10%, var(--panel));
+  border-color: color-mix(in srgb, var(--bad) 60%, var(--border));
+  color: color-mix(in srgb, var(--bad) 62%, var(--text));
 }
 button.reject:hover:not(:disabled) {
   background: color-mix(in srgb, var(--bad-deep) 14%, transparent);
