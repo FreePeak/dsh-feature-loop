@@ -13,7 +13,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { apply as applyFeatureLoop } from './plugin.ts'
+import { apply as applyFeatureLoop, resolveJudge } from './plugin.ts'
 import type { CreatePolicyOptions, FeatureLoopPolicy } from './plugin.ts'
 import type { DashboardConfig } from './dashboard.ts'
 import { parseOptimizeConfig } from './spec.ts'
@@ -27,6 +27,7 @@ export {
   escalationForStep,
   gateForTool,
   detectSignals,
+  executeLoopCommand,
 } from './plugin.ts'
 export type { CreatePolicyOptions, FeatureLoopPolicy } from './plugin.ts'
 
@@ -86,6 +87,22 @@ export interface Config {
    */
   dashboard?: DashboardConfig
   /**
+   * Which judge scores review-worthiness, and how to reach it.
+   *
+   * `none` (detectors only) | `chat` (metered) | `laya` (local, free). The
+   * settings page and the status panel both read these keys, so they are part
+   * of the row's public surface rather than a CLI-only extra.
+   */
+  judge?: 'none' | 'chat' | 'laya'
+  /** System One provider base URL. Defaults to `http://127.0.0.1:8091`. */
+  judgeBaseURL?: string
+  /** Model alias the System One provider routes to. Defaults to `laya`. */
+  systemOneModel?: string
+  /** Model the `chat` judge uses. */
+  judgeModel?: string
+  /** Deadline for one judge call, in ms. */
+  judgeTimeoutMs?: number
+  /**
    * The optimization block (`loops`, `derive`, `history`, `judge`,
    * `totalBudgetUSD`). The block is validated at load and forwarded to the
    * plugin, which uses it for exactly what a deployed loop can use: `derive`
@@ -115,6 +132,11 @@ export const Config: z<Config> = z.object({
   gateMode: z.union([z.const('ask'), z.const('deny')]),
   dashboard: z.any(),
   optimize: z.any(),
+  judge: z.string(),
+  judgeBaseURL: z.string(),
+  systemOneModel: z.string(),
+  judgeModel: z.string(),
+  judgeTimeoutMs: z.number(),
 }) as unknown as z<Config>
 
 /**
@@ -132,8 +154,22 @@ export function apply(ctx: Context, config: Config = {}): (() => void) | void {
   // start. The parsed block is forwarded so the plugin can record history and
   // feed the dashboard's Metrics panel from it.
   const optimize = config.optimize === undefined ? undefined : parseOptimizeConfig(config.optimize)
+  // Same rule for the judge: a `chat` judge with no key is a loud load-time
+  // error, not a judge that quietly never runs. `laya` and `none` never throw.
+  const { judge } = resolveJudge({
+    judge: config.judge,
+    judgeBaseURL: config.judgeBaseURL,
+    systemOneModel: config.systemOneModel,
+    judgeModel: config.judgeModel,
+    judgeTimeoutMs: config.judgeTimeoutMs,
+  })
   return applyFeatureLoop(ctx, {
     spec: config.spec,
+    judge,
+    // The deployment's own config, verbatim. The panel must show what the row
+    // says (`judge: laya`), not the resolved internals — `options.judge` is a
+    // constructed Judge, which no status page can render as a setting.
+    rowConfig: { ...config },
     confidenceThreshold: config.confidenceThreshold,
     gatePolicies: config.gatePolicies,
     gateMode: config.gateMode,

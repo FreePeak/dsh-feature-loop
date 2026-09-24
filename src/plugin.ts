@@ -38,12 +38,16 @@ import type { GatePolicy } from './review.ts'
 import { detectSignals } from './signals.ts'
 import type { ReviewSignal, StepObservation } from './signals.ts'
 import { parseDashboardConfig, pendingIdFor, startDashboard, DashboardState } from './dashboard.ts'
+import { createApprovalRegistry, clearWatcher, watcherActive } from './approvals.ts'
+import { createChangeEmitter } from './change-event.ts'
+import type { ApprovalRegistry } from './approvals.ts'
 import type { ApprovalOutcome, ApprovalQuestion, BriefNode, DashboardConfig, DashboardHandle, DashboardSnapshot } from './dashboard.ts'
 import { prepareReview, resolveReversibility } from './agent-policy.ts'
 import { validateSpec } from './spec.ts'
 import type { LoopSpec } from './spec.ts'
 import type { OptimizeConfig } from './spec.ts'
-import { NO_JUDGE } from './laya.ts'
+import { NO_JUDGE, OnegwJudge } from './laya.ts'
+import { createChatJudge } from './judge.ts'
 import type { Judge } from './laya.ts'
 import { createChatExplainer, NO_EXPLAINER } from './explainer.ts'
 import type { BriefInput, Explainer } from './explainer.ts'
@@ -210,6 +214,21 @@ function argsKey(args: unknown): string {
 function runIdOf(agent: Agent | undefined): string {
   const id = agent === undefined ? undefined : (agent as { readonly id?: unknown }).id
   return typeof id === 'string' && id !== '' ? id : 'agentless'
+}
+
+/**
+ * The dashboard URL for the published config, read lazily.
+ *
+ * The handle's `url` is empty until the socket is bound, and the remote row
+ * may ask before that resolves — so this reads it per call rather than
+ * snapshotting it once at publish time.
+ *
+ * @param dashboard - the started dashboard handle.
+ * @returns the config fragment carrying the URL and token.
+ */
+function dashboardURLOnceBound(dashboard: DashboardHandle): Record<string, unknown> {
+  const url = dashboard.url
+  return url === '' ? {} : { dashboardURL: `${url}?token=${dashboard.token}` }
 }
 
 /**
@@ -830,20 +849,20 @@ function agentOfSession(_session: unknown): Agent | undefined {
  */
 export function attachApprovalAnswerer(
   ctx: Context,
-  dashboard: DashboardHandle,
+  registry: ApprovalRegistry,
   requestBrief: (id: string, question: ApprovalQuestion) => void = () => undefined,
 ): () => void {
   return ctx.on(
     'approval/request',
     (question: ApprovalQuestion, next: () => Promise<ApprovalOutcome>) => {
-      const claimed = dashboard.answer(question, next)
+      const claimed = registry.answer(question, next)
       // Fire-and-forget deliberately: the brief must never gate the ask.
       // `answer` registers the pending entry synchronously before returning
       // the promise, but the entry's id is internal to the dashboard, so the
       // brief request re-reads the snapshot and matches on the ask's own
       // fields. A settled-before-brief ask simply matches nothing.
       void Promise.resolve().then(() => {
-        const id = pendingIdFor(dashboard.pendingSnapshot(), question)
+        const id = pendingIdFor(registry.pendingSnapshot(), question)
         if (id !== undefined) requestBrief(id, question)
       })
       return claimed
@@ -859,16 +878,16 @@ export function attachApprovalAnswerer(
  * here can throw out, hang, or settle the ask. A brief requested for an ask
  * that settled meanwhile matches nothing and is dropped by the recorder.
  *
- * @param args - the dashboard, explainer, pending id, and question.
+ * @param args - the registry, explainer, pending id, and question.
  */
 export async function requestBrief(args: {
-  dashboard: DashboardHandle
+  registry: ApprovalRegistry
   explainer: Explainer
   id: string
   question: ApprovalQuestion
 }): Promise<void> {
-  const { dashboard, explainer, id, question } = args
-  dashboard.briefs.markBriefPending(id)
+  const { registry, explainer, id, question } = args
+  registry.briefs.markBriefPending(id)
   let code: string | undefined
   try {
     code = await explainer.explain(briefInputFor(question), question.signal)
@@ -876,12 +895,12 @@ export async function requestBrief(args: {
     code = undefined
   }
   if (code === undefined) {
-    dashboard.briefs.recordBrief(id, undefined)
+    registry.briefs.recordBrief(id, undefined)
     return
   }
   const normalized = normalizeBrief(code)
   const nodes: BriefNode[] | undefined = 'nodes' in normalized ? normalized.nodes : undefined
-  dashboard.briefs.recordBrief(id, nodes)
+  registry.briefs.recordBrief(id, nodes)
 }
 
 /**
@@ -971,7 +990,7 @@ export const inject = ['agents']
  */
 export function apply(
   ctx: Context,
-  options: Parameters<typeof createPolicy>[0] & { dashboard?: DashboardConfig } = {},
+  options: Parameters<typeof createPolicy>[0] & { dashboard?: DashboardConfig, rowConfig?: Record<string, unknown> } = {},
 ): () => void {
   const policies = new WeakMap<Agent, FeatureLoopPolicy>()
   const fresh = (): FeatureLoopPolicy => createPolicy(options)
@@ -1017,43 +1036,100 @@ export function apply(
   // keeps working either way — the answerer claims a request only while a
   // dashboard tab is actually connected.
   const state = new DashboardState()
+  // Bridge every state change to the browser as one coalesced event, so the
+  // dashboard re-reads on change instead of polling. Returns an unsubscribe;
+  // released with the plugin so a reload never leaves a listener behind.
+  // Guarded: a context without `emit` (a narrow test double, or a host that
+  // mounts the policies without the event surface) must not crash on every
+  // state change. A missed event degrades to the client's safety-net poll,
+  // which is the right failure; a thrown event kills the run.
+  const emitChanged = typeof (ctx as { emit?: unknown }).emit === 'function'
+    ? () => { (ctx as unknown as { emit(name: 'featureLoop/changed'): void }).emit('featureLoop/changed') }
+    : undefined
+  const notifyChanged = emitChanged === undefined ? () => undefined : createChangeEmitter(emitChanged)
+  const unsubscribeChanged = state.onChange(notifyChanged)
   // Validate even when the dashboard is off: a bad field is a typo someone
   // will flip `enabled: true` on later, and it must fail at load, then —
   // not silently refuse to bind. `startDashboard` re-parses below; the
-  // duplicate parse is one-time at load and keeps the fail-loud check
+  // duplicate parse is one-time at load and keeps the fail- loud check
   // unconditional.
   parseDashboardConfig(options.dashboard ?? {})
-  const dashboard = (options.dashboard?.enabled ?? true)
-    ? startDashboard(options.dashboard ?? {}, state)
+  const dashboardConfig = options.dashboard ?? {}
+  // The registry owns the asks, with or without a page. `standalone: true` is
+  // the only thing that starts the loopback HTTP server — the default is the
+  // dashboard as a page inside the DSH UI, reached over the host remote, with
+  // no second origin and no second token to manage.
+  const registry = createApprovalRegistry({
+    state,
+    answers: dashboardConfig.answers ?? true,
+    answerTimeoutMs: dashboardConfig.answerTimeoutMs ?? 600_000,
+    hasWatcher: () => watcherActive(),
+  })
+  const dashboard = dashboardConfig.standalone === true
+    ? startDashboard({ ...dashboardConfig, answers: false, enabled: true }, state, registry)
     : undefined
+  // Publish the live state for the remote row (`feature-loop-remote`) to
+  // serve the in-UI dashboard page. Published unconditionally: the in-UI page
+  // is the default surface, and the approvals it answers live in the registry
+  // whether or not a standalone server was ever started.
+  const liveSource = {
+    // The plugin's own snapshot, verbatim — the designed page already renders
+    // these exact shapes, so nothing is re-projected for the UI.
+    snapshot: () => {
+      const snap = state.snapshot()
+      return {
+        runs: snap.runs,
+        feed: snap.feed,
+        ...snap.metrics === undefined ? {} : { metrics: snap.metrics },
+        ...snap.recommendations === undefined ? {} : { recommendations: snap.recommendations },
+      }
+    },
+    pendingApprovals: () => registry.pendingSnapshot(),
+    // A run's name is the task a human typed, so the workspace tree lists runs
+    // someone can recognise instead of agent ids.
+    labelRun: (sessionId: string, task: string): void => {
+      state.recordMeta(sessionId, { sessionId, label: task })
+    },
+    answers: () => dashboardConfig.answers ?? true,
+    settleApproval: (id: string, outcome: 'allowed-once' | 'rejected', feedback?: string): boolean =>
+      registry.settleApproval(id, outcome, feedback),
+    // The policy row's own config, so the in-UI status page reports the spec,
+    // judge and dashboard that are actually running. Without this the remote
+    // row (whose own `config:` is empty) would say "policies off / judge none"
+    // while this row was demonstrably enforcing both.
+    config: () => ({
+      ...(options.rowConfig ?? {}),
+      ...(dashboard === undefined ? {} : dashboardURLOnceBound(dashboard)),
+      embedded: dashboard === undefined,
+    }),
+  }
+  {
+    // Dynamic import: remote.ts pulls `yaml` + fs, and plugin.ts's static
+    // graph must stay harness-free for the strip-types CI path.
+    void import('./remote.ts').then(m => m.publishLiveState(liveSource)).catch(() => undefined)
+  }
   // The brief's explainer: explicit injection wins (tests, custom transports);
-  // otherwise the dashboard's `brief:` row builds one from the deployment's
-  // gateway env. Anything that fails here — no key, no model — is a loud
+  // otherwise the `brief:` row builds one from the deployment's gateway env.
+  // Resolved from the config, not from whether a server was started — the
+  // in-UI page renders briefs too. Anything that fails here is a loud
   // load-time error, never a silent missing brief: `resolveBriefExplainer` is
-  // only reached when briefs were explicitly enabled, so failing here is
-  // failing on what the operator asked for. The started server is stopped
-  // before throwing: a load failure must not leak a listening socket.
+  // only reached when briefs were explicitly enabled.
   let briefExplainer: Explainer
   try {
-    briefExplainer = options.explainer
-      ?? (dashboard === undefined
-        ? NO_EXPLAINER
-        : resolveBriefExplainer(options.dashboard?.brief))
+    briefExplainer = options.explainer ?? resolveBriefExplainer(dashboardConfig.brief)
   } catch (error: unknown) {
     if (dashboard !== undefined) void dashboard.stop()
     throw error
   }
-  const disposeApproval = dashboard === undefined
-    ? undefined
-    : attachApprovalAnswerer(ctx, dashboard, (id, question) => {
-      const agent = question.agent as Agent | undefined
-      void requestBrief({
-        dashboard,
-        explainer: policyFor(agent).explainer === NO_EXPLAINER ? briefExplainer : policyFor(agent).explainer,
-        id,
-        question,
-      })
+  const disposeApproval = attachApprovalAnswerer(ctx, registry, (id, question) => {
+    const agent = question.agent as Agent | undefined
+    void requestBrief({
+      registry,
+      explainer: policyFor(agent).explainer === NO_EXPLAINER ? briefExplainer : policyFor(agent).explainer,
+      id,
+      question,
     })
+  })
   if (dashboard !== undefined) {
     // Both cleanup paths are kept deliberately: cordis collects `effect`
     // disposers on unload, while SDK/standalone callers that ignore the
@@ -1236,6 +1312,10 @@ export function apply(
     disposeSession?.()
     disposeApproval?.()
     if (dashboard !== undefined) void dashboard.stop()
+    unsubscribeChanged()
+    if (liveSource !== undefined) {
+      void import('./remote.ts').then(m => m.unpublishLiveState(liveSource)).catch(() => undefined)
+    }
   }
 }
 
@@ -1243,3 +1323,108 @@ export { detectSignals, parseDashboardConfig, pendingIdFor, startDashboard, Dash
 export type { StepObservation }
 export type { ApprovalOutcome, ApprovalQuestion, BriefNode, DashboardConfig, DashboardHandle, DashboardSnapshot }
 export type { BriefConfig, BriefState } from './dashboard.ts'
+
+/**
+ * The `/loop` host command's outcome, for the composer to render.
+ *
+ * The command does not start model work itself — the harness owns turn
+ * scheduling, and a command handler cannot inject one. Instead it returns
+ * the task text back as the turn's user message: the composer submits the
+ * outcome text as the turn, so the loop policies (ceilings, detectors, gate)
+ * apply to it exactly as they do to any typed request.
+ */
+export interface LoopCommandOutcome {
+  /** The task text to run the bounded loop over. */
+  task: string
+}
+
+/**
+ * Execute the `/loop` host command: `/loop <task>`.
+ *
+ * A bare `/loop` with no task is a usage error, not a silent no-op. The
+ * task text is returned for the composer to submit as the turn — that is
+ * what makes the feature-loop policies apply: the policies hang off the
+ * agent loop's own hooks, so any turn runs bounded and gated, and `/loop`
+ * is just the entry point that names the task.
+ *
+ * @param rawInput - exact text following the `/loop` command name.
+ * @returns a success carrying the task text, or a usage error when empty.
+ */
+export function executeLoopCommand(rawInput: string): LoopCommandOutcome | { kind: 'error', text: string } {
+  const task = rawInput.trim()
+  if (task.length === 0) {
+    return { kind: 'error', text: 'Usage: /loop <task> — describe what the bounded loop should do.' }
+  }
+  return { task }
+}
+/** Default System One endpoint — the shared Laya sidecar on this machine. */
+const DEFAULT_JUDGE_BASE_URL = process.env.SYSTEMONE_BASE_URL ?? 'http://127.0.0.1:8091'
+
+/** Default System One model alias. */
+const DEFAULT_SYSTEMONE_MODEL = process.env.SYSTEMONE_MODEL ?? 'laya'
+
+/**
+ * Build the judge a deployment configured.
+ *
+ * Before this existed the plugin hardcoded `NO_JUDGE`, so a profile could
+ * configure `judge: laya`, see no error, and get detector-only reviews forever
+ * — a silent no-op, which is the failure mode this repo's config blocks
+ * otherwise refuse to allow. Now the kind is read and the client is real.
+ *
+ * `laya` needs nothing but a reachable sidecar, so it is built optimistically:
+ * `OnegwJudge` latches itself off after one failed call and reports the reason
+ * rather than stalling every step, so an unreachable Laya costs one timeout and
+ * then degrades to the detectors — the documented posture in `laya.ts`.
+ *
+ * `chat` costs money per judged step, so it fails at *load* when no gateway key
+ * is present, the same rule the brief explainer follows: a configured judge
+ * that silently never runs is worse than a loud refusal to start.
+ *
+ * @param config - the judge fields from the patch row.
+ * @returns the judge, and a label naming which one for the dashboard's status.
+ * @throws Error when `chat` was asked for with no reachable key.
+ */
+export function resolveJudge(config: JudgeConfig): { judge: Judge, label: string } {
+  const kind = config.judge ?? 'none'
+  if (kind === 'none') return { judge: NO_JUDGE, label: 'none (detectors only)' }
+  if (kind === 'laya') {
+    const baseURL = config.judgeBaseURL ?? process.env.SYSTEMONE_BASE_URL ?? DEFAULT_JUDGE_BASE_URL
+    const model = config.systemOneModel ?? process.env.SYSTEMONE_MODEL ?? DEFAULT_SYSTEMONE_MODEL
+    return {
+      judge: new OnegwJudge({ baseURL, model, timeoutMs: config.judgeTimeoutMs ?? 5_000 }),
+      label: `systemone (${model} @ ${baseURL})`,
+    }
+  }
+  const apiKey = process.env.ONEGW_API_KEY ?? process.env.ONEGE_API_KEY ?? readCredentialsKey()
+  if (apiKey === undefined) {
+    throw new Error(
+      'judge is "chat" but no gateway key was found: set ONEGW_API_KEY (or ONEGE_API_KEY) '
+      + 'in the environment, or add it to ~/.dsh/.credentials.yaml. '
+      + 'Use judge: laya for a local judge that needs no key, or judge: none for detectors only.',
+    )
+  }
+  const model = config.judgeModel ?? 'xiaomi/mimo-v2.5'
+  return {
+    judge: createChatJudge({
+      llm: createOnegwClient({
+        baseURL: process.env.ONEGE_BASE_URL ?? 'http://127.0.0.1:8080/v1',
+        apiKey,
+      }),
+      model,
+    }),
+    label: `chat (${model})`,
+  }
+}
+/** How a deployed plugin picks its judge, from the patch row. */
+export interface JudgeConfig {
+  /** `none` (detectors only) | `chat` (metered) | `laya` (local, free). */
+  judge?: 'none' | 'chat' | 'laya'
+  /** System One base URL — Laya, or hosted Jev/TypeSafe on the same wire. */
+  judgeBaseURL?: string
+  /** Model alias the System One provider routes to. */
+  systemOneModel?: string
+  /** Model the `chat` judge uses. */
+  judgeModel?: string
+  /** Deadline for one judge call, in ms. Defaults to 5000. */
+  judgeTimeoutMs?: number
+}

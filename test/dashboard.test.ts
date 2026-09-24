@@ -432,24 +432,35 @@ test('stop() settles pending asks unavailable and closes the socket', async (t) 
 
 // ── the plugin's wiring ────────────────────────────────────────────────────
 
-test('without a dashboard config, the dashboard still starts (on by default)', () => {
+test('with no standalone flag, no server starts but the in-UI answerer does', () => {
+  // The dashboard is a page in the DSH UI, reached over the host remote — so
+  // the default is no second origin. The approval listener is still registered
+  // because the in-UI page is a claimer, and it delegates whenever no page is
+  // watching. See test/approvals.test.ts for the claim guard itself.
   const { ctx, registered } = fakeCtx()
   const dispose = apply(ctx as never, { spec: SPEC, dashboard: { enabled: false, port: 0 } })
-  assert.deepEqual(registered(), ['session/event', 'agent/pre-step', 'agent/request', 'tools/pre-execute'])
-  assert.ok(!registered().includes('approval/request'), 'disabled dashboard answers nothing')
+  assert.ok(
+    registered().includes('approval/request'),
+    'the in-UI page must still be able to claim an ask',
+  )
+  assert.ok(registered().includes('agent/pre-step'), 'and the policies still attach')
   dispose()
 })
 
-test('with enabled:false, no approval listener is registered', () => {
+test('the approval listener is registered even with no dashboard config at all', () => {
   const { ctx, registered } = fakeCtx()
-  const dispose = apply(ctx as never, { spec: SPEC, dashboard: { enabled: false } })
-  assert.ok(!registered().includes('approval/request'))
+  const dispose = apply(ctx as never, { spec: SPEC })
+  assert.ok(
+    registered().includes('approval/request'),
+    'an unwatched ask must still fall through to the composer panel, which '
+    + 'requires a listener that delegates',
+  )
   dispose()
 })
 
 test('with the dashboard enabled, the answerer is registered PREPENDED', async (t) => {
   const { ctx, registered, optsOf, handler } = fakeCtx()
-  const dispose = apply(ctx as never, { spec: SPEC, dashboard: { enabled: true, port: 0 } })
+  const dispose = apply(ctx as never, { spec: SPEC, dashboard: { standalone: true, enabled: true, port: 0 } })
   t.after(dispose)
 
   assert.ok(registered().includes('approval/request'))
@@ -475,7 +486,7 @@ test('with the dashboard enabled, the answerer is registered PREPENDED', async (
 test('a bad dashboard field fails apply at load, naming the field', () => {
   const { ctx } = fakeCtx()
   assert.throws(
-    () => apply(ctx as never, { spec: SPEC, dashboard: { enabled: true, port: 70_000 } }),
+    () => apply(ctx as never, { spec: SPEC, dashboard: { standalone: true, enabled: true, port: 70_000 } }),
     /dashboard\.port/,
     'a typo must stop the plugin, not produce a server nobody can reach',
   )
@@ -507,7 +518,7 @@ test('brief enabled without a gateway key fails apply at load, loudly', (t) => {
   assert.throws(
     () => apply(ctx as never, {
       spec: SPEC,
-      dashboard: { enabled: true, port: 0, brief: { enabled: true, model: 'm' } },
+      dashboard: { standalone: true, enabled: true, port: 0, brief: { enabled: true, model: 'm' } },
     }),
     /no gateway key/,
     'briefs were explicitly enabled: silence would be the worse failure',
@@ -549,7 +560,7 @@ async function appliedWithDashboard(
   try {
     dispose = apply(ctx as never, {
       spec: SPEC,
-      dashboard: { enabled: true, port: 0 },
+      dashboard: { standalone: true, enabled: true, port: 0 },
       ...options,
     })
     // Bind on port 0 is immediate in practice; 3s of slack is for a slow CI.
@@ -576,7 +587,7 @@ async function appliedWithDashboard(
   }
 }
 
-test('the logged URL line is greppable and the disposer stops the server', async (t) => {
+test('with standalone:true the logged URL line is greppable and the disposer stops the server', async (t) => {
   const { url, token, dispose, registered } = await appliedWithDashboard(t)
   assert.ok(registered().includes('approval/request'))
 
@@ -588,7 +599,7 @@ test('the logged URL line is greppable and the disposer stops the server', async
   await assert.rejects(fetch(`${base}api/state`), 'the disposer closed it')
 })
 
-test('the hooks feed the run state the page renders', async (t) => {
+test('the hooks feed the run state the standalone page renders', async (t) => {
   const { url, token, handler } = await appliedWithDashboard(t)
   const state = async (): Promise<DashboardSnapshot> => {
     const res = await fetch(`${url.origin}${url.pathname}api/state?token=${encodeURIComponent(token)}`)
@@ -869,4 +880,32 @@ test('absent metrics/recommendations still produce a valid snapshot shape', asyn
     runs: [],
     feed: [],
   })
+})
+
+test('settleApproval settles a pending ask without HTTP', async (t) => {
+  const { startDashboard, DashboardState } = await import('../src/dashboard.ts')
+  const dash = startDashboard({ enabled: true, host: '127.0.0.1', port: 0, answers: true }, new DashboardState())
+  t.after(() => void dash.stop())
+  await dash.ready
+  // Seed one pending entry by asking with no client connected is impossible
+  // (it delegates), so settle an absent id and assert the miss contract.
+  assert.equal(dash.settleApproval('no-such-id', 'allowed-once'), false)
+})
+
+test('a run carries the task a human typed, so the tree is self-describing', async () => {
+  const { DashboardState } = await import('../src/dashboard.ts')
+  const state = new DashboardState()
+  state.recordMeta('agent-7', { sessionId: 'agent-7', label: 'fix the budget rounding and keep maxSteps honest' })
+  const run = state.snapshot().runs.find(r => r.runId === 'agent-7')
+  assert.equal(run?.label, 'fix the budget rounding and keep maxSteps honest')
+  // A label is display-only: it must not be able to smuggle policy into a run.
+  assert.equal(run?.maxSteps, undefined, 'naming a ceiling does not set one')
+})
+
+test('a very long task label is capped, so a run row cannot be a paragraph', async () => {
+  const { DashboardState } = await import('../src/dashboard.ts')
+  const state = new DashboardState()
+  state.recordMeta('r1', { sessionId: 'r1', label: 'x'.repeat(400) })
+  const run = state.snapshot().runs.find(r => r.runId === 'r1')
+  assert.ok((run?.label?.length ?? 0) <= 120, `capped at 120, got ${String(run?.label?.length)}`)
 })

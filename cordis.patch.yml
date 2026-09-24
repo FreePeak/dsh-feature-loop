@@ -1,7 +1,8 @@
 # The feature-loop plugin's patch layer.
 #
-# Applied after the profile's own bundles, this inserts ONE row: the plugin
-# itself. It does not disable or replace the harness's agent loop — that is the
+# Applied after the profile's own bundles, this inserts TWO rows: the plugin
+# itself, and the `/loop` host command. It does not disable or replace the
+# harness's agent loop — that is the
 # whole point of the de-fork. The loop keeps running upstream's implementation,
 # and these policies hang off its published extension points:
 #
@@ -13,6 +14,20 @@
 # to a profile before you have decided on a budget. Supplying `spec` turns the
 # policies on; `validateSpec` rejects an incomplete one at load, naming every
 # missing dimension rather than failing halfway through a run.
+#
+# ── WHAT SHIPS ACTIVE ──────────────────────────────────────────────────────
+# This row is ON as installed: the spec below turns the ceilings, the detectors,
+# the review gate and the HITL dashboard on, and `judge: laya` points at the
+# local System One sidecar. That is deliberate — a plugin that installs inert
+# teaches you nothing about whether it works, and the previous default (no
+# `spec`, no judge) produced no panel, no review and no error to explain the
+# silence.
+#
+# Two things to change for YOUR repo, both in the spec at the bottom:
+#   termination.successCommand   the command whose exit 0 means "done"
+#   controller.ladder            the provider/model pairs you actually have
+#
+# Set `spec: null` to switch the policies back off.
 
 - insert:
     - id: feature-loop
@@ -20,7 +35,21 @@
       config:
         # The attention router. Both optional; defaults shown.
         reviewBudget: 0.10      # ask the human about <10% of steps
-        judgeThreshold: 2       # judge score (0-3) that earns a look
+        judgeThreshold: 1       # judge score (0-3) that earns a look.
+                                # Laya's live review-worthiness scores sit around
+                                # 0.5-1.4, so the old default of 2 meant the
+                                # advisor NEVER fired on its own — reviews only
+                                # ever came from the detectors. 1 is the setting
+                                # at which Laya actually participates.
+
+        # The judge. `laya` is the local System One sidecar: free, sub-second
+        # warm, and no key. Point `judgeBaseURL` at a hosted Jev/TypeSafe
+        # endpoint and the same wire carries it — nothing else changes.
+        # `chat` is metered and needs a gateway key; `none` is detectors only.
+        judge: laya
+        judgeBaseURL: http://127.0.0.1:8091
+        systemOneModel: laya
+        judgeTimeoutMs: 5000
 
         # Per-tool gate overrides, by tool name. A tool absent here falls back to
         # its reversibility class from the spec's `actuator`, and an
@@ -87,48 +116,86 @@
         # ────────────────────────────────────────────────────────────────────
 
         # ────────────────────────────────────────────────────────────────────
-        # The 8-dimension spec. Uncomment to switch the policies ON.
+        # The 8-dimension spec. This is what switches the policies ON.
         #
         # All eight dimensions are required and validated at load:
         #   goal · sensor · controller · actuator · feedback · termination
         #   maxSteps · costBudgetUSD  (plus `prices`, without which the cost
         #   ceiling measures against an unknown price and silently reads zero)
+        #
+        # EDIT `successCommand` AND `ladder` FOR YOUR REPO. The defaults below
+        # assume the onegw gateway on this machine; the success command is a
+        # placeholder that will simply fail until you point it at your tests.
         # ────────────────────────────────────────────────────────────────────
-        # spec:
-        #   goal: "the failing test in demo/test passes and no other test breaks"
-        #   sensor: ["repo files", "test output"]
-        #
-        #   controller:
-        #     ladder:
-        #       - provider: deepseek-official
-        #         model: deepseek-flash       # cheap — most steps live here
-        #       - provider: deepseek-official
-        #         model: deepseek-v4-pro      # strong — only on evidence
-        #     stepsPerRung: 5
-        #     escalateAfterFailures: 2
-        #
-        #   actuator:
-        #     read: read
-        #     glob: read
-        #     grep: read
-        #     bash: irreversible        # arbitrary command execution
-        #     edit: reversible-write
-        #     write: irreversible
-        #
-        #   feedback: "all tests pass, and the diff is the smallest that achieves it"
-        #
-        #   termination:
-        #     successCommand: "npm test"
-        #     guards: ["error-cascade", "tool-cycle"]
-        #
-        #   maxSteps: 15
-        #   costBudgetUSD: 1.00
-        #
-        #   prices:
-        #     deepseek-official/deepseek-flash:
-        #       inputPerMTok: 0.14
-        #       outputPerMTok: 0.28
-        #       cacheReadPerMTok: 0.014
-        #     deepseek-official/deepseek-v4-pro:
-        #       inputPerMTok: 2.50
-        #       outputPerMTok: 10.00
+        spec:
+          goal: "the verification command exits 0 and no previously-passing test breaks"
+          sensor: ["repository files", "test output"]
+
+          controller:
+            # Cheap-first: most steps run on the first rung, and the loop climbs
+            # only on evidence (steps spent, consecutive failures) — never on
+            # vibes. `execution`/`planning` are onegw role aliases, resolved by
+            # the gateway; swap in provider/model pairs if you route directly.
+            ladder:
+              - provider: onegw
+                model: execution
+              - provider: onegw
+                model: planning
+            stepsPerRung: 5
+            escalateAfterFailures: 2
+
+          actuator:
+            # Reversibility classes. `irreversible` is the fail-closed default
+            # for anything unclassified, so a tool missing from this map is
+            # gated rather than waved through.
+            read: read
+            glob: read
+            grep: read
+            bash: irreversible        # arbitrary command execution
+            edit: reversible-write
+            write: irreversible
+            # Anything not named here falls back to `irreversible`. The HITL
+            # tool needs a class or it would be gated on every delegated task,
+            # which trains people to click Allow without reading.
+            task: read
+
+          feedback: "the verification command exits 0, and the diff is the smallest that achieves it"
+
+          termination:
+            successCommand: "bash verify.sh"   # ← CHANGE ME to your test command
+            guards: ["error-cascade", "tool-cycle"]
+
+          maxSteps: 15
+          costBudgetUSD: 1.00
+
+          # Without a price table the cost ceiling cannot price a step and would
+          # read $0.00 forever — the failure budget.ts refuses to hide. These are
+          # the plan rates for the onegw aliases above; replace them if you
+          # route to different models.
+          prices:
+            onegw/execution:
+              inputPerMTok: 0.30
+              outputPerMTok: 1.20
+              cacheReadPerMTok: 0.03
+            onegw/planning:
+              inputPerMTok: 2.50
+              outputPerMTok: 10.00
+          unpricedFallback:
+            inputPerMTok: 0.30
+            outputPerMTok: 1.20
+            cacheReadPerMTok: 0.03
+
+    # The Feature Loop sidebar page's host service (`ctx.remote.featureLoop.*`).
+    # Separate row for the same reason dsh-mux has one: the client bundle mounts
+    # its own remote contribution, and a single row cannot both declare the
+    # namespace and consume it without deadlocking the loader.
+    - id: feature-loop-remote
+      name: '@freepeak/dsh-feature-loop/remote'
+
+    # The `/loop` host command: `/loop <task>` names a task for the bounded
+    # loop. The handler returns the task text for the composer to submit as
+    # the turn, so the loop policies apply to it exactly as to any typed
+    # request. Same package, separate row: the host command registry owns
+    # `commands`, and the policy row must not inject it.
+    - id: feature-loop-command
+      name: '@freepeak/dsh-feature-loop/command'

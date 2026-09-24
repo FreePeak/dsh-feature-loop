@@ -37,6 +37,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ReviewSignal } from './signals.ts'
+import type { ApprovalRegistry } from './approvals.ts'
 // Type-only on purpose: the measurement modules are authored concurrently by
 // other seams, and type-only imports are erased at runtime, so this module
 // neither loads nor requires their code — it only renders their shapes.
@@ -118,6 +119,16 @@ export interface RunSnapshot {
   cwd?: string
   /** Basename of `cwd` for workspace grouping; absent when ungrouped. */
   workspaceLabel?: string
+  /**
+   * What this run was asked to do, in the words the human typed.
+   *
+   * Absent until something labels it. `runId` is an agent id, which tells a
+   * person nothing; this is what makes a run in the workspace tree
+   * self-describing. Deliberately a display label, NOT a policy input: the
+   * loop's `goal` still comes from the spec, so a task can never widen its own
+   * ceilings by naming them.
+   */
+  label?: string
   /** Last time this run's numbers or meta were touched (epoch ms). */
   updatedAt?: number
   step?: number
@@ -204,8 +215,16 @@ export interface DashboardSnapshot {
 /** Configured under the patch row's `dashboard:` key. All fields optional. */
 export interface DashboardConfig {
   /**
+   * Start the standalone loopback page on its own origin. Defaults to
+   * `false`: the dashboard is a page inside the DSH UI, reached over the host
+   * remote, so a second origin and a second token are opt-in rather than
+   * something every deployment inherits.
+   */
+  standalone?: boolean
+  /**
    * Set `false` to start no server. Defaults to on: omitting the block starts
-   * the page on 127.0.0.1:8100 with a per-start token.
+   * the page on 127.0.0.1:8100 with a per-start token. Honoured only when
+   * `standalone` is true.
    */
   enabled?: boolean
   /** Bind address. Only `127.0.0.1` (default) or `0.0.0.0` (in-container). */
@@ -403,20 +422,36 @@ export class DashboardState {
   private readonly feedList: FeedEntry[] = []
   private metricsSummary: MetricsSummary | undefined
   private recommendationList: Recommendation[] | undefined
-  private listener: (() => void) | undefined
+  /**
+   * Every change subscriber.
+   *
+   * A Set, not one slot: the standalone server's SSE broadcast is a subscriber,
+   * and so is the Host→browser event bridge. A single slot made the second
+   * `onChange` call SILENTLY REPLACE the first — which is exactly the bug that
+   * would have made the bridge look broken with no error anywhere. A Set cannot
+   * be clobbered by accident, and unsubscribe is the same handle it arrived on.
+   */
+  private readonly listeners = new Set<() => void>()
 
   /**
-   * Install the single change listener (the server's broadcast). One slot is
-   * enough: one dashboard serves one process.
+   * Subscribe to changes. The returned function unsubscribes, so a caller that
+   * owns a lifetime (the server, the event bridge) releases on teardown.
    *
-   * @param listener - called after every mutation, or undefined to clear.
+   * @param listener - called after every mutation.
+   * @returns an unsubscribe function; calling it twice is a no-op.
    */
-  onChange(listener: (() => void) | undefined): void {
-    this.listener = listener
+  onChange(listener: () => void): () => void {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
+  /** Drop every subscriber. Only for a process that is going away. */
+  clearListeners(): void {
+    this.listeners.clear()
   }
 
   private changed(): void {
-    this.listener?.()
+    for (const listener of [...this.listeners]) listener()
   }
 
   private run(runId: string): RunSnapshot {
@@ -455,10 +490,11 @@ export class DashboardState {
    */
   recordMeta(
     runId: string,
-    meta: { sessionId?: string, cwd?: string, workspaceLabel?: string },
+    meta: { sessionId?: string, cwd?: string, workspaceLabel?: string, label?: string },
   ): void {
     const run = this.run(runId)
     if (meta.sessionId !== undefined && meta.sessionId !== '') run.sessionId = meta.sessionId
+    if (meta.label !== undefined && meta.label !== '') run.label = firstLine(meta.label, 120)
     if (meta.cwd !== undefined && meta.cwd !== '') {
       run.cwd = meta.cwd
       run.workspaceLabel = meta.workspaceLabel ?? workspaceLabelOf(meta.cwd) ?? run.workspaceLabel
@@ -592,6 +628,18 @@ export interface DashboardHandle {
    * to its dashboard id. A point-in-time copy; the id may already be gone.
    */
   pendingSnapshot(): PendingApproval[]
+  /**
+   * Settle one pending approval by id, for the in-UI page. Same path as the
+   * standalone dashboard's POST — the ask settles identically, so the
+   * composer prompt clears and the tool is released or refused the same way.
+   * A settled/gone id reads `false`, never a throw: a late click is "you
+   * were beaten", not a crash.
+   *
+   * @param id - the pending entry's id.
+   * @param outcome - `allowed-once` releases the tool; `rejected` refuses it.
+   * @returns whether an entry was settled.
+   */
+  settleApproval(id: string, outcome: 'allowed-once' | 'rejected'): boolean
 }
 
 /** A pending ask, internal form: the settle closure the POST path drives. */
@@ -642,15 +690,30 @@ export function pendingIdFor(
 export function startDashboard(
   config: DashboardConfig = {},
   state: DashboardState = new DashboardState(),
+  shared?: ApprovalRegistry,
 ): DashboardHandle {
   const cfg = parseDashboardConfig(config)
+  // One registry owns the asks. When the plugin passes one, the page is a
+  // *second front end* onto the same entries, not a second set of them — which
+  // is what makes a click in either place settle the same ask exactly once.
   const pending = new Map<string, PendingEntry>()
+  const ownsItsOwnAsks = shared === undefined
+  const registry: ApprovalRegistry = shared ?? {
+    answer: (question, next) => next(),
+    briefs: { markBriefPending: () => undefined, recordBrief: () => undefined },
+    pendingSnapshot: () => [],
+    settleApproval: () => false,
+    stop: () => undefined,
+  }
   const clients = new Set<ServerResponse>()
   let stopped = false
 
+  const pendingEntries = (): PendingApproval[] => (ownsItsOwnAsks
+    ? [...pending.values()].map(({ settle: _s, ...rest }) => ({ ...rest }))
+    : registry.pendingSnapshot())
   const snapshot = (): DashboardSnapshot => ({
     answers: cfg.answers,
-    pending: [...pending.values()].map(({ id, toolName, callId, reason, runId, askedAt, briefState, brief }) => ({
+    pending: pendingEntries().map(({ id, toolName, callId, reason, runId, askedAt, briefState, brief }) => ({
       id, toolName, ...callId === undefined ? {} : { callId },
       ...reason === undefined ? {} : { reason },
       ...runId === undefined ? {} : { runId }, askedAt, briefState,
@@ -686,7 +749,7 @@ export function startDashboard(
     const frame = `data: ${JSON.stringify(snapshot())}\n\n`
     for (const res of clients) res.write(frame)
   }
-  state.onChange(broadcast)
+  const unsubscribeBroadcast = state.onChange(broadcast)
 
   const server = createServer((req, res) => {
     void route(req, res).catch((error: unknown) => {
@@ -790,6 +853,13 @@ export function startDashboard(
     const entry = pending.get(id)
     // 409, not 404: the request existed; it was settled, expired, or
     // cancelled. A late click must read as "you were beaten", not "bad url".
+    if (entry === undefined && !ownsItsOwnAsks) {
+      // The registry owns this ask; the page is a second front end onto it.
+      if (!registry.settleApproval(id, outcome, feedback)) {
+        return sendJson(res, 409, { error: 'no such pending approval (settled, expired, or cancelled)' })
+      }
+      return sendJson(res, 200, { ok: true, outcome, ...feedback === '' ? {} : { feedback } })
+    }
     if (entry === undefined) return sendJson(res, 409, { error: 'no such pending approval (settled, expired, or cancelled)' })
     const feedText = feedback === ''
       ? undefined
@@ -882,7 +952,7 @@ export function startDashboard(
     if (stopped) return
     stopped = true
     for (const entry of [...pending.values()]) entry.settle('unavailable')
-    state.onChange(undefined)
+    unsubscribeBroadcast()
     for (const res of clients) res.end()
     clients.clear()
     await new Promise<void>(resolve => {
@@ -899,7 +969,18 @@ export function startDashboard(
     // The guard. Order among answerers is not a priority mechanism (the
     // harness docs say so), so precedence here is decided by observation:
     // claim exactly while a tab is watching, delegate otherwise.
-    if (stopped || !cfg.answers || clients.size === 0) return next()
+    // A shared registry is the claimer; the page only observes and answers
+    // through it. Claiming from here too would register the ask twice.
+    if (ownsItsOwnAsks) {
+      if (stopped || !cfg.answers || clients.size === 0) return next()
+      return ownAnswer(question, next)
+    }
+    return next()
+
+    async function ownAnswer(
+      question: ApprovalQuestion,
+      next: () => Promise<ApprovalOutcome>,
+    ): Promise<ApprovalOutcome> {
 
     const rawId = question.agent?.id
     const runId = typeof rawId === 'string' && rawId !== '' ? rawId : 'agentless'
@@ -945,6 +1026,7 @@ export function startDashboard(
         runId,
       )
     })
+    }
   }
 
   const handle: DashboardHandle = {
@@ -960,7 +1042,14 @@ export function startDashboard(
     answer,
     stop,
     briefs,
-    pendingSnapshot: () => [...pending.values()].map(({ settle: _settle, ...rest }) => ({ ...rest })),
+    pendingSnapshot: () => pendingEntries(),
+    settleApproval: (id: string, outcome: 'allowed-once' | 'rejected'): boolean => {
+      if (!ownsItsOwnAsks) return registry.settleApproval(id, outcome)
+      const entry = pending.get(id)
+      if (entry === undefined) return false
+      entry.settle(outcome)
+      return true
+    },
   }
   return handle
 }
