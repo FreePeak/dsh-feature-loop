@@ -13,6 +13,8 @@
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json",
     "./remote": "./lib/remote.mjs",
+    "./command": "./lib/command.mjs",
+    "./queue": "./lib/queue-tool.mjs",
     "./client": "./client.js"
   },
   "files": [
@@ -64,7 +66,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsdown src/index.ts src/cli.ts src/remote.ts --format esm --out-dir lib",
+    "build": "tsdown src/index.ts src/cli.ts src/remote.ts src/command.ts src/queue-tool.ts --format esm --out-dir lib",
     "test": "node --experimental-strip-types --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "demo": "bash demo/run.sh",
