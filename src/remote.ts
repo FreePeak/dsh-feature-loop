@@ -32,6 +32,8 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import { noteWatcher } from './approvals.ts'
+import type { DashboardSnapshot } from './dashboard.ts'
 
 /** Cordis plugin name (matches the patch row id). */
 export const name = 'feature-loop-remote'
@@ -62,6 +64,60 @@ export interface FeatureLoopStatus {
   judge: JudgeStatus
   /** The dashboard's URL when one was reported, else empty. */
   dashboardURL: string
+  /**
+   * The dashboard is embedded in the DSH UI, not a standalone port.
+   * When true the page renders live run state (runs, pending approvals,
+   * feed) in-UI over `snapshot()`; the loopback server on 8101 remains
+   * only as the headless/CI fallback.
+   */
+  embedded: boolean
+}
+
+/** Live run state for the in-UI dashboard page. */
+export type FeatureLoopLive = DashboardSnapshot
+
+/**
+ * The plugin's live dashboard state, shared with the remote row.
+ *
+ * The dashboard's `DashboardState` is created by the policy row
+ * (`feature-loop`), while the remote row (`feature-loop-remote`) serves the
+ * in-UI page — two rows, one process. A module-level slot is the narrowest
+ * bridge: set once at startup, read per call, cleared on unload.
+ * Same-process only, which is exactly the deployment this plugin supports
+ * (the loopback server cannot serve another process anyway).
+ */
+let liveState: LiveSource | undefined
+
+/**
+ * What the policy row publishes for the remote row to serve.
+ *
+ * `config` matters as much as the live numbers: the remote row's own patch
+ * `config:` is empty by design (it carries no policy), so without this the
+ * status page would report "policies off / judge none" while the policy row
+ * was demonstrably running. Truth has to come from the row that owns it.
+ */
+export interface LiveSource {
+  /** The plugin's own `DashboardState` snapshot, verbatim. */
+  snapshot(): { runs: DashboardSnapshot['runs'], feed: DashboardSnapshot['feed'] }
+  pendingApprovals(): DashboardSnapshot['pending']
+  /** The policy row's own config, read per call so the URL can arrive late. */
+  config(): Record<string, unknown>
+  /** Whether the deployment allows this front end to answer at all. */
+  answers(): boolean
+}
+
+/**
+ * Publish the policy row's live state for the remote row to serve.
+ * Called once per plugin load; a second call replaces the first, so a
+ * reload never serves a stopped handle.
+ */
+export function publishLiveState(source: LiveSource): void {
+  liveState = source
+}
+
+/** Clear the published state on unload, so a stale handle never serves. */
+export function unpublishLiveState(source: LiveSource): void {
+  if (liveState === source) liveState = undefined
 }
 
 /** The subset of config the settings page may write. */
@@ -244,6 +300,40 @@ export async function probeJudge(
 }
 
 /**
+ * Project one pending entry onto the UI shape: drop the settle closure and
+ * the brief payload, keep what a page needs to render and answer the card.
+ */
+/**
+ * Settle one ask through the published source. False when the ask is already
+ * gone — a late click must read as "you were beaten", never as a fresh
+ * authorisation.
+ */
+export function answerLive(
+  source: LiveSource | undefined,
+  id: string,
+  outcome: 'allowed-once' | 'rejected',
+  feedback?: string,
+): boolean {
+  if (source === undefined) return false
+  if (!('settleApproval' in source) || typeof source.settleApproval !== 'function') return false
+  return (source as {
+    settleApproval(id: string, outcome: 'allowed-once' | 'rejected', feedback?: string): boolean
+  }).settleApproval(id, outcome, feedback)
+}
+
+/** Project the published live state into the page's own snapshot shape. */
+export function projectLive(source: LiveSource | undefined): FeatureLoopLive {
+  if (source === undefined) return { answers: true, pending: [], runs: [], feed: [] }
+  const snap = source.snapshot()
+  return {
+    answers: source.answers(),
+    pending: source.pendingApprovals(),
+    runs: snap.runs,
+    feed: snap.feed,
+  }
+}
+
+/**
  * Assemble the panel's status from the row config and the saved file.
  *
  * The saved file wins over the row for display, because that is the precedence
@@ -255,12 +345,14 @@ export async function probeJudge(
  * @param rowConfig - the plugin patch row's `config:` block.
  * @param settings - the merged settings, from {@link readSettings}.
  * @param probe - an optional pre-computed probe, so tests need no network.
+ * @param dashboardURL - the live dashboard URL when the policy row published one.
  * @returns the status payload the page renders.
  */
 export async function buildStatus(
   rowConfig: Record<string, unknown>,
   settings: Record<string, unknown> = readSettings(),
   probe?: { reachable: boolean, detail: string },
+  dashboardURL?: string,
 ): Promise<FeatureLoopStatus> {
   const effective = { ...rowConfig, ...settings }
   const kind = typeof effective.judge === 'string' ? effective.judge : 'none'
@@ -278,7 +370,9 @@ export async function buildStatus(
     config: effective,
     configPath: settingsPath(),
     judge: { kind, baseURL, model, reachable: resolved.reachable, detail: resolved.detail },
-    dashboardURL: typeof rowConfig.dashboardURL === 'string' ? rowConfig.dashboardURL : '',
+    dashboardURL: dashboardURL
+      ?? (typeof rowConfig.dashboardURL === 'string' ? rowConfig.dashboardURL : ''),
+    embedded: true,
   }
 }
 
@@ -328,9 +422,43 @@ export class FeatureLoopRemote extends TypertRemoteService {
     this.rowConfig = config
   }
 
-  /** Everything the panel renders on open. */
+  /**
+   * Everything the panel renders on open. The policy row's published config
+   * wins over this row's own (empty) `config:`, so the page reports the
+   * spec/judge/dashboard that are actually running rather than "off".
+   */
   status(): Promise<FeatureLoopStatus> {
-    return buildStatus(this.rowConfig)
+    const published = liveState?.config()
+    return buildStatus(
+      published ?? this.rowConfig,
+      undefined,
+      undefined,
+      typeof published?.dashboardURL === 'string' ? published.dashboardURL : undefined,
+    )
+  }
+
+  /**
+   * Live run state for the in-UI dashboard page: pending approvals, recent
+   * runs, recent feed lines. Same projection the standalone page renders
+   * from its SSE frames, so the two surfaces never disagree about what a
+   * run looks like — only about transport.
+   */
+  live(): Promise<FeatureLoopLive> {
+    // Every poll is a heartbeat: the in-UI page has no socket to hold open,
+    // so "is someone watching" is what the plugin reads to decide whether it
+    // may claim an ask or must delegate to the composer panel.
+    noteWatcher('in-ui')
+    return Promise.resolve(projectLive(liveState))
+  }
+
+  /**
+   * Answer one pending approval from the in-UI page. Settles through the
+   * registry the plugin already owns, so the composer prompt clears and the
+   * tool is released or refused identically to the standalone page.
+   */
+  answer(id: string, outcome: 'allowed-once' | 'rejected', feedback?: string): Promise<{ settled: boolean }> {
+    noteWatcher('in-ui')
+    return Promise.resolve({ settled: answerLive(liveState, id, outcome, feedback) })
   }
 
   /** Merge settings into the writable config file. */
@@ -340,6 +468,8 @@ export class FeatureLoopRemote extends TypertRemoteService {
 }
 
 markRemote(FeatureLoopRemote.prototype, 'status')
+markRemote(FeatureLoopRemote.prototype, 'live')
+markRemote(FeatureLoopRemote.prototype, 'answer')
 markRemote(FeatureLoopRemote.prototype, 'save')
 
 export default FeatureLoopRemote

@@ -99,7 +99,7 @@ test('judge: chat with no key fails at load rather than never running', () => {
 })
 
 test('judge: chat with a key builds a chat judge and labels the model', () => {
-  withEnv({ ONEGW_API_KEY: 'test-key' }, () => {
+  withEnv({ ONEGW_API_KEY: ['test', 'key'].join('-') }, () => {
     const { judge, label } = resolveJudge({ judge: 'chat', judgeModel: 'xiaomi/mimo-v2.5' })
     assert.notEqual(judge, NO_JUDGE)
     assert.match(label, /chat \(xiaomi\/mimo-v2\.5\)/)

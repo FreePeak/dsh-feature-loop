@@ -229,7 +229,7 @@ async function featureLoopSetup(options: {
       gatePolicies: options.gatePolicies ?? {},
       ...options.history === undefined ? {} : { optimize: { history: options.history } },
       ...options.explainer === undefined ? {} : { explainer: options.explainer as never },
-      ...(options.dashboard === true ? { dashboard: { enabled: true, port: 0 } } : {}),
+      ...(options.dashboard === true ? { dashboard: { standalone: true, enabled: true, port: 0 } } : {}),
     })
     if (options.dashboard === true) {
       for (let attempt = 0; attempt < 300 && line === undefined; attempt++) {

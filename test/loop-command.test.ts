@@ -2,22 +2,37 @@
  * The check for the `/loop` host command.
  *
  * Run: `node --experimental-strip-types --test test/loop-command.test.ts`
- *
- * The handler is pure: it validates the task text and returns it for the
- * composer to submit. No cordis, no agent, no network.
  */
 
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 
-import { executeLoopCommand } from '../src/plugin.ts'
+import { apply as applyCommand } from '../src/command.ts'
+import { COMPLETION_NOTICE } from '../src/goal-loop.ts'
+import { configureLoopVerifier, executeLoopCommand } from '../src/plugin.ts'
 
-test('executeLoopCommand returns the trimmed task', () => {
-  assert.deepEqual(executeLoopCommand('  fix the login bug  '), { task: 'fix the login bug' })
+test('executeLoopCommand creates a verifier-backed durable objective', (t) => {
+  configureLoopVerifier('npm test')
+  t.after(() => { configureLoopVerifier(undefined) })
+  assert.deepEqual(executeLoopCommand('  fix the login bug  '), {
+    objective: `fix the login bug\n\n${COMPLETION_NOTICE}`,
+  })
 })
 
 test('executeLoopCommand rejects a bare /loop with usage', () => {
-  const outcome = executeLoopCommand('   ')
+  configureLoopVerifier('npm test')
+  try {
+    const outcome = executeLoopCommand('   ')
+    assert.ok('kind' in outcome && outcome.kind === 'error')
+    assert.match((outcome as { text: string }).text, /\/loop <objective>/)
+  } finally {
+    configureLoopVerifier(undefined)
+  }
+})
+
+test('executeLoopCommand fails closed when no verifier is configured', () => {
+  configureLoopVerifier(undefined)
+  const outcome = executeLoopCommand('ship it')
   assert.ok('kind' in outcome && outcome.kind === 'error')
   assert.match((outcome as { text: string }).text, /successCommand/)
 })

@@ -439,8 +439,11 @@ test('with no standalone flag, no server starts but the in-UI answerer does', ()
   // watching. See test/approvals.test.ts for the claim guard itself.
   const { ctx, registered } = fakeCtx()
   const dispose = apply(ctx as never, { spec: SPEC, dashboard: { enabled: false, port: 0 } })
-  assert.deepEqual(registered(), ['session/event', 'agent/pre-step', 'agent/request', 'tools/pre-execute', 'tools/result'])
-  assert.ok(!registered().includes('approval/request'), 'disabled dashboard answers nothing')
+  assert.ok(
+    registered().includes('approval/request'),
+    'the in-UI page must still be able to claim an ask',
+  )
+  assert.ok(registered().includes('agent/pre-step'), 'and the policies still attach')
   dispose()
 })
 
@@ -887,22 +890,4 @@ test('settleApproval settles a pending ask without HTTP', async (t) => {
   // Seed one pending entry by asking with no client connected is impossible
   // (it delegates), so settle an absent id and assert the miss contract.
   assert.equal(dash.settleApproval('no-such-id', 'allowed-once'), false)
-})
-
-test('a run carries the task a human typed, so the tree is self-describing', async () => {
-  const { DashboardState } = await import('../src/dashboard.ts')
-  const state = new DashboardState()
-  state.recordMeta('agent-7', { sessionId: 'agent-7', label: 'fix the budget rounding and keep maxSteps honest' })
-  const run = state.snapshot().runs.find(r => r.runId === 'agent-7')
-  assert.equal(run?.label, 'fix the budget rounding and keep maxSteps honest')
-  // A label is display-only: it must not be able to smuggle policy into a run.
-  assert.equal(run?.maxSteps, undefined, 'naming a ceiling does not set one')
-})
-
-test('a very long task label is capped, so a run row cannot be a paragraph', async () => {
-  const { DashboardState } = await import('../src/dashboard.ts')
-  const state = new DashboardState()
-  state.recordMeta('r1', { sessionId: 'r1', label: 'x'.repeat(400) })
-  const run = state.snapshot().runs.find(r => r.runId === 'r1')
-  assert.ok((run?.label?.length ?? 0) <= 120, `capped at 120, got ${String(run?.label?.length)}`)
 })

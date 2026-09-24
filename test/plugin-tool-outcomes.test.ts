@@ -7,6 +7,7 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 
+import { configureLoopVerifier } from '../src/plugin.ts'
 import { apply } from '../src/plugin.ts'
 import type { CreatePolicyOptions } from '../src/plugin.ts'
 

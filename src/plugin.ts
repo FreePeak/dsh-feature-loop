@@ -27,7 +27,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
-import { CONTEXT_SUMMARY_MAX_CHARS, MessageId } from '@deepseek-ai/dsh-llm'
+import { CONTEXT_SUMMARY_MAX_CHARS, MessageId, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { LlmCallConfig, UserMessage } from '@deepseek-ai/dsh-llm'
 import type { PreToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import { LoopBudget } from './budget.ts'
@@ -39,7 +39,6 @@ import { detectSignals } from './signals.ts'
 import type { ReviewSignal, StepObservation } from './signals.ts'
 import { parseDashboardConfig, pendingIdFor, startDashboard, DashboardState } from './dashboard.ts'
 import { createApprovalRegistry, clearWatcher, watcherActive } from './approvals.ts'
-import { createChangeEmitter } from './change-event.ts'
 import type { ApprovalRegistry } from './approvals.ts'
 import type { ApprovalOutcome, ApprovalQuestion, BriefNode, DashboardConfig, DashboardHandle, DashboardSnapshot } from './dashboard.ts'
 import { prepareReview, resolveReversibility } from './agent-policy.ts'
@@ -303,6 +302,21 @@ function budgetSnapshotOf(policy: FeatureLoopPolicy): BudgetSnapshot | undefined
       { steps: row.attempts, usd: row.usd },
     ])),
   }
+}
+
+/**
+ * The dashboard URL for the published config, read lazily.
+ *
+ * The handle's `url` is empty until the socket is bound, and the remote row
+ * may ask before that resolves — so this reads it per call rather than
+ * snapshotting it once at publish time.
+ *
+ * @param dashboard - the started dashboard handle.
+ * @returns the config fragment carrying the URL and token.
+ */
+function dashboardURLOnceBound(dashboard: DashboardHandle): Record<string, unknown> {
+  const url = dashboard.url
+  return url === '' ? {} : { dashboardURL: `${url}?token=${dashboard.token}` }
 }
 
 /**
@@ -1156,6 +1170,20 @@ function resolveBriefExplainer(brief: DashboardConfig['brief']): Explainer {
     timeoutMs: brief.timeoutMs,
   })
 }
+
+let loopVerifierCommand: string | undefined
+
+/** Configure the process-wide verifier used by the separate `/loop` command row. */
+export function configureLoopVerifier(command: string | undefined): void {
+  const trimmed = command?.trim()
+  loopVerifierCommand = trimmed === '' ? undefined : trimmed
+}
+
+/** Read the verifier currently published by the feature-loop policy row. */
+export function currentLoopVerifier(): string | undefined {
+  return loopVerifierCommand
+}
+
 export const name = 'feature-loop'
 
 /** The services this plugin reads. */
@@ -1176,6 +1204,7 @@ export function apply(
   ctx: Context,
   options: Parameters<typeof createPolicy>[0] & { dashboard?: DashboardConfig, rowConfig?: Record<string, unknown> } = {},
 ): () => void {
+  configureLoopVerifier(options.spec?.termination.successCommand)
   const policies = new WeakMap<Agent, FeatureLoopPolicy>()
   const fresh = (): FeatureLoopPolicy => createPolicy(options)
   /**
@@ -1225,18 +1254,6 @@ export function apply(
   // keeps working either way — the answerer claims a request only while a
   // dashboard tab is actually connected.
   const state = new DashboardState()
-  // Bridge every state change to the browser as one coalesced event, so the
-  // dashboard re-reads on change instead of polling. Returns an unsubscribe;
-  // released with the plugin so a reload never leaves a listener behind.
-  // Guarded: a context without `emit` (a narrow test double, or a host that
-  // mounts the policies without the event surface) must not crash on every
-  // state change. A missed event degrades to the client's safety-net poll,
-  // which is the right failure; a thrown event kills the run.
-  const emitChanged = typeof (ctx as { emit?: unknown }).emit === 'function'
-    ? () => { (ctx as unknown as { emit(name: 'featureLoop/changed'): void }).emit('featureLoop/changed') }
-    : undefined
-  const notifyChanged = emitChanged === undefined ? () => undefined : createChangeEmitter(emitChanged)
-  const unsubscribeChanged = state.onChange(notifyChanged)
   // Validate even when the dashboard is off: a bad field is a typo someone
   // will flip `enabled: true` on later, and it must fail at load, then —
   // not silently refuse to bind. `startDashboard` re-parses below; the
@@ -1255,7 +1272,7 @@ export function apply(
     hasWatcher: () => watcherActive(),
   })
   const dashboard = dashboardConfig.standalone === true
-    ? startDashboard({ ...dashboardConfig, answers: false, enabled: true }, state, registry)
+    ? startDashboard({ ...dashboardConfig, enabled: true }, state, registry)
     : undefined
   // Publish the live state for the remote row (`feature-loop-remote`) to
   // serve the in-UI dashboard page. Published unconditionally: the in-UI page
@@ -1274,11 +1291,6 @@ export function apply(
       }
     },
     pendingApprovals: () => registry.pendingSnapshot(),
-    // A run's name is the task a human typed, so the workspace tree lists runs
-    // someone can recognise instead of agent ids.
-    labelRun: (sessionId: string, task: string): void => {
-      state.recordMeta(sessionId, { sessionId, label: task })
-    },
     answers: () => dashboardConfig.answers ?? true,
     settleApproval: (id: string, outcome: 'allowed-once' | 'rejected', feedback?: string): boolean =>
       registry.settleApproval(id, outcome, feedback),
@@ -1478,13 +1490,25 @@ export function apply(
 
   const disposeTools = ctx.on(
     'tools/pre-execute',
-    async ({ agent, callId, name: toolName, arguments: rawArgs }: ToolExecution, next: () => Promise<PreToolDecision>) => {
+    async (execution: ToolExecution, next: () => Promise<PreToolDecision>) => {
+      const { agent, callId, name: toolName, arguments: rawArgs } = execution
       const policy = policyFor(agent)
 
       // Record the call here: this is the only point where the tool name and its
       // parsed arguments are both known. The immutable call id preserves every
       // parallel call until `tools/result` supplies the authoritative outcome.
       policy.pending.set(String(callId), { tool: toolName, argsKey: argsKey(rawArgs), error: false })
+
+      const action = rawArgs !== null && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
+        ? (rawArgs as { action?: unknown }).action
+        : undefined
+      if (toolName === 'update_goal' && action === 'complete') {
+        const denial = await verifyGoalCompletion(ctx, agent, execution)
+        if (denial !== undefined) {
+          state.recordGate(recordAgentMeta(state, agent), toolName, 'deny', denial.reason)
+          return { kind: 'deny', reason: denial.reason }
+        }
+      }
 
       const gate = gateForTool(policy, toolName)
       if (gate.kind === 'proceed') return next()
@@ -1523,8 +1547,10 @@ export function apply(
     disposeSession?.()
     disposeStatus()
     disposeApproval?.()
+    configureLoopVerifier(undefined)
+    clearWatcher('in-ui')
+    clearWatcher('standalone')
     if (dashboard !== undefined) void dashboard.stop()
-    unsubscribeChanged()
     if (liveSource !== undefined) {
       void import('./remote.ts').then(m => m.unpublishLiveState(liveSource)).catch(() => undefined)
     }
@@ -1546,97 +1572,17 @@ export type { BriefConfig, BriefState } from './dashboard.ts'
  * apply to it exactly as they do to any typed request.
  */
 export interface LoopCommandOutcome {
-  /** The task text to run the bounded loop over. */
-  task: string
+  /** Durable goal objective, including non-secret completion guidance. */
+  objective: string
 }
 
 /**
- * Execute the `/loop` host command: `/loop <task>`.
+ * Prepare `/loop <objective>` for the native DSH goal service.
  *
- * A bare `/loop` with no task is a usage error, not a silent no-op. The
- * task text is returned for the composer to submit as the turn — that is
- * what makes the feature-loop policies apply: the policies hang off the
- * agent loop's own hooks, so any turn runs bounded and gated, and `/loop`
- * is just the entry point that names the task.
- *
- * @param rawInput - exact text following the `/loop` command name.
- * @returns a success carrying the task text, or a usage error when empty.
+ * The goal-round driver owns continuation. This function only validates input
+ * and fails closed when the deployment has no independent completion verifier.
  */
 export function executeLoopCommand(rawInput: string): LoopCommandOutcome | { kind: 'error', text: string } {
-  const task = rawInput.trim()
-  if (task.length === 0) {
-    return { kind: 'error', text: 'Usage: /loop <task> — describe what the bounded loop should do.' }
-  }
-  return { task }
-}
-/** Default System One endpoint — the shared Laya sidecar on this machine. */
-const DEFAULT_JUDGE_BASE_URL = process.env.SYSTEMONE_BASE_URL ?? 'http://127.0.0.1:8091'
-
-/** Default System One model alias. */
-const DEFAULT_SYSTEMONE_MODEL = process.env.SYSTEMONE_MODEL ?? 'laya'
-
-/**
- * Build the judge a deployment configured.
- *
- * Before this existed the plugin hardcoded `NO_JUDGE`, so a profile could
- * configure `judge: laya`, see no error, and get detector-only reviews forever
- * — a silent no-op, which is the failure mode this repo's config blocks
- * otherwise refuse to allow. Now the kind is read and the client is real.
- *
- * `laya` needs nothing but a reachable sidecar, so it is built optimistically:
- * `OnegwJudge` latches itself off after one failed call and reports the reason
- * rather than stalling every step, so an unreachable Laya costs one timeout and
- * then degrades to the detectors — the documented posture in `laya.ts`.
- *
- * `chat` costs money per judged step, so it fails at *load* when no gateway key
- * is present, the same rule the brief explainer follows: a configured judge
- * that silently never runs is worse than a loud refusal to start.
- *
- * @param config - the judge fields from the patch row.
- * @returns the judge, and a label naming which one for the dashboard's status.
- * @throws Error when `chat` was asked for with no reachable key.
- */
-export function resolveJudge(config: JudgeConfig): { judge: Judge, label: string } {
-  const kind = config.judge ?? 'none'
-  if (kind === 'none') return { judge: NO_JUDGE, label: 'none (detectors only)' }
-  if (kind === 'laya') {
-    const baseURL = config.judgeBaseURL ?? process.env.SYSTEMONE_BASE_URL ?? DEFAULT_JUDGE_BASE_URL
-    const model = config.systemOneModel ?? process.env.SYSTEMONE_MODEL ?? DEFAULT_SYSTEMONE_MODEL
-    return {
-      judge: new OnegwJudge({ baseURL, model, timeoutMs: config.judgeTimeoutMs ?? 5_000 }),
-      label: `systemone (${model} @ ${baseURL})`,
-    }
-  }
-  const apiKey = process.env.ONEGW_API_KEY ?? process.env.ONEGE_API_KEY ?? readCredentialsKey()
-  if (apiKey === undefined) {
-    throw new Error(
-      'judge is "chat" but no gateway key was found: set ONEGW_API_KEY (or ONEGE_API_KEY) '
-      + 'in the environment, or add it to ~/.dsh/.credentials.yaml. '
-      + 'Use judge: laya for a local judge that needs no key, or judge: none for detectors only.',
-    )
-  }
-  const model = config.judgeModel ?? 'xiaomi/mimo-v2.5'
-  return {
-    judge: createChatJudge({
-      llm: createOnegwClient({
-        baseURL: process.env.ONEGE_BASE_URL ?? 'http://127.0.0.1:8080/v1',
-        apiKey,
-      }),
-      model,
-    }),
-    label: `chat (${model})`,
-  }
-}
-/** How a deployed plugin picks its judge, from the patch row. */
-export interface JudgeConfig {
-  /** `none` (detectors only) | `chat` (metered) | `laya` (local, free). */
-  judge?: 'none' | 'chat' | 'laya'
-  /** System One base URL — Laya, or hosted Jev/TypeSafe on the same wire. */
-  judgeBaseURL?: string
-  /** Model alias the System One provider routes to. */
-  systemOneModel?: string
-  /** Model the `chat` judge uses. */
-  judgeModel?: string
-  /** Deadline for one judge call, in ms. Defaults to 5000. */
-  judgeTimeoutMs?: number
+  const prepared = createLoopObjective({ rawInput, successCommand: currentLoopVerifier() })
+  return prepared.kind === 'error' ? prepared : { objective: prepared.objective }
 }

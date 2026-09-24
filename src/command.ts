@@ -4,9 +4,8 @@
  * Registered as its own cordis row (`feature-loop-command`) because the host
  * command registry owns `commands`, and the policy row (`feature-loop`) must
  * not inject it — the same separation the `feature-loop-remote` row exists
- * for. The handler is `executeLoopCommand` from the policy module: it returns
- * the task text for the composer to submit as the turn, so the loop policies
- * (ceilings, detectors, gate) apply to it exactly as to any typed request.
+ * for. The handler prepares a verifier-backed objective and creates a native
+ * DSH goal; the shipped goal-round driver owns every continuation turn.
  *
  * @module @freepeak/dsh-feature-loop/command
  */
@@ -46,7 +45,7 @@ export const apply = (ctx: Context): void => {
         name: string
         description: string
         input?: { hint: string }
-        handler: (invocation: { rawInput: string }) => { kind: 'success' | 'error', text?: string }
+        handler: (invocation: { rawInput: string, agent: { id: string } }) => { kind: 'success' | 'error', text?: string }
       }): void
     }
   }).commands

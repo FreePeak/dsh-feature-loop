@@ -87,22 +87,6 @@ export interface Config {
    */
   dashboard?: DashboardConfig
   /**
-   * Which judge scores review-worthiness, and how to reach it.
-   *
-   * `none` (detectors only) | `chat` (metered) | `laya` (local, free). The
-   * settings page and the status panel both read these keys, so they are part
-   * of the row's public surface rather than a CLI-only extra.
-   */
-  judge?: 'none' | 'chat' | 'laya'
-  /** System One provider base URL. Defaults to `http://127.0.0.1:8091`. */
-  judgeBaseURL?: string
-  /** Model alias the System One provider routes to. Defaults to `laya`. */
-  systemOneModel?: string
-  /** Model the `chat` judge uses. */
-  judgeModel?: string
-  /** Deadline for one judge call, in ms. */
-  judgeTimeoutMs?: number
-  /**
    * The optimization block (`loops`, `derive`, `history`, `judge`,
    * `totalBudgetUSD`). The block is validated at load and forwarded to the
    * plugin, which uses it for exactly what a deployed loop can use: `derive`
@@ -187,6 +171,10 @@ export function apply(ctx: Context, config: Config = {}): (() => void) | void {
   return applyFeatureLoop(ctx, {
     spec: config.spec,
     judge,
+    // The deployment's own config, verbatim. The panel must show what the row
+    // says (`judge: laya`), not the resolved internals — `options.judge` is a
+    // constructed Judge, which no status page can render as a setting.
+    rowConfig: { ...config },
     confidenceThreshold: config.confidenceThreshold,
     gatePolicies: config.gatePolicies,
     gateMode: config.gateMode,

@@ -62,7 +62,7 @@ export interface ApprovalRegistry {
   /** Current pending entries, settle closures stripped. */
   pendingSnapshot(): PendingApproval[]
   /** Settle one ask by id. False when it is already gone. */
-  settleApproval(id: string, outcome: 'allowed-once' | 'rejected', feedback?: string): boolean
+  settleApproval(id: string, outcome: ApprovalOutcome, feedback?: string): boolean
   /** The brief recorder, driven by the plugin's explainer. */
   readonly briefs: {
     markBriefPending(id: string): void
@@ -75,31 +75,30 @@ export interface ApprovalRegistry {
 /** How long a front end counts as "watching" after its last call. */
 const WATCHER_TTL_MS = 15_000
 
-let lastWatchedAt = 0
+const watchers = new Map<string, number>()
 
 /**
  * Record that a front end is still on the page.
  *
- * Called by the host remote on every `live()` poll, so "is someone watching"
- * is a heartbeat rather than a socket count — the in-UI page has no persistent
- * connection to hold open.
- *
- * ponytail: ceiling is a TTL, so an ask raised in the last 15s after a page
- * closes is still claimed by the dashboard instead of the composer. Upgrade
- * path is a streaming remote method that reports attach/detach exactly.
+ * `source` distinguishes the in-UI remote from the standalone SSE page, so one
+ * closing cannot disable the other. The default keeps existing direct callers
+ * source-compatible.
  */
-export function noteWatcher(at: number = Date.now()): void {
-  lastWatchedAt = at
+export function noteWatcher(source = 'default', at: number = Date.now()): void {
+  watchers.set(source, at)
 }
 
-/** Whether a front end reported in within the TTL. */
+/** Whether any front end reported in within the TTL. */
 export function watcherActive(at: number = Date.now()): boolean {
-  return lastWatchedAt !== 0 && at - lastWatchedAt < WATCHER_TTL_MS
+  for (const [source, seen] of watchers) {
+    if (at - seen >= WATCHER_TTL_MS) watchers.delete(source)
+  }
+  return watchers.size > 0
 }
 
-/** Forget the watcher — on unload, so a dead process never claims an ask. */
-export function clearWatcher(): void {
-  lastWatchedAt = 0
+/** Forget one front end's watcher. */
+export function clearWatcher(source = 'default'): void {
+  watchers.delete(source)
 }
 
 /**
