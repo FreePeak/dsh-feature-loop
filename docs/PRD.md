@@ -292,17 +292,20 @@ estimate is now **denied** rather than dispatched.
    creation, final-turn spend, and budget blocking. A live isolated Web profile
    also completed a native goal with `onegw/execution` and recorded non-zero
    spend.
-5. **In progress — queue and campaign flow.** `FeatureQueue` now provides a
-   durable JSONL log, single-writer locking, fencing claim IDs, campaign
-   reservations, human-waiting transitions, pinned base commits, and symlink-safe
-   worktree admission. PR creation and merge remain intentionally outside the
-   queue until Git commands have their own audited runner boundary.
-6. **Next — decision on `routing.ts`.** Collapse the ladder onto DSH model
+5. **Done — queue and worktree foundation.** `FeatureQueue` provides a durable
+   JSONL log, single-writer locking, fencing claim IDs, campaign reservations,
+   human-waiting transitions, pinned base commits, and symlink-safe admission.
+   `git-worktree.ts` now runs only fixed, shell-free Git commands, creates a
+   detached worktree at the pinned commit, and proves its HEAD and ownership.
+6. **In progress — PR and merge gate.** PR creation and merge remain outside the
+   queue. They need a separate fixed-command runner and explicit human approval;
+   a queue record is never proof that a PR or merge happened.
+7. **Next — decision on `routing.ts`.** Collapse the ladder onto DSH model
    selection or document why spec-level escalation remains distinct.
 
-The queue is deliberately admission-only: it does not execute Git, create
-worktrees, open PRs, or merge. Those operations need a separate command gate and
-must never be implied by a queue record.
+The queue remains admission/accounting only. The worktree runner does not create
+branches, commit, push, open PRs, or merge. Those operations remain separate
+command-gated boundaries.
 
 ---
 
