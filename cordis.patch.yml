@@ -69,6 +69,7 @@
           edit: auto-if-confident
           write: auto-if-confident
           feature_queue_list: auto
+          feature_pr_plan: auto
 
         # How a review reaches a human. `ask` (the default) prompts in the Web
         # UI's conversation composer, so you can approve or reject the step.
@@ -206,3 +207,8 @@
     # read-only inspection path. Settlement is not exposed as a model tool.
     - id: feature-loop-queue
       name: '@freepeak/dsh-feature-loop/queue'
+
+    # Worktree and PR/merge actions. Every action except the read-only plan is
+    # unclassified and therefore human-gated by the feature-loop policy row.
+    - id: feature-loop-actions
+      name: '@freepeak/dsh-feature-loop/actions'

@@ -67,6 +67,7 @@ import { MockAdapter, textResponse, toolCallResponse } from '../../agent-loop/te
 import { apply as applyFeatureLoop } from '../../src/plugin.ts'
 import * as CommandLoop from '../../src/command.ts'
 import * as QueueTools from '../../src/queue-tool.ts'
+import * as ActionTools from '../../src/action-tool.ts'
 import type { DashboardSnapshot } from '../../src/plugin.ts'
 import type { LoopSpec } from '../../src/spec.ts'
 
@@ -568,6 +569,25 @@ describe('feature-loop gate inside a real DSH pipeline', () => {
       const result = await execution
       expect(result.isError).toBe(false)
       closeTab()
+    } finally {
+      dispose()
+    }
+  })
+
+  it('ACTION GATE: worktree and PR mutations are refused before their implementations run', async () => {
+    const { ctx, dispose } = await featureLoopSetup({ gatePolicies: { feature_pr_plan: 'auto' } })
+    try {
+      await ctx.plugin(ActionTools)
+      const agent = await ctx.agentLoop.create(SessionId('action-gate'), { provider: 'mock', model: 'mock' })
+      const execution = await ctx.tools.execute({
+        callId: ToolCallId('worktree-mutation'),
+        name: 'feature_worktree_create',
+        arguments: { id: 'missing', claimId: 'missing-claim' },
+        agent,
+        signal: testToolSignal,
+      })
+      expect(execution.isError).toBe(true)
+      expect(JSON.stringify(execution)).toMatch(/REVIEW REQUESTED|unavailable|approval/i)
     } finally {
       dispose()
     }
