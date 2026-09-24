@@ -27,6 +27,7 @@
     "assets/mark.svg",
     "bin/dshloop.mjs",
     "client.js",
+    "lib",
     "cordis.patch.yml",
     "lib/cli.mjs",
     "lib/index.d.mts",
