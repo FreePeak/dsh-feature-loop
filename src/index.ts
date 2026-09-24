@@ -209,3 +209,5 @@ export { createWorktree, planWorktreeAdd, verifyWorktree } from './git-worktree.
 export type { WorktreePlan, WorktreeProof } from './git-worktree.ts'
 export { authorizeMerge, planMerge, planPullRequest } from './pr-gate.ts'
 export type { CommandPlan, MergeApproval, MergePlan, PullRequestPlan } from './pr-gate.ts'
+export { executeCommandPlan, executeMergePlan } from './pr-executor.ts'
+export type { ShellService, FixedCommandFailure, FixedCommandSuccess } from './pr-executor.ts'
