@@ -65,7 +65,7 @@ import { MockAdapter, textResponse, toolCallResponse } from '../../agent-loop/te
 // stages this file into the harness tree — every other import (including the
 // dashboard types, re-exported through `plugin.ts`) must ride along with them.
 import { apply as applyFeatureLoop } from '../../src/plugin.ts'
-import { apply as applyCommand } from '../../src/command.ts'
+import * as CommandLoop from '../../src/command.ts'
 import type { DashboardSnapshot } from '../../src/plugin.ts'
 import type { LoopSpec } from '../../src/spec.ts'
 
@@ -577,7 +577,7 @@ describe('feature-loop gate inside a real DSH pipeline', () => {
     try {
       await ctx.plugin(Commands)
       await ctx.plugin(Goal)
-      applyCommand(ctx as never)
+      await ctx.plugin(CommandLoop)
       const agent = await ctx.agentLoop.create(SessionId('goal-command'), { provider: 'mock', model: 'mock' })
 
       const execution = await ctx.commands.execute(agent, '/loop ship the queue', [], new AbortController().signal)

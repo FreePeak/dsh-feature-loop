@@ -55,11 +55,28 @@ export const apply = (ctx: Context): void => {
     description: 'Run a task through the feature loop: bounded steps, cheap-first routing, and the review gate',
     input: { hint: '<task>' },
     handler: (invocation) => {
-      const outcome = executeLoopCommand(invocation.rawInput)
-      if ('kind' in outcome) return outcome
-      // The composer submits the returned text as the turn, so the loop
-      // policies apply to it exactly as to any typed request.
-      return { kind: 'success', text: outcome.task }
+      const prepared = executeLoopCommand(invocation.rawInput)
+      if ('kind' in prepared) return prepared
+      const get = (ctx as unknown as { get?: (key: string) => unknown }).get
+      const agents = get?.call(ctx, 'agents') as { roots(): readonly { id: string }[] } | undefined
+      const goals = get?.call(ctx, 'goals') as {
+        create(agent: object, request: { objective: string }): { id: string, revision: number }
+      } | undefined
+      if (agents === undefined || goals === undefined) {
+        return { kind: 'error', text: 'Feature loop is unavailable: DSH goal services are not mounted.' }
+      }
+      if (!agents.roots().some(root => root.id === invocation.agent.id)) {
+        return { kind: 'error', text: '/loop can start only on a root DSH session.' }
+      }
+      try {
+        const goal = goals.create(invocation.agent, { objective: prepared.objective })
+        return {
+          kind: 'success',
+          text: `Feature loop goal ${goal.id} armed at revision ${String(goal.revision)}.`,
+        }
+      } catch {
+        return { kind: 'error', text: 'Feature loop could not create a goal. Finish or clear the current goal first.' }
+      }
     },
   })
 }
