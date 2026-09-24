@@ -207,3 +207,5 @@ export { FeatureQueue, readQueueEvents, DEFAULT_QUEUE_PATH } from './feature-que
 export type { FeatureInput, FeatureItem, FeatureQueueOptions, FeatureStatus } from './feature-queue.ts'
 export { createWorktree, planWorktreeAdd, verifyWorktree } from './git-worktree.ts'
 export type { WorktreePlan, WorktreeProof } from './git-worktree.ts'
+export { authorizeMerge, planMerge, planPullRequest } from './pr-gate.ts'
+export type { CommandPlan, MergeApproval, MergePlan, PullRequestPlan } from './pr-gate.ts'
