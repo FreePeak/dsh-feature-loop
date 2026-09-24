@@ -205,3 +205,5 @@ export default apply
 export type { FeatureLoopPolicy as Policy }
 export { FeatureQueue, readQueueEvents, DEFAULT_QUEUE_PATH } from './feature-queue.ts'
 export type { FeatureInput, FeatureItem, FeatureQueueOptions, FeatureStatus } from './feature-queue.ts'
+export { createWorktree, planWorktreeAdd, verifyWorktree } from './git-worktree.ts'
+export type { WorktreePlan, WorktreeProof } from './git-worktree.ts'
