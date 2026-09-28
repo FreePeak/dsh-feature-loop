@@ -1065,8 +1065,14 @@ export function apply(
     answerTimeoutMs: dashboardConfig.answerTimeoutMs ?? 600_000,
     hasWatcher: () => watcherActive(),
   })
+  // `answers` is the deployment's choice, not ours to override. It used to be
+  // forced to `false` here, which made a standalone dashboard advertise itself
+  // as observe-only: the page rendered "composer panel answers", and the
+  // registry never let it claim an ask, so a click could never settle one.
+  // The registry is shared with the composer, so both front ends settle the
+  // same ask exactly once — which is the point of the registry.
   const dashboard = dashboardConfig.standalone === true
-    ? startDashboard({ ...dashboardConfig, answers: false, enabled: true }, state, registry)
+    ? startDashboard({ ...dashboardConfig, enabled: true }, state, registry)
     : undefined
   // Publish the live state for the remote row (`feature-loop-remote`) to
   // serve the in-UI dashboard page. Published unconditionally: the in-UI page

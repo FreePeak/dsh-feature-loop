@@ -37,6 +37,12 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ReviewSignal } from './signals.ts'
+// `noteWatcher` is a value import, unlike the type-only ones around it: the
+// standalone page must register as a watcher the moment a tab opens, or the
+// shared registry never lets it claim an ask and every POST times out. The
+// in-UI page does this from `remote.ts`'s `live()`; this is the same fact for
+// the loopback server.
+import { clearWatcher, noteWatcher } from './approvals.ts'
 import type { ApprovalRegistry } from './approvals.ts'
 // Type-only on purpose: the measurement modules are authored concurrently by
 // other seams, and type-only imports are erased at runtime, so this module
@@ -817,6 +823,14 @@ export function startDashboard(
     // Registered before any await: the moment this tab exists, `answer` may
     // claim requests. That single fact is the whole precedence rule.
     clients.add(res)
+    // An SSE client is a watcher by definition — holding the stream open is
+    // the standalone page's "someone is watching" signal, the same one the
+    // in-UI page sends on every poll. Without this the shared registry's
+    // `hasWatcher()` stays false, so the ask is never claimed by this page,
+    // every POST to `/api/approvals/:id` misses, and the run hangs until the
+    // answer times out. Guarded by `cfg.answers` so `answers: false` really
+    // does mean observe-only.
+    if (cfg.answers) noteWatcher()
     const keepalive = setInterval(() => res.write(': ping\n\n'), KEEPALIVE_MS)
     keepalive.unref()
     req.on('close', () => {
@@ -825,6 +839,11 @@ export function startDashboard(
       // Last tab gone: pending asks must not hang the run. Failing closed to
       // `unavailable` is the seam's own no-answerer behaviour.
       if (clients.size === 0) {
+        // Drop the watcher with the last tab. Without this the flag stays set
+        // for the life of the process, and a dashboard nobody has open still
+        // "wins" the claim against the composer panel — then strands the ask,
+        // because the page that would have answered it is gone.
+        if (cfg.answers) clearWatcher()
         for (const entry of [...pending.values()]) entry.settle('unavailable')
       }
     })

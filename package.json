@@ -28,10 +28,7 @@
     "assets/mark.svg",
     "client.js",
     "cordis.patch.yml",
-    "lib/command.mjs",
-    "lib/index.d.mts",
-    "lib/index.mjs",
-    "lib/remote.mjs"
+    "lib/"
   ],
   "license": "MIT",
   "author": "Linh Doan",

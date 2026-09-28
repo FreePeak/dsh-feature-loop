@@ -28,6 +28,7 @@ import {
   workspaceLabelOf,
 } from '../src/dashboard.ts'
 import type { DashboardHandle, DashboardSnapshot } from '../src/dashboard.ts'
+import { clearWatcher, watcherActive } from '../src/approvals.ts'
 // Type-only, so these are erased at runtime: the measurement modules are
 // authored concurrently, and this file must pin their shapes without
 // loading their code.
@@ -908,4 +909,28 @@ test('a very long task label is capped, so a run row cannot be a paragraph', asy
   state.recordMeta('r1', { sessionId: 'r1', label: 'x'.repeat(400) })
   const run = state.snapshot().runs.find(r => r.runId === 'r1')
   assert.ok((run?.label?.length ?? 0) <= 120, `capped at 120, got ${String(run?.label?.length)}`)
+})
+
+/**
+ * The watcher flag is the standalone page's claim on an ask, so its lifetime
+ * must match the tab's. Registering on open without clearing on close left the
+ * flag set for the life of the process: a dashboard nobody had open still beat
+ * the composer panel to every ask, then stranded it, because the page that
+ * would have answered was gone. Both halves are pinned here — the open half is
+ * what lets a click settle an ask at all, the close half is what stops a
+ * closed tab from winning one.
+ */
+test('an SSE client is a watcher while open, and stops being one when the last tab closes', async (t) => {
+  clearWatcher()
+  t.after(clearWatcher)
+  assert.equal(watcherActive(), false, 'starts unwatched')
+
+  const { dash } = await started(t, { host: '127.0.0.1', answers: true })
+
+  const disconnect = await connectSse(dash)
+  assert.equal(watcherActive(), true, 'an open tab claims asks')
+
+  disconnect()
+  await delay(50)
+  assert.equal(watcherActive(), false, 'the last tab going releases the claim')
 })
