@@ -24,11 +24,32 @@
  * @module @freepeak/dsh-feature-loop/plugin
  */
 
-import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
-import { MessageId } from '@deepseek-ai/dsh-llm'
-import type { LlmCallConfig, UserMessage } from '@deepseek-ai/dsh-llm'
+import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { ContextFormed, LlmCallConfig, UserMessage } from '@deepseek-ai/dsh-llm'
+
+/**
+ * Declare this plugin's message producer identity.
+ *
+ * `MessageSourceMap` is a merge-extensible sum type: every producer owns its
+ * own `kind`, and the harness deliberately has **no** shared catch-all
+ * `plugin` kind. The bare `{ kind: 'plugin', plugin }` wrapper is the retired
+ * V3 shape — it exists only so the V3→V4 migration can recognise and lift it.
+ * A V4 session that still carries it is refused at admission with
+ * "format v4 message requires a producer-owned source kind", which is exactly
+ * what happened to every session this plugin gated.
+ *
+ * `plugin:feature-loop` is deliberately the prefixed form rather than a bare
+ * `feature-loop`: it is the string the V3→V4 migration produces for a
+ * non-first-party plugin of this name, so rows written before this fix and rows
+ * written after it agree, instead of splitting the transcript across two kinds.
+ */
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'plugin:feature-loop': { kind: 'plugin:feature-loop' } & ContextFormed
+  }
+}
 import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
 import { LoopBudget } from './budget.ts'
 import type { BudgetSnapshot, UsageReading } from './budget.ts'
@@ -100,22 +121,25 @@ declare module '@deepseek-ai/cordis' {
 }
 
 /**
- * Wrap notice text as a plugin-sourced user message.
+ * Wrap notice text as a feature-loop-sourced user message.
  *
  * The notices reach both the model and the human reading the transcript, which
  * is the whole point of delivering them this way: a review the model cannot see
  * is a review it will walk straight past on the next step.
  *
+ * `form: 'notice'` is what lets the transcript collapse the row to its summary
+ * instead of dumping the full text into a conversation the model re-reads every
+ * turn, and `boundContextSummary` keeps that summary to the one line the format
+ * allows.
+ *
  * @param text - the notice text.
  * @returns a user-role message attributed to this plugin.
  */
 function notice(text: string): UserMessage {
-  return {
-    id: MessageId(randomUUID()),
-    role: 'user',
+  return createUserMessage({
     content: [{ type: 'text', text }],
-    source: { kind: 'plugin', plugin: name },
-  }
+    source: { kind: 'plugin:feature-loop', form: 'notice', summary: boundContextSummary(text) },
+  })
 }
 
 /**
