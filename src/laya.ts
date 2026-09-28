@@ -8,11 +8,12 @@
  * it returns a level instead of a paragraph to parse.
  *
  * **Provider posture.** Treat Laya like any other decision provider (Jev /
- * TypeSafe): same wire, different base URL. The shared machine service is the
- * containerised sidecar at `http://127.0.0.1:8091` — not onegw, not a repo
- * script, not launchd. This module posts to `/v1/systemone` and never loads
- * weights. Point `baseURL` at the sidecar (default in the CLI) or at a gateway
- * that forwards the same contract; the code does not change.
+ * TypeSafe): same wire, different base URL. The shared machine service runs
+ * natively on macOS at `http://127.0.0.1:8092` — not onegw, not a repo script.
+ * (It was a containerised sidecar on `:8091` until 2026-09-26; that port is
+ * retired.) This module posts to `/v1/systemone` and never loads weights. Point
+ * `baseURL` at the sidecar (the default) or at a gateway that forwards the same
+ * contract; the code does not change.
  *
  * Wire rules that matter (verified live against the sidecar):
  *
@@ -106,7 +107,7 @@ export interface JudgeResult {
 /** Configuration for the System-One judge client. */
 export interface OnegwJudgeConfig {
   /**
-   * Base URL of a System One provider. Swap local Laya (`http://127.0.0.1:8091`)
+   * Base URL of a System One provider. Swap local Laya (`http://127.0.0.1:8092`)
    * for hosted Jev/TypeSafe by changing only this field (CLI:
    * `--judge-base-url` / `SYSTEMONE_BASE_URL`).
    */

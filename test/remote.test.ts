@@ -172,7 +172,7 @@ test('probeJudge with no endpoint says so instead of fetching', async () => {
 })
 
 test('probeJudge reaches the live Laya sidecar when it is up', async (t) => {
-  const probe = await probeJudge('http://127.0.0.1:8091', 2_000)
+  const probe = await probeJudge('http://127.0.0.1:8092', 2_000)
   if (!probe.reachable) {
     // The sidecar is a shared machine service and may legitimately be down;
     // skip rather than fail a test that is not about its availability.

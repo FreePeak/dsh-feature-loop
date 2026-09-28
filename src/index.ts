@@ -94,7 +94,7 @@ export interface Config {
    * of the row's public surface rather than a CLI-only extra.
    */
   judge?: 'none' | 'chat' | 'laya'
-  /** System One provider base URL. Defaults to `http://127.0.0.1:8091`. */
+  /** System One provider base URL. Defaults to `http://127.0.0.1:8092`. */
   judgeBaseURL?: string
   /** Model alias the System One provider routes to. Defaults to `laya`. */
   systemOneModel?: string

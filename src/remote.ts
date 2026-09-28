@@ -148,8 +148,14 @@ const NUMERIC_KEYS: (keyof FeatureLoopSettings)[] = [
   'judgeThreshold', 'reviewBudget', 'confidenceThreshold', 'budgetUSD', 'maxSteps',
 ]
 
-/** Default System One endpoint — the shared Laya sidecar on this machine. */
-const DEFAULT_JUDGE_BASE_URL = 'http://127.0.0.1:8091'
+/**
+ * Default System One endpoint — the shared Laya sidecar on this machine.
+ *
+ * `:8092` is the native macOS service; `:8091` was the retired containerised
+ * sidecar. Reported as unreachable when the service is down, so a wrong default
+ * here reads in the status page as "judge: down" rather than silently.
+ */
+const DEFAULT_JUDGE_BASE_URL = 'http://127.0.0.1:8092'
 
 /** Default System One model alias. */
 const DEFAULT_SYSTEMONE_MODEL = 'laya'
