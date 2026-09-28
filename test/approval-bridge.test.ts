@@ -15,6 +15,7 @@ import { test } from 'node:test'
 
 import {
   APPROVAL_OPTIONS,
+  assertSettleAccepted,
   isDecided,
   outcomeForResponse,
   resolutionForOutcome,
@@ -98,4 +99,26 @@ test('the gate is a copy: mutating it cannot rewrite the shared option list', ()
   const gate = toApprovalGate(ASK)
   gate.options[0]!.label = 'tampered'
   assert.equal(APPROVAL_OPTIONS[0]?.label, 'Allow once')
+})
+
+test('an ask that was already settled is not reported as a failure', () => {
+  // The card's buttons are hidden only once the gate closes, and the gate
+  // closes only if this call resolves. Throwing here is what left an operator
+  // staring at a live "Approve" button that re-reported the same dead error on
+  // every click: the ask had already been answered by the composer or another
+  // tab, so there was nothing left to approve and nothing wrong with the click.
+  assert.doesNotThrow(() => assertSettleAccepted({ ok: true, value: { settled: false } }))
+})
+
+test('a settle that actually worked is not a failure either', () => {
+  assert.doesNotThrow(() => assertSettleAccepted({ ok: true, value: { settled: true } }))
+})
+
+test('a host failure IS reported, so a real error is not silently swallowed', () => {
+  // The counterpart to the test above: the point is to stop treating a settled
+  // ask as an error, not to stop reporting errors.
+  assert.throws(
+    () => assertSettleAccepted({ ok: false, error: { message: 'host remote is not mounted' } }),
+    /host remote is not mounted/,
+  )
 })

@@ -474,7 +474,12 @@ export async function reviewStep(
     policy.lastConfidence = answer.score
   }
 
-  const routed = policy.router.route(preparation.signals, undefined, policy.lastConfidence)
+  // The review checkpoint is checked before the router's own verdict, so a
+  // run that was told to pause does pause even on a step nothing else would
+  // have questioned. It is not a safety signal, so it does not outrank a
+  // critical one — it only adds a pause where there would not have been one.
+  const checkpoint = policy.router.checkpoint(step)
+  const routed = checkpoint ?? policy.router.route(preparation.signals, undefined, policy.lastConfidence)
   if (routed.review) notices.push(reviewText(routed.reason, routed.source))
 
   return {

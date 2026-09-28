@@ -168,3 +168,90 @@ export function resolutionForOutcome(
 export function isDecided(outcome: BridgeOutcome): boolean {
   return outcome === 'allowed-once' || outcome === 'rejected'
 }
+
+/** The host-remote answer shape the browser sees for one settle call. */
+export type SettleAnswer =
+  | { ok: true, value: { settled: boolean } }
+  | { ok: false, error: { message: string } }
+
+/**
+ * Reject a settle call the operator should be told about.
+ *
+ * Only a transport/host failure is an error. `settled: false` is **not**:
+ * it means the ask was already resolved — the composer answered it, another
+ * tab answered it, or the same click arrived twice — and the ask is closed
+ * either way.
+ *
+ * This distinction is the whole difference between a card that clears and a
+ * card that stays on screen with live buttons. Throwing on `settled: false`
+ * skipped every state update that would have taken the card out of the
+ * thread, so the button stayed clickable and re-reported the same dead error
+ * on every subsequent click, forever.
+ *
+ * @param answer - the host remote's answer to the settle call.
+ * @throws the host's message when the call itself failed.
+ */
+export function assertSettleAccepted(answer: SettleAnswer): void {
+  if (!answer.ok) throw new Error(answer.error.message)
+}
+
+// ── approval postures ─────────────────────────────────────────────────────
+// These live here, not in remote.ts, because the settings page runs in the
+// browser: remote.ts imports node:fs and would drag a node bundle into a
+// client that must never have one. approval-bridge is already the module both
+// sides import, and it stays dependency-free so CI's no-install job covers it.
+
+/** A tool class a gate policy can name. */
+export type GatePolicyClass = 'read' | 'glob' | 'grep' | 'edit' | 'write' | 'bash'
+
+/** The policy for one tool class. */
+export type GatePolicyValue = 'auto' | 'auto-if-confident' | 'always-approve'
+
+/** Per-class gate policy, as written to the config file. */
+export type GatePolicyMap = Partial<Record<GatePolicyClass, GatePolicyValue>>
+
+
+export const APPROVAL_MODES = {
+  'review-risky': {
+    label: 'Review at risky steps',
+    detail: 'Reads never interrupt. A write is reviewed when the loop has no confidence to judge it.',
+    policies: {
+      read: 'auto', glob: 'auto', grep: 'auto',
+      edit: 'auto-if-confident', write: 'auto-if-confident', bash: 'auto-if-confident',
+    },
+  },
+  'approve-every-step': {
+    label: 'Approve every step',
+    detail: 'Every write, edit and shell command waits for you. Nothing changes without a click.',
+    policies: {
+      read: 'auto', glob: 'auto', grep: 'auto',
+      edit: 'always-approve', write: 'always-approve', bash: 'always-approve',
+    },
+  },
+} as const
+
+/** Name of an approval posture, as the settings page writes it. */
+export type ApprovalModeName = keyof typeof APPROVAL_MODES
+
+
+/**
+ * Classify a policy map as one of the known approval postures.
+ *
+ * A hand-edited map rarely matches a mode exactly, so the answer is the
+ * closest one: "every step" only when every write class actually asks.
+ *
+ * @param policies - the configured map, if any.
+ * @returns the posture that describes it.
+ */
+export function approvalModeFor(policies: GatePolicyMap | undefined): ApprovalModeName {
+  const asked = GATE_POLICY_CLASSES
+    .filter(c => c !== 'read' && c !== 'glob' && c !== 'grep' && policies?.[c] === 'always-approve').length
+  const writeClasses = GATE_POLICY_CLASSES.filter(c => c !== 'read' && c !== 'glob' && c !== 'grep')
+  return asked === writeClasses.length ? 'approve-every-step' : 'review-risky'
+}
+
+/** Every tool class a policy may name, for validation and error messages. */
+export const GATE_POLICY_CLASSES: GatePolicyClass[] = ['read', 'glob', 'grep', 'edit', 'write', 'bash']
+
+/** Every policy a class may carry, for validation and error messages. */
+export const GATE_POLICY_VALUES: GatePolicyValue[] = ['auto', 'auto-if-confident', 'always-approve']

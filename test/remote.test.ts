@@ -20,6 +20,8 @@ import { test } from 'node:test'
 import { parse as parseYaml } from 'yaml'
 
 import {
+  APPROVAL_MODES,
+  approvalModeFor,
   buildStatus,
   probeJudge,
   readSettings,
@@ -208,4 +210,54 @@ test('projectLive hands the page the dashboard snapshot verbatim', async () => {
 test('projectLive with no published state reads empty, never zeros', async () => {
   const { projectLive } = await import('../src/remote.ts')
   assert.deepEqual(projectLive(undefined), { answers: true, pending: [], runs: [], feed: [] })
+})
+
+test('an absent policy map reads as the safe posture, not as "nothing"', () => {
+  // A fresh profile has no gatePolicies, and the settings page must not show
+  // that as an empty selection: the shipped default IS the safe posture, and
+  // an operator reading the page should see the posture they actually get.
+  assert.equal(approvalModeFor(undefined), 'review-risky')
+  assert.equal(approvalModeFor({}), 'review-risky')
+})
+
+test('each approval mode round-trips through the classifier', () => {
+  for (const name of Object.keys(APPROVAL_MODES) as Array<keyof typeof APPROVAL_MODES>) {
+    assert.equal(approvalModeFor(APPROVAL_MODES[name].policies), name)
+  }
+})
+
+test('"approve every step" needs every write class to ask', () => {
+  // A hand-edited map rarely matches a mode exactly. Claiming the strict
+  // posture when only `write` asks would tell the operator nothing changes
+  // without a click while their `bash` still runs unattended.
+  assert.equal(approvalModeFor({ write: 'always-approve' }), 'review-risky')
+  assert.equal(
+    approvalModeFor({ edit: 'always-approve', write: 'always-approve', bash: 'always-approve' }),
+    'approve-every-step',
+  )
+})
+
+test('gatePolicies and checkpointAtStep survive a settings round-trip', () => {
+  // These are the two keys the approval UI writes. If validation dropped
+  // them, the selector would appear to save and change nothing.
+  const dir = mkdtempSync(join(tmpdir(), 'fl-settings-'))
+  const path = join(dir, 'settings.yaml')
+  try {
+    const policies = { ...APPROVAL_MODES['approve-every-step'].policies }
+    saveSettings({ gatePolicies: policies, checkpointAtStep: 8 }, path)
+    const back = readSettings(path)
+    assert.deepEqual(back['gatePolicies'], policies)
+    assert.equal(back['checkpointAtStep'], 8)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an unknown gate policy value is rejected rather than silently dropped', () => {
+  // A typo that quietly became "no policy" would gate nothing, which is the
+  // failure mode this whole surface exists to prevent.
+  assert.throws(
+    () => validateSettings({ gatePolicies: { write: 'always' } as never }),
+    /gatePolicies|policy|write/i,
+  )
 })

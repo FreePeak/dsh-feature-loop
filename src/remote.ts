@@ -32,6 +32,8 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import { GATE_POLICY_CLASSES, GATE_POLICY_VALUES } from './approval-bridge.ts'
+import type { GatePolicyClass, GatePolicyValue, GatePolicyMap } from './approval-bridge.ts'
 import { noteWatcher } from './approvals.ts'
 import type { DashboardSnapshot } from './dashboard.ts'
 
@@ -123,6 +125,10 @@ export function unpublishLiveState(source: LiveSource): void {
 }
 
 /** The subset of config the settings page may write. */
+export type { GatePolicyClass, GatePolicyValue, GatePolicyMap }
+export { APPROVAL_MODES, approvalModeFor } from './approval-bridge.ts'
+export type { ApprovalModeName } from './approval-bridge.ts'
+
 export interface FeatureLoopSettings {
   judge?: 'none' | 'chat' | 'laya'
   judgeBaseURL?: string
@@ -134,18 +140,30 @@ export interface FeatureLoopSettings {
   gateMode?: 'ask' | 'deny'
   budgetUSD?: number
   maxSteps?: number
+  /**
+   * Per-tool-class gate policy. Exposed here because a deployment that cannot
+   * reach this key has to hand-edit YAML to change it, and the two postures
+   * people actually want — "review only what changes things" and "approve
+   * everything" — differ only in this map.
+   */
+  gatePolicies?: GatePolicyMap
+  /**
+   * Step at which the run pauses for review, once. This is the "built and
+   * tested, now look at it" checkpoint. Undefined disables it.
+   */
+  checkpointAtStep?: number
 }
 
 /** The keys {@link FeatureLoopSettings} actually exposes, in file order. */
 const SETTINGS_KEYS: (keyof FeatureLoopSettings)[] = [
   'judge', 'judgeBaseURL', 'systemOneModel', 'judgeModel',
   'judgeThreshold', 'reviewBudget', 'confidenceThreshold',
-  'gateMode', 'budgetUSD', 'maxSteps',
+  'gateMode', 'budgetUSD', 'maxSteps', 'gatePolicies', 'checkpointAtStep',
 ]
 
 /** The numeric fields, so one loop validates all of them the same way. */
 const NUMERIC_KEYS: (keyof FeatureLoopSettings)[] = [
-  'judgeThreshold', 'reviewBudget', 'confidenceThreshold', 'budgetUSD', 'maxSteps',
+  'judgeThreshold', 'reviewBudget', 'confidenceThreshold', 'budgetUSD', 'maxSteps', 'checkpointAtStep',
 ]
 
 /**
@@ -240,6 +258,28 @@ export function validateSettings(settings: FeatureLoopSettings): Record<string, 
   }
   if (typeof clean.maxSteps === 'number' && (!Number.isInteger(clean.maxSteps) || clean.maxSteps < 1)) {
     throw new Error(`maxSteps must be a positive integer, received ${String(clean.maxSteps)}`)
+  }
+  const policies = clean.gatePolicies
+  if (policies !== undefined) {
+    if (typeof policies !== 'object' || policies === null || Array.isArray(policies)) {
+      throw new Error(`gatePolicies must be a mapping of tool class to policy, received ${JSON.stringify(policies)}`)
+    }
+    // A misspelled policy has to fail here. Silently dropping the key would
+    // leave the class on its fail-closed default — or, worse, on nothing —
+    // while the settings page reports the save as successful and the operator
+    // believes a gate is running that is not.
+    for (const [cls, value] of Object.entries(policies as Record<string, unknown>)) {
+      if (!GATE_POLICY_CLASSES.includes(cls as GatePolicyClass)) {
+        throw new Error(`gatePolicies: unknown tool class ${JSON.stringify(cls)}; expected one of ${GATE_POLICY_CLASSES.join(', ')}`)
+      }
+      if (!GATE_POLICY_VALUES.includes(value as GatePolicyValue)) {
+        throw new Error(`gatePolicies.${cls} must be one of ${GATE_POLICY_VALUES.join(', ')}, received ${JSON.stringify(value)}`)
+      }
+    }
+  }
+  if (typeof clean.checkpointAtStep === 'number'
+    && (!Number.isInteger(clean.checkpointAtStep) || clean.checkpointAtStep < 1)) {
+    throw new Error(`checkpointAtStep must be a positive integer, received ${String(clean.checkpointAtStep)}`)
   }
   return clean
 }

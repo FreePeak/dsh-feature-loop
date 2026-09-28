@@ -54,6 +54,8 @@ export type ReviewSource =
   | 'operator'
   /** The review budget was exhausted, so a non-critical signal was deferred. */
   | 'rate-capped'
+  /** The run reached its configured review checkpoint. Asks once. */
+  | 'checkpoint'
 
 /** One routing outcome. */
 export interface ReviewDecision {
@@ -79,6 +81,14 @@ export interface RouterConfig {
    * attention, not the loop's safety.
    */
   reviewBudget: number
+  /**
+   * Step at which the run pauses for review, once. Undefined disables it.
+   *
+   * A step, not a command: the plugin runs no shell on the operator's behalf,
+   * so "the PR is built and tested" is something the operator names, not
+   * something the loop goes looking for.
+   */
+  checkpointAtStep?: number
 }
 
 /** The book's defaults. */
@@ -194,7 +204,37 @@ export class AttentionRouter {
   }
 
   /**
-   * Route one step.
+   * Whether a run has already passed its review checkpoint.
+   *
+   * A checkpoint asks once. Without this, every step at or after the
+   * configured one would ask again, and an operator who approved step 8 would
+   * be asked again at 9, 10, 11 — which is not a checkpoint, it is a toll.
+   */
+  private checkpointAsked = false
+
+  /**
+   * Review a step because the run reached its checkpoint.
+   *
+   * This is the "PR is built and tested, look at it before the next step"
+   * pause, without the plugin having to run a command to discover that the PR
+   * exists. The operator names the step; the loop stops there once.
+   *
+   * @param step - the step about to run, 1-based.
+   * @returns the decision, or `undefined` when this run is not at its checkpoint.
+   */
+  checkpoint(step: number): ReviewDecision | undefined {
+    const at = this.config.checkpointAtStep
+    if (at === undefined || this.checkpointAsked || step < at) return undefined
+    this.checkpointAsked = true
+    this.reviewsRequested += 1
+    return {
+      review: true,
+      source: 'checkpoint',
+      reason: `waiting for your review at step ${String(step)} — approve to let the loop continue`,
+    }
+  }
+
+  /** Route one step.
    *
    * @param signals - everything the detectors found for this step.
    * @param gate - the safety gate's decision for the action about to run, if any.
