@@ -168,3 +168,29 @@ export function resolutionForOutcome(
 export function isDecided(outcome: BridgeOutcome): boolean {
   return outcome === 'allowed-once' || outcome === 'rejected'
 }
+
+/** The host-remote answer shape the browser sees for one settle call. */
+export type SettleAnswer =
+  | { ok: true, value: { settled: boolean } }
+  | { ok: false, error: { message: string } }
+
+/**
+ * Reject a settle call the operator should be told about.
+ *
+ * Only a transport/host failure is an error. `settled: false` is **not**:
+ * it means the ask was already resolved — the composer answered it, another
+ * tab answered it, or the same click arrived twice — and the ask is closed
+ * either way.
+ *
+ * This distinction is the whole difference between a card that clears and a
+ * card that stays on screen with live buttons. Throwing on `settled: false`
+ * skipped every state update that would have taken the card out of the
+ * thread, so the button stayed clickable and re-reported the same dead error
+ * on every subsequent click, forever.
+ *
+ * @param answer - the host remote's answer to the settle call.
+ * @throws the host's message when the call itself failed.
+ */
+export function assertSettleAccepted(answer: SettleAnswer): void {
+  if (!answer.ok) throw new Error(answer.error.message)
+}

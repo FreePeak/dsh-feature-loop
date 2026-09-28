@@ -18,6 +18,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import z from '@deepseek-ai/schemastery'
 import { DashboardApp } from './app.tsx'
 import type { DashboardSource } from './app.tsx'
+import { assertSettleAccepted } from '../src/approval-bridge.ts'
 import type { BridgeOutcome } from '../src/approval-bridge.ts'
 import { decideStart } from './start-target.ts'
 import type { StartCandidate } from './start-target.ts'
@@ -75,9 +76,10 @@ function remoteSource(host: Host): DashboardSource {
     async respond(id: string, outcome: BridgeOutcome, feedback: string) {
       const svc = host.get('remote.featureLoop')
       if (svc === undefined) throw new Error('feature-loop host remote is not mounted')
-      const answer = await svc.answer(id, outcome, feedback)
-      if (!answer.ok) throw new Error(answer.error.message)
-      if (!answer.value.settled) throw new Error('that approval was already settled')
+      // A settle that reports the ask was already resolved is NOT a failure:
+      // the ask is closed either way, and rejecting here is what stranded the
+      // card with live buttons. See assertSettleAccepted.
+      assertSettleAccepted(await svc.answer(id, outcome, feedback))
     },
   }
 }
