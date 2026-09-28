@@ -20,6 +20,10 @@
  */
 
 import { strict as assert } from 'node:assert'
+import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { test } from 'node:test'
 
 import { apply } from '../src/plugin.ts'
@@ -136,4 +140,40 @@ test('the notice source is a form the transcript can collapse', async () => {
     assert.equal(typeof source.summary, 'string')
     assert.ok((source.summary?.length ?? 0) > 0, 'a notice form needs a summary to show')
   }
+})
+
+test('the harness\'s own V4 admission accepts what this plugin injects', async (t) => {
+  // The assertions above restate the rule; this runs the rule itself.
+  // `assertV4MessageSources` is the exact function the session log calls, fed
+  // the exact event type a pre-step decision is persisted as
+  // (`agent/inbox/spliced`), carrying messages the real `apply` really built.
+  // If the plugin regressed to the retired wrapper, this throws the same
+  // "format v4 message requires a producer-owned source kind" a live session
+  // showed — with no model call involved, so it can never be a flaky proxy.
+  //
+  // Resolved through the harness checkout, which is not a dependency here, so
+  // this skips when it is absent — the CI no-install job included. Locally it
+  // is the one check that cannot drift from the harness.
+  const harness = process.env.DSH_HARNESS ?? join(homedir(), 'work/harvey/freepeak/deepseek-harness')
+  const admission = join(
+    harness,
+    'packages/session/session-format-v3-to-v4/src/message-sources.ts',
+  )
+  if (!existsSync(admission)) {
+    t.skip(`harness checkout not found at ${harness} — set DSH_HARNESS to run this`)
+    return
+  }
+
+  const { assertV4MessageSources } = await import(pathToFileURL(admission).href)
+  const decision = await step()
+  assert.ok(decision.messages.length > 0, 'expected the review to inject at least one message')
+
+  const event = {
+    type: 'agent/inbox/spliced',
+    seq: 1,
+    time: 0,
+    data: { inserted: decision.messages.map(m => ({ ...m })) },
+  }
+
+  assert.doesNotThrow(() => assertV4MessageSources(event as never))
 })
