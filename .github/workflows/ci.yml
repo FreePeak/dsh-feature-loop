@@ -85,6 +85,12 @@ jobs:
       # `test/assistant-ui.test.ts` and `test/explainer.test.ts` run locally via
       # `make test`; `test/approval-bridge.test.ts`, `test/brief.test.ts`, and
       # `test/questioner.test.ts` are pure and run here.
+      # `test/judge-config.test.ts` is out for the same reason as
+      # `test/plugin-approval.test.ts`: it imports `src/plugin.ts` to reach
+      # `resolveJudge`, which carries a runtime `@deepseek-ai/dsh-llm` import.
+      # `test/judge.test.ts` stays IN this list — the judge client itself is pure,
+      # so the config resolution lives in its own file rather than dragging a
+      # harness import into a file that currently runs here.
       - name: Run the test suite
         run: node --experimental-strip-types --test \
           test/agent-policy.test.ts test/approval-bridge.test.ts \
