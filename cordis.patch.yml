@@ -46,8 +46,12 @@
         # warm, and no key. Point `judgeBaseURL` at a hosted Jev/TypeSafe
         # endpoint and the same wire carries it — nothing else changes.
         # `chat` is metered and needs a gateway key; `none` is detectors only.
+        #
+        # 8092 is the native macOS Laya service. The old 8091 was the retired
+        # containerised sidecar; a judge pointed at it fails closed to
+        # detectors-only without saying so.
         judge: laya
-        judgeBaseURL: http://127.0.0.1:8091
+        judgeBaseURL: http://127.0.0.1:8092
         systemOneModel: laya
         judgeTimeoutMs: 5000
 

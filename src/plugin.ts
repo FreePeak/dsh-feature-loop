@@ -1357,8 +1357,15 @@ export function executeLoopCommand(rawInput: string): LoopCommandOutcome | { kin
   }
   return { task }
 }
-/** Default System One endpoint — the shared Laya sidecar on this machine. */
-const DEFAULT_JUDGE_BASE_URL = process.env.SYSTEMONE_BASE_URL ?? 'http://127.0.0.1:8091'
+/**
+ * Default System One endpoint — the shared Laya sidecar on this machine.
+ *
+ * `:8092` is the native macOS service. The earlier default, `:8091`, was the
+ * containerised sidecar, which is retired — so a `judge: laya` deployment that
+ * set no `judgeBaseURL` reached a dead port, failed closed to detectors-only,
+ * and said nothing. Override with `judgeBaseURL` or `SYSTEMONE_BASE_URL`.
+ */
+const DEFAULT_JUDGE_BASE_URL = process.env.SYSTEMONE_BASE_URL ?? 'http://127.0.0.1:8092'
 
 /** Default System One model alias. */
 const DEFAULT_SYSTEMONE_MODEL = process.env.SYSTEMONE_MODEL ?? 'laya'

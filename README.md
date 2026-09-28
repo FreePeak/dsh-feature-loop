@@ -485,7 +485,7 @@ src/
   review.ts      reversibility gate + attention router (<10% budget)
   agent-policy.ts the plugin agent's decisions, extracted so they are testable
   judge.ts       chat judge (works anywhere)
-  laya.ts        Laya judge via System One / Jev (local sidecar :8091 by default)
+  laya.ts        Laya judge via System One / Jev (local sidecar :8092 by default)
   questioner.ts  LLM→Laya→LLM: actor uncertainty → typed questions → Laya decides
   messages.ts    notice text; imports nothing, which keeps the test suite runnable
   prompts.ts     BUG_FIX_PROMPT / FEATURE_PROMPT / REFACTOR_PROMPT
@@ -522,21 +522,21 @@ classification, so it has three implementations behind one interface:
 
 | Judge | Cost | Latency | Status |
 |---|---|---|---|
-| `OnegwJudge` (Laya) | $0, local | ~1–4 s cold-ish, <200 ms warm* | client ready; **verified live 2026-09-23** against a local sidecar (`scripts/laya-sidecar.py`, `~/venvs/laya`, port 8091) — all three primitives answer, full battery returns recommendations |
+| `OnegwJudge` (Laya) | $0, local | ~1–4 s cold-ish, <200 ms warm* | client ready; **verified live** against the native Laya service (`:8092`, all three primitives answer, full battery returns recommendations) |
 | `ChatJudge` | metered | ~10–40 s | **what the demo uses** |
 | `NO_JUDGE` | $0 | 0 | detectors-only, a supported mode |
 
 \* Laya-sidecar timings measured on this machine: first predict ~7 s (cold weights), then ~0.9–4 s per call warm — far above the JEV doc's 73 ms (that figure is raw forward-pass; ours includes HTTP + routing + a cold-ish process). Still 10× cheaper in wall-clock than a chat judge, and $0.
 
-To point the demo at local Laya (the containerised sidecar on `:8091`, same
+To point the demo at local Laya (the native sidecar on `:8092`, same
 System One / Jev / TypeSafe wire):
 
 ```bash
-bash demo/run.sh --judge laya --judge-base-url http://127.0.0.1:8091
-# or: SYSTEMONE_BASE_URL=http://127.0.0.1:8091 bash demo/run.sh --judge laya
+bash demo/run.sh --judge laya --judge-base-url http://127.0.0.1:8092
+# or: SYSTEMONE_BASE_URL=http://127.0.0.1:8092 bash demo/run.sh --judge laya
 ```
 
-`--judge laya` defaults the judge base URL to `http://127.0.0.1:8091` (override
+`--judge laya` defaults the judge base URL to `http://127.0.0.1:8092` (override
 with `--judge-base-url` / `SYSTEMONE_BASE_URL`). The actor still talks to onegw;
 only the judge URL splits. Score criteria go as ordered arrays so Laya keeps
 the human labels; `noul` answers map onto `probability`.
