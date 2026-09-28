@@ -256,3 +256,31 @@ test('the book thresholds are the ones in the code, not numbers someone liked', 
   assert.equal(BOOK_THRESHOLDS.errorCascade, 3)
   assert.equal(BOOK_THRESHOLDS.qualityDropFraction, 0.7)
 })
+
+test('a run pauses once at its review checkpoint, and only once', () => {
+  // "Built and tested, look at it before the next step." A checkpoint that
+  // asked again on every later step would not be a checkpoint, it would be a
+  // toll: an operator who approved step 4 would be asked again at 5, 6, 7.
+  const router = new AttentionRouter({ checkpointAtStep: 4 })
+
+  assert.equal(router.checkpoint(1), undefined)
+  assert.equal(router.checkpoint(3), undefined)
+
+  const at = router.checkpoint(4)
+  assert.equal(at?.review, true)
+  assert.equal(at?.source, 'checkpoint')
+  assert.match(String(at?.reason), /waiting for your review at step 4/)
+
+  // Asked once. The run continues on the operator's approval.
+  assert.equal(router.checkpoint(5), undefined)
+  assert.equal(router.checkpoint(9), undefined)
+})
+
+test('a run with no checkpoint never pauses for one', () => {
+  // The default has to be "no pause", or every existing deployment would
+  // acquire a review it never asked for.
+  const router = new AttentionRouter()
+  for (const step of [1, 2, 3, 10, 50]) {
+    assert.equal(router.checkpoint(step), undefined)
+  }
+})

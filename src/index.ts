@@ -55,6 +55,8 @@ export interface Config {
   confidenceThreshold?: number
   /** Review budget as a fraction of steps, in `(0, 1]`. Defaults to 0.10. */
   reviewBudget?: number
+  /** Step at which the run pauses for review, once. Undefined disables it. */
+  checkpointAtStep?: number
   /** Judge score at or above which a step is worth a human look, 0–3. Defaults to 2. */
   judgeThreshold?: number
   /**
@@ -127,6 +129,7 @@ export const Config: z<Config> = z.object({
   spec: z.any(),
   confidenceThreshold: z.number(),
   reviewBudget: z.number(),
+  checkpointAtStep: z.number(),
   judgeThreshold: z.number(),
   gatePolicies: z.any(),
   gateMode: z.union([z.const('ask'), z.const('deny')]),
@@ -178,6 +181,7 @@ export function apply(ctx: Context, config: Config = {}): (() => void) | void {
     router: {
       ...(config.reviewBudget === undefined ? {} : { reviewBudget: config.reviewBudget }),
       ...(config.judgeThreshold === undefined ? {} : { judgeThreshold: config.judgeThreshold }),
+      ...(config.checkpointAtStep === undefined ? {} : { checkpointAtStep: config.checkpointAtStep }),
     },
   })
 }

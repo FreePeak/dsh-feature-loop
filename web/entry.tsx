@@ -18,8 +18,10 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import z from '@deepseek-ai/schemastery'
 import { DashboardApp } from './app.tsx'
 import type { DashboardSource } from './app.tsx'
+import { APPROVAL_MODES, approvalModeFor } from '../src/approval-bridge.ts'
+
 import { assertSettleAccepted } from '../src/approval-bridge.ts'
-import type { BridgeOutcome } from '../src/approval-bridge.ts'
+import type { ApprovalModeName, BridgeOutcome } from '../src/approval-bridge.ts'
 import { decideStart } from './start-target.ts'
 import type { StartCandidate } from './start-target.ts'
 
@@ -109,6 +111,9 @@ function Field({ label, hint, children }: { label: string, hint?: string, childr
   )
 }
 
+/** Approval postures, in the order the page lists them. */
+const APPROVAL_MODE_NAMES = Object.keys(APPROVAL_MODES) as ApprovalModeName[]
+
 function SettingsPanel({ host }: { host: Host }): React.ReactElement {
   const [status, setStatus] = useState<Status | null>(null)
   const [notice, setNotice] = useState<{ kind: 'ok' | 'error', text: string } | null>(null)
@@ -129,6 +134,8 @@ function SettingsPanel({ host }: { host: Host }): React.ReactElement {
         judgeThreshold: Number(answer.value.config.judgeThreshold ?? 2),
         reviewBudget: Number(answer.value.config.reviewBudget ?? 0.1),
         gateMode: String(answer.value.config.gateMode ?? 'ask'),
+        gatePolicies: answer.value.config.gatePolicies as Record<string, unknown> | undefined,
+        checkpointAtStep: Number(answer.value.config.checkpointAtStep ?? 0) || '',
       })
     } catch (error) {
       setNotice({ kind: 'error', text: `status failed: ${(error as Error).message}` })
@@ -157,6 +164,9 @@ function SettingsPanel({ host }: { host: Host }): React.ReactElement {
   }
   const set = (key: string, value: unknown): void => setDraft(prev => ({ ...prev, [key]: value }))
   const judgeDisabled = draft.judge !== 'laya'
+  // An absent map is the shipped default, which is the safe posture — so an
+  // unset profile reads as "review at risky steps" rather than as nothing.
+  const approvalMode = approvalModeFor(draft.gatePolicies as never)
 
   return (
     <div className="fl-panel">
@@ -221,6 +231,41 @@ function SettingsPanel({ host }: { host: Host }): React.ReactElement {
             <option value="ask">ask — prompt a human</option>
             <option value="deny">deny — refuse, never prompt</option>
           </select>
+        </Field>
+      </div>
+
+      <div className="fl-section">
+        <h3 className="fl-section-title">Approval</h3>
+        <Field
+          label="When to stop and ask"
+          hint={APPROVAL_MODES[approvalMode].detail}
+        >
+          <select
+            value={approvalMode}
+            onChange={ev => {
+              const mode = ev.target.value as ApprovalModeName
+              set('gatePolicies', { ...APPROVAL_MODES[mode].policies })
+            }}
+          >
+            {APPROVAL_MODE_NAMES.map(name => (
+              <option key={name} value={name}>{APPROVAL_MODES[name].label}</option>
+            ))}
+          </select>
+        </Field>
+        <Field
+          label="Review checkpoint at step"
+          hint="The run pauses once at this step and waits for you — the 'built and tested, now look at it' moment. Approve to let it continue. Empty disables it."
+        >
+          <input
+            type="number"
+            min="1"
+            value={String(draft.checkpointAtStep ?? '')}
+            placeholder="none"
+            onChange={ev => {
+              const raw = ev.target.value
+              set('checkpointAtStep', raw === '' ? undefined : Number(raw))
+            }}
+          />
         </Field>
       </div>
 
