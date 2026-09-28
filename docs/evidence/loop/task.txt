@@ -1,0 +1,16 @@
+Six DASHBOARD tests in test/integration/plugin-in-dsh.spec.ts fail against a
+real DSH context. Fix them, without changing production behaviour beyond what
+is genuinely a bug.
+
+Known facts (verify them yourself before acting):
+- The spec passes `{ dashboard: { enabled: true, port: 0 } }` at
+  test/integration/plugin-in-dsh.spec.ts:209.
+- src/plugin.ts:1068 only calls startDashboard() when `standalone === true`.
+- src/plugin.ts:1069 forces `answers: false` on the standalone server.
+- test/dashboard.test.ts already uses `standalone: true` and passes.
+- Run the suite with: bash test/integration/run.sh
+
+Do the smallest change that makes all 11 integration tests pass. If the
+`answers: false` override in src/plugin.ts is a genuine bug, fix it and add a
+test that pins the behaviour. Do not weaken the test file to make it pass.
+Keep pnpm test (344 tests) and tsc --noEmit green.

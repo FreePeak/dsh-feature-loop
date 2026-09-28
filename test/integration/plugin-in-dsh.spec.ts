@@ -206,7 +206,7 @@ async function featureLoopSetup(options: {
       gateMode: options.gateMode ?? 'ask',
       gatePolicies: options.gatePolicies ?? {},
       ...options.explainer === undefined ? {} : { explainer: options.explainer as never },
-      ...(options.dashboard === true ? { dashboard: { enabled: true, port: 0 } } : {}),
+      ...(options.dashboard === true ? { dashboard: { enabled: true, port: 0, standalone: true } } : {}),
     })
     if (options.dashboard === true) {
       for (let attempt = 0; attempt < 300 && line === undefined; attempt++) {
