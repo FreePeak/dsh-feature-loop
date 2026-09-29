@@ -230,6 +230,18 @@ dsh plugin --profile <name> add -w file:$PWD     # `-w` is required for a profil
 dsh --profile <name> --dump-config | grep -A8 feature-loop   # verify composition
 ```
 
+**The profile must supply the plugin's runtime peers.** The built plugin imports
+`@deepseek-ai/dsh-llm` and `@deepseek-ai/dsh-typert-protocol`, both are
+optional `peerDependencies`, and this repo's `.npmrc` sets
+`auto-install-peers: false` — so a profile that pulls in nothing else from the
+harness installs the plugin, composes it, shows it in the boot graph, and then
+does nothing at all: no gate, no review, no approval. Depend on a harness
+bundle (Agent Teams' profile bundle is the usual one) and the peers resolve.
+The one-second check is pnpm's virtual-store key — a `_@deepseek-ai+c_…`
+suffix means resolved, no suffix means the plugin is inert:
+[`docs/KNOWN-ISSUES.md` §4](docs/KNOWN-ISSUES.md), and
+[`docs/SETUP.md`](docs/SETUP.md) §Step 2.
+
 Once it is running, a gated step **prompts you in the browser**: the composer
 shows the reason with **Reject** / **Allow once**, and your answer decides
 whether the tool runs. **This has been observed end to end** — a real browser

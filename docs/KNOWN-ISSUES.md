@@ -249,6 +249,48 @@ asks" is the expected behaviour of the shipped config, and is a poor default for
 anyone expecting to see the loop work. `write: always-approve` makes it
 deterministic.
 
+### The browser click path, and the page's own geometry (2026-09-29, live on :4100)
+
+A fresh isolated instance — `DSH_HOME=$HOME/.dsh-flt-4100`, profile `flt4100`,
+plugin installed from a worktree by `file:` path, peers resolved — then driven
+over CDP against a real model. The run was started from the plugin page's own
+composer, and the decision was made by clicking the card's own button. No
+scripted API in the loop.
+
+| Check | Result |
+|---|---|
+| Start a run from `.fl-start-input` | the loop runs; the gate raises on `write` |
+| Card in the in-UI thread | `REVIEW REQUESTED (policy): write: irreversible is always approved by a human.` with **Allow once** and **Reject** |
+| **Allow once** (clicked) | tool ran, file written, contents `hello` |
+| **Reject** (clicked) | `tool "write" requires approval…` — no file, byte for byte |
+| Two gates in one run | a `write` then a `bash`; both settled, both took the click |
+| Registry after the click | pending count 0 within 4s, in every case |
+| Contrast, every text node on the page | 14/14 pass WCAG AA against the surface each one sits on |
+| Responsive at 760–1440px | the dashboard collapses to one column, then two, then three; no horizontal overflow |
+
+One thing about the reject branch, because it looks like a bug in the browser
+and is not: after the click, the card stays on screen for about four seconds and
+then disappears. It is not stuck. The registry is cleared immediately (pending
+count 0 within one poll), and the card is unmounted by the next remote read, so
+the visible card is simply the last frame the thread rendered before the new
+arrived. A card still showing a *second* poll after the click is a real
+re-raise, and the feed names it.
+
+The page's geometry had drifted from the harness's own pages in nine measurable
+ways; see the table in `CHANGELOG.md` under "The plugin page is now drawn with
+the harness's own metrics". Three of them were defects rather than taste, and
+one of those is the reason a reviewer would have seen 40px buttons on a page
+that asked for 32px: `shell.css` still had a bare `button` rule. That rule is
+invisible to `css-scope.test.ts` — it is anchored — so `test/css-parity.test.ts`
+is what holds it gone.
+
+### Still unverified
+
+- Nothing in the two sections above. The last open item from §"Still
+  unverified" — the profile-must-supply-the-peers trap of issue 4 — is now
+  written down in `README.md` (installing by hand) and in `docs/SETUP.md` §Step
+  2, next to the profile that would otherwise install cleanly and do nothing.
+
 ---
 
 ## Verified working

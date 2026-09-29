@@ -37,6 +37,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The plugin page is now drawn with the harness's own metrics.** The colours
+  were already bound to `--dsw-alias-*`; the geometry was not, and it showed.
+  Measured on a live instance, against the harness's own pages:
+
+  | | plugin page, before | the host's own |
+  |---|---|---|
+  | page inset | none | `0 clamp(24px, 4vw, 48px) 48px`, content capped at 960px |
+  | page title | 15px/600, uppercase (it was inheriting the *section* micro-label) | 20px/500, 28px line |
+  | tabs | 24px pills, 12px type | 28px, 13px/20px, `radius-sm`, on the translucent track (`SegmentedControl`) |
+  | start input | 32px, 1px border-l2, 8px radius | 36px, 0.5px border-l4, `radius-md` (`Input`) |
+  | start button | 40px measured, for a 32px spec | 36px, `radius-md` (`Button` `md`) |
+  | prose | a fixed 13px | `--dsh-content-font-size`, with the title on the `+delta` ramp |
+  | scrollbars | an 8px accent-gradient thumb of its own | `--dsh-scrollbar-thumb`, rebound to the l2 pair |
+  | focus rings | `2px solid --dsw-alias-brand-primary` | `--dsw-alias-state-business-primary` at the host's width |
+
+  Three of those were not preferences. (1) `shell.css` carried a bare
+  `:where(.fl-page, …) button { min-height: 40px; padding: 9px 18px;
+  border-radius: 999px }` rule, written for the two decision buttons and
+  silently governing *every* button on the page — anchored, so
+  `css-scope.test.ts` could not see it, and a `min-height` beats any smaller
+  `height`, which is why a 32px start button measured 40px. It is now scoped to
+  `.allow, .reject`. (2) `shell.css`'s bare `h2` scope rule matched the page
+  *title's* element, and since both it and `.fl-title` are class-level, sheet
+  order gave the title `text-transform: uppercase`; it is now scoped to
+  `.section-head h2`. (3) `.pane-head` read `var(--chrome)`, which nothing
+  declares, so the `color-mix` was invalid and the declaration fell through to
+  transparent; it now reads `--panel-2`.
+
+  `test/css-parity.test.ts` holds the numbers, each cited to the harness file
+  it came from, and fails on the page gutter, the title ramp, the tab metrics,
+  the control metrics, the focus colour, the bare-button and bare-`h2` rules, the
+  scrollbar rebind, the type scale, an undeclared custom property, and any
+  hardcoded colour in a paint property.
+
 - **The plugin's stylesheet no longer restyles the host UI.** Folded into the
   DSH UI as a main-column page, the dashboard kept the stylesheet it had when
   it stood on its own origin: palette declared on `body`, and bare `header`,

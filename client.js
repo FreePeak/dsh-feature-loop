@@ -3571,7 +3571,7 @@ body.fl-standalone {
   margin: 0 !important;
   padding: 10px 12px 8px !important;
   border-bottom: 1px solid var(--border-soft);
-  background: color-mix(in srgb, var(--chrome) 55%, var(--panel));
+  background: color-mix(in srgb, var(--panel-2) 55%, var(--panel));
   position: sticky;
   top: 0;
   z-index: 1;
@@ -3589,40 +3589,18 @@ body.fl-standalone {
   scrollbar-gutter: stable;
 }
 
-/* Beautiful thin scrollbars (WebKit + Firefox) */
-.scroll-beauty {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--accent) 45%, transparent) transparent;
+/* The harness's scrollbar skin, not a second one. \`ui-theme\`'s
+   \`scrollbar.css\` already styles every \`::-webkit-scrollbar*\` pseudo-element
+   in the document; that sheet is what the host's own panes scroll with. This
+   file's copy drew an 8px accent-gradient thumb with its own hover \u2014 the same
+   scroll, visibly a different widget, in a page sitting beside the host's.
+   The one thing the plugin's panes own is elevation, so the thumb pair is
+   rebound to the l2 tokens and the geometry is left to the host's sheet. */
+:where(.fl-page, .fl-standalone) .scroll-beauty,
+:where(.fl-page, .fl-standalone) .pane-scroll {
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
 }
-.scroll-beauty::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-.scroll-beauty::-webkit-scrollbar-track {
-  background: transparent;
-  margin: 4px 0;
-}
-.scroll-beauty::-webkit-scrollbar-thumb {
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--accent) 55%, var(--ok-deep)),
-    color-mix(in srgb, var(--badge) 40%, transparent)
-  );
-  border-radius: 999px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-  min-height: 32px;
-}
-.scroll-beauty::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--accent) 80%, var(--text)),
-    color-mix(in srgb, var(--badge) 70%, transparent)
-  );
-  background-clip: padding-box;
-  border: 2px solid transparent;
-}
-.scroll-beauty::-webkit-scrollbar-corner { background: transparent; }
 
 /* Compact left chrome \u2014 Cursor-style activity bar feel */
 .sidebar #workspaces .section-head {
@@ -3653,7 +3631,13 @@ body.fl-standalone {
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border-soft);
 }
-:where(.fl-page, .fl-standalone) h2 {
+/* The shell's own section heads (its bare <h2>s). Scoped by class as well as
+   by type: an h2 that is a PAGE title \u2014 \`.fl-title\` in plugin.css \u2014 matched
+   this rule, and since both are class-level, the sheet order decided it. That
+   put \`text-transform: uppercase\` on a 20px title the plugin's own rule never
+   asked for, and a live instance measured the page title as "START A LOOP" at
+   weight 500. The page title now carries its own text-transform. */
+:where(.fl-page, .fl-standalone) .section-head h2 {
   margin: 0;
   font-size: 12px;
   font-weight: 600;
@@ -3829,45 +3813,52 @@ details.help {
   color: var(--muted);
 }
 
-/* buttons \u2014 pill controls like the stockbroker confirm card */
-:where(.fl-page, .fl-standalone) button {
+/* The two decision buttons on an approval card. Deliberately NOT a bare
+   \`button\` rule: that one matched every button the plugin renders inside the
+   page, so its \`min-height: 40px\` and \`padding: 9px 18px\` decided the start
+   control's and the tab row's geometry by cascade instead of by the class that
+   describes them. A live instance measured the 32px start button at 40px and
+   the 28px tab at 40px, because a min-height cannot be beaten by a smaller
+   height. Harness metrics, not 40px: 36px tall, 14px/22px, \`radius-md\`
+   (\`ui-primitives\` \`Button.module.css\`, \`md\`). */
+.allow,
+.reject {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 36px;
+  padding: 0 14px;
+  border: none;
+  border-radius: var(--dsw-radius-md);
   font: inherit;
-  font-weight: 600;
-  font-size: 13.5px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  padding: 9px 18px;
-  min-height: 40px;
+  font-size: 14px;
+  line-height: 22px;
+  white-space: nowrap;
   cursor: pointer;
-  background: var(--panel-2);
-  color: var(--text);
   transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, opacity 150ms ease;
 }
-:where(.fl-page, .fl-standalone) button:hover:not(:disabled) { border-color: var(--faint); }
-:where(.fl-page, .fl-standalone) button:focus-visible {
-  outline: 2px solid var(--accent);
+.allow:hover:not(:disabled) { background: var(--ok); }
+.reject:hover:not(:disabled) { background: color-mix(in srgb, var(--bad-deep) 14%, transparent); }
+.allow:focus-visible,
+.reject:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
   outline-offset: 2px;
 }
-:where(.fl-page, .fl-standalone) button:disabled { opacity: 0.5; cursor: default; }
-button.allow {
+.allow:disabled,
+.reject:disabled { opacity: 0.4; cursor: not-allowed; }
+/* Allow is a filled success action; Reject is the quiet destructive one, a
+   tinted fill rather than a solid red \u2014 a solid red beside a solid green reads
+   as two equally-weighted outcomes, and refusing is the rarer, safer default. */
+.allow {
   background: var(--ok-deep);
-  border-color: var(--ok-deep);
   /* A mid-tone fill takes the page's own primary label, not the dark-fill
      foreground: that token is white in the light theme and measured 2.3:1 here. */
   color: var(--text);
 }
-button.allow:hover:not(:disabled) {
-  background: var(--ok);
-  border-color: var(--ok);
-}
-button.reject {
+.reject {
   background: color-mix(in srgb, var(--bad) 10%, var(--panel));
-  border-color: color-mix(in srgb, var(--bad) 60%, var(--border));
   color: color-mix(in srgb, var(--bad) 62%, var(--text));
-}
-button.reject:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--bad-deep) 14%, transparent);
-  border-color: var(--bad);
 }
 
 /* \u2500\u2500 stockbroker-like approval thread \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
@@ -4232,7 +4223,7 @@ button.reject:hover:not(:disabled) {
   background: color-mix(in srgb, var(--bad-deep) 12%, var(--panel-2));
 }
 .sig.warning {
-  color: #F0F0F0;
+  color: var(--text);
   border-left-color: var(--warn);
   background: color-mix(in srgb, var(--warn) 10%, var(--panel-2));
 }
@@ -4371,75 +4362,114 @@ button.reject:hover:not(:disabled) {
  * read as one surface rather than two pasted together.
  */
 
+/* \u2500\u2500 page geometry \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+   Taken from the harness's own main-slot pages
+   (\`ui-plugin-manager/src/client/PluginManagerPage.module.css\`): a centred
+   column capped at 960px, the same side gutter, the same bottom inset. Measured
+   on a live instance this page sat flush against the frame with no gutter at
+   all, so it read as a different application sitting beside the host's own
+   pages. The insets live here rather than on each section, so the start
+   control, the header, the dashboard and the settings form all align on one
+   column \u2014 the one property a stacked page needs and cannot get per-section. */
 .fl-page {
   display: flex;
   flex-direction: column;
+  align-items: center;
+  box-sizing: border-box;
   height: 100%;
   min-height: 0;
+  padding: 0 clamp(24px, 4vw, 48px) 48px;
+  overflow: auto;
   color: var(--dsw-alias-label-primary);
   font-family: inherit;
-  font-size: 13px;
+  /* The host's content scale, not a hand-picked 13px: the harness writes
+     \`--dsh-content-font-size\` (12\u201317, default 14) on \`body\` and sizes page
+     furniture from it, so a fixed 13px here was the one place on the page that
+     ignored the user's own type-size setting. */
+  font-size: var(--dsh-content-font-size, 14px);
+}
+
+.fl-page > * {
+  width: 100%;
+  max-width: 960px;
+  min-width: 0;
 }
 
 .fl-pagehead {
-  padding: 16px 18px 12px;
+  padding: 16px 0 12px;
   border-bottom: 1px solid var(--dsw-alias-border-l1);
   flex: 0 0 auto;
 }
 
+/* The page title follows the harness's own page titles \u2014 20px, weight 500,
+   28px line (\`PluginManagerPage.pageTitle\`). The uppercase 12px micro-label
+   belongs to a section head, and a page title wearing it read as a section
+   heading above a section with no body. */
 .fl-title {
-  font-size: 15px;
-  font-weight: 600;
+  /* The host's page-title ramp: 20px plus the user's own type-size delta, which
+     is the same expression \`ui-theme\` uses for its headings. A fixed 20px was
+     the only heading on the page that ignored the setting. */
+  font-size: calc(20px + var(--dsh-content-font-delta, 0px));
+  font-weight: 500;
+  line-height: calc(28px + var(--dsh-content-font-delta, 0px));
+  text-transform: none;
   margin: 0 0 4px;
   color: var(--dsw-alias-label-primary);
 }
 
 .fl-sub {
   color: var(--dsw-alias-label-secondary);
-  line-height: 1.5;
+  line-height: 20px;
   margin: 0;
 }
 
-/* Tabs follow the harness's pill metrics: 24px tall, 12px type, ghost fill
-   that lifts to a bordered active state. */
-.fl-tabs { display: flex; gap: 6px; margin-top: 12px; }
+/* Tabs ARE the harness's segmented control (\`ui-primitives\`
+   \`SegmentedControl.module.css\`): 28px tall, 13px/20px, \`radius-sm\`, on the
+   same translucent track the hover state uses, with the selected segment raised
+   on \`bg-layer-1\` under the soft elevation shadow. The previous 24px/12px
+   pill measured 13px taller in the cascade \u2014 a bare \`button\` rule in
+   shell.css sets \`min-height: 40px\` and won on specificity \u2014 so the tab row was
+   twice the height it asked for, next to a 28px row beside it in the sidebar. */
+.fl-tabs {
+  display: inline-flex;
+  gap: 2px;
+  margin-top: 12px;
+  padding: 4px;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
 
 .fl-tabs button {
   display: inline-flex;
   align-items: center;
-  height: 24px;
-  padding: 0 10px;
+  height: 28px;
+  padding: 0 16px;
   border: none;
-  border-radius: 12px;
+  border-radius: var(--dsw-radius-sm);
   background: transparent;
   color: var(--dsw-alias-label-secondary);
   font: inherit;
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  white-space: nowrap;
   cursor: pointer;
 }
 
-.fl-tabs button:hover { background: var(--dsw-alias-interactive-bg-hover); }
-
-.fl-tabs button:focus-visible {
-  outline: 2px solid var(--dsw-alias-brand-primary);
-  outline-offset: 2px;
-}
+.fl-tabs button:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
 
 .fl-tabs button[data-active="true"] {
   color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-button-ghost-active-fill);
-  box-shadow: inset 0 0 0 1px var(--dsw-alias-button-ghost-active-border);
+  background: var(--dsw-alias-bg-layer-1);
+  box-shadow: var(--dsw-elevation-soft);
 }
 
-/* The designed dashboard fills the rest of the column. */
+/* The designed dashboard fills the rest of the column. It is NOT a scroll
+   container: \`.fl-page\` is, and it owns the insets. Two nested scrollers gave
+   the page two scrollbars and a header that scrolled away from its content. */
 .fl-dashboard {
   flex: 1 1 auto;
   min-height: 0;
-  /* The page's own scroll container. The responsive container is declared on
-     .fl-page in shell.css, so the shell's @container rules describe THIS page's
-     width rather than the window's. */
-  overflow: auto;
   background: var(--dsw-alias-bg-base);
   min-width: 0;
 }
@@ -4447,12 +4477,12 @@ button.reject:hover:not(:disabled) {
 .fl-panel { display: flex; flex-direction: column; overflow-y: auto; }
 
 .fl-section {
-  padding: 16px 18px;
+  padding: 16px 0;
   border-bottom: 1px solid var(--dsw-alias-border-l1);
 }
 
 .fl-section-title {
-  font-size: 11px;
+  font-size: var(--dsh-content-font-size-secondary, 13px);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--dsw-alias-label-tertiary);
@@ -4477,19 +4507,24 @@ button.reject:hover:not(:disabled) {
 .fl-row select {
   flex: 1;
   min-width: 0;
-  min-height: 24px;
+  height: 32px;
   background: var(--dsw-alias-bg-layer-1);
   color: var(--dsw-alias-label-primary);
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 6px;
-  padding: 4px 9px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
+  padding: 0 8px;
   font: inherit;
+  font-size: 14px;
+  line-height: 22px;
 }
+
+.fl-row input::placeholder { color: var(--dsw-alias-label-dimmed); }
 
 .fl-row input:focus-visible,
 .fl-row select:focus-visible {
-  outline: 2px solid var(--dsw-alias-brand-primary);
-  outline-offset: -1px;
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 2px;
 }
 
 .fl-row input:disabled,
@@ -4497,7 +4532,7 @@ button.reject:hover:not(:disabled) {
 
 .fl-hint {
   color: var(--dsw-alias-label-tertiary);
-  font-size: 11.5px;
+  font-size: var(--dsh-content-font-size-secondary, 13px);
   line-height: 1.5;
   margin: -4px 0 12px 160px;
 }
@@ -4506,13 +4541,16 @@ button.reject:hover:not(:disabled) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 24px;
-  padding: 0 9px;
-  border-radius: 12px;
-  border: 1px solid var(--dsw-alias-border-l2);
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--dsw-radius-sm);
+  border: 0.5px solid var(--dsw-alias-border-l3);
   background: var(--dsw-alias-bg-layer-2);
   color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
+  /* A pill label, not a control: the host's \`sm\` scale, which is one step down
+     from the content size and tracks it. */
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  line-height: 18px;
 }
 .fl-badge[data-ok="true"] {
   border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 40%, transparent);
@@ -4528,35 +4566,50 @@ button.reject:hover:not(:disabled) {
 
 .fl-actions { display: flex; align-items: center; gap: 10px; padding: 14px 18px; }
 
+/* Harness button metrics (\`ui-primitives\` \`Button.module.css\`, \`md\` size):
+   36px tall, 14px/22px, \`radius-md\`, no border, 0.4 disabled opacity. The
+   explicit \`height\` is load-bearing: shell.css carries a bare \`button\` rule
+   with \`min-height: 40px\`, and a min-height cannot be beaten by a smaller
+   height without this. */
 .fl-actions button,
 .hitl-composer-send {
-  border: 1px solid transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 36px;
+  padding: 0 14px;
+  border: none;
+  border-radius: var(--dsw-radius-md);
   background: var(--dsw-alias-button-primary-fill);
   color: var(--dsw-alias-label-primary-foreground);
-  border-radius: 8px;
-  padding: 7px 16px;
-  cursor: pointer;
   font: inherit;
-  font-weight: 600;
+  font-size: 14px;
+  line-height: 22px;
+  white-space: nowrap;
+  cursor: pointer;
 }
 .fl-actions button[data-kind="ghost"] {
   background: transparent;
   color: var(--dsw-alias-label-secondary);
-  border-color: var(--dsw-alias-border-l2);
+  box-shadow: 0 0 0 0.5px var(--dsw-alias-border-l3);
   font-weight: 400;
 }
+.fl-actions button[data-kind="ghost"]:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
 .fl-actions button:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover); }
-.fl-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+.fl-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .fl-actions button:focus-visible,
 .hitl-composer-send:focus-visible {
-  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline: 2px solid var(--dsw-alias-state-business-primary);
   outline-offset: 2px;
 }
 
 .fl-notice {
-  padding: 10px 18px;
-  font-size: 12px;
+  padding: 10px 0;
+  font-size: var(--dsh-content-font-size-secondary, 13px);
   border-bottom: 1px solid var(--dsw-alias-border-l1);
 }
 .fl-notice[data-kind="error"] {
@@ -4570,11 +4623,11 @@ button.reject:hover:not(:disabled) {
 
 .fl-pre {
   background: var(--dsw-alias-bg-layer-1);
-  border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 8px;
-  padding: 9px 11px;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-md);
+  padding: 9px 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11.5px;
+  font-size: var(--dsh-content-font-size-secondary, 13px);
   white-space: pre-wrap;
   word-break: break-all;
   color: var(--dsw-alias-label-secondary);
@@ -4621,7 +4674,7 @@ button.reject:hover:not(:disabled) {
 
 /* \u2500\u2500 start a loop \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 .fl-start {
-  padding: 16px 18px 14px;
+  padding: 16px 0 14px;
   border-bottom: 1px solid var(--dsw-alias-border-l1);
   display: flex;
   flex-direction: column;
@@ -4638,39 +4691,49 @@ button.reject:hover:not(:disabled) {
   min-width: 0;
 }
 
+/* Harness input metrics (\`ui-primitives\` \`Input.module.css\`). */
 .fl-start-input {
   flex: 1 1 auto;
   min-width: 0;
-  height: 32px;
-  padding: 0 10px;
+  height: 36px;
+  padding: 0 8px;
   background: var(--dsw-alias-bg-layer-1);
   color: var(--dsw-alias-label-primary);
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 8px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
   font: inherit;
+  font-size: 14px;
+  line-height: 22px;
 }
 
+.fl-start-input::placeholder { color: var(--dsw-alias-label-dimmed); }
+
 .fl-start-input:focus-visible {
-  outline: 2px solid var(--dsw-alias-brand-primary);
-  outline-offset: -1px;
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 2px;
 }
 
 .fl-start-button {
   flex: 0 0 auto;
-  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 36px;
   padding: 0 14px;
-  border: 1px solid transparent;
-  border-radius: 8px;
+  border: none;
+  border-radius: var(--dsw-radius-md);
   background: var(--dsw-alias-button-primary-fill);
   color: var(--dsw-alias-label-primary-foreground);
   font: inherit;
-  font-weight: 600;
+  font-size: 14px;
+  line-height: 22px;
   cursor: pointer;
 }
 .fl-start-button:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover); }
-.fl-start-button:disabled { opacity: 0.45; cursor: not-allowed; }
+.fl-start-button:disabled { opacity: 0.4; cursor: not-allowed; }
 .fl-start-button:focus-visible {
-  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline: 2px solid var(--dsw-alias-state-business-primary);
   outline-offset: 2px;
 }
 
@@ -4684,17 +4747,26 @@ button.reject:hover:not(:disabled) {
 .fl-start-workspace select {
   flex: 1 1 auto;
   min-width: 0;
-  height: 28px;
+  height: 36px;
   padding: 0 8px;
   background: var(--dsw-alias-bg-layer-1);
   color: var(--dsw-alias-label-primary);
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 7px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
   font: inherit;
+  font-size: 14px;
+  line-height: 22px;
 }
 
-.fl-start-note { margin: 0; color: var(--dsw-alias-label-secondary); font-size: 11.5px; }
-.fl-start-result { margin: 0; font-size: 12px; }
+.fl-start-note {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+}
+.fl-start-result {
+  margin: 0;
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+}
 .fl-start-result[data-kind="ok"] { color: var(--dsw-alias-state-success-primary); }
 .fl-start-result[data-kind="error"] { color: var(--dsw-alias-state-error-primary); }
 

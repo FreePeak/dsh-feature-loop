@@ -394,7 +394,7 @@ body.fl-standalone {
   margin: 0 !important;
   padding: 10px 12px 8px !important;
   border-bottom: 1px solid var(--border-soft);
-  background: color-mix(in srgb, var(--chrome) 55%, var(--panel));
+  background: color-mix(in srgb, var(--panel-2) 55%, var(--panel));
   position: sticky;
   top: 0;
   z-index: 1;
@@ -412,40 +412,18 @@ body.fl-standalone {
   scrollbar-gutter: stable;
 }
 
-/* Beautiful thin scrollbars (WebKit + Firefox) */
-.scroll-beauty {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--accent) 45%, transparent) transparent;
+/* The harness's scrollbar skin, not a second one. `ui-theme`'s
+   `scrollbar.css` already styles every `::-webkit-scrollbar*` pseudo-element
+   in the document; that sheet is what the host's own panes scroll with. This
+   file's copy drew an 8px accent-gradient thumb with its own hover — the same
+   scroll, visibly a different widget, in a page sitting beside the host's.
+   The one thing the plugin's panes own is elevation, so the thumb pair is
+   rebound to the l2 tokens and the geometry is left to the host's sheet. */
+:where(.fl-page, .fl-standalone) .scroll-beauty,
+:where(.fl-page, .fl-standalone) .pane-scroll {
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
 }
-.scroll-beauty::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-.scroll-beauty::-webkit-scrollbar-track {
-  background: transparent;
-  margin: 4px 0;
-}
-.scroll-beauty::-webkit-scrollbar-thumb {
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--accent) 55%, var(--ok-deep)),
-    color-mix(in srgb, var(--badge) 40%, transparent)
-  );
-  border-radius: 999px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-  min-height: 32px;
-}
-.scroll-beauty::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--accent) 80%, var(--text)),
-    color-mix(in srgb, var(--badge) 70%, transparent)
-  );
-  background-clip: padding-box;
-  border: 2px solid transparent;
-}
-.scroll-beauty::-webkit-scrollbar-corner { background: transparent; }
 
 /* Compact left chrome — Cursor-style activity bar feel */
 .sidebar #workspaces .section-head {
@@ -476,7 +454,13 @@ body.fl-standalone {
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border-soft);
 }
-:where(.fl-page, .fl-standalone) h2 {
+/* The shell's own section heads (its bare <h2>s). Scoped by class as well as
+   by type: an h2 that is a PAGE title — `.fl-title` in plugin.css — matched
+   this rule, and since both are class-level, the sheet order decided it. That
+   put `text-transform: uppercase` on a 20px title the plugin's own rule never
+   asked for, and a live instance measured the page title as "START A LOOP" at
+   weight 500. The page title now carries its own text-transform. */
+:where(.fl-page, .fl-standalone) .section-head h2 {
   margin: 0;
   font-size: 12px;
   font-weight: 600;
@@ -652,45 +636,52 @@ details.help {
   color: var(--muted);
 }
 
-/* buttons — pill controls like the stockbroker confirm card */
-:where(.fl-page, .fl-standalone) button {
+/* The two decision buttons on an approval card. Deliberately NOT a bare
+   `button` rule: that one matched every button the plugin renders inside the
+   page, so its `min-height: 40px` and `padding: 9px 18px` decided the start
+   control's and the tab row's geometry by cascade instead of by the class that
+   describes them. A live instance measured the 32px start button at 40px and
+   the 28px tab at 40px, because a min-height cannot be beaten by a smaller
+   height. Harness metrics, not 40px: 36px tall, 14px/22px, `radius-md`
+   (`ui-primitives` `Button.module.css`, `md`). */
+.allow,
+.reject {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 36px;
+  padding: 0 14px;
+  border: none;
+  border-radius: var(--dsw-radius-md);
   font: inherit;
-  font-weight: 600;
-  font-size: 13.5px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  padding: 9px 18px;
-  min-height: 40px;
+  font-size: 14px;
+  line-height: 22px;
+  white-space: nowrap;
   cursor: pointer;
-  background: var(--panel-2);
-  color: var(--text);
   transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, opacity 150ms ease;
 }
-:where(.fl-page, .fl-standalone) button:hover:not(:disabled) { border-color: var(--faint); }
-:where(.fl-page, .fl-standalone) button:focus-visible {
-  outline: 2px solid var(--accent);
+.allow:hover:not(:disabled) { background: var(--ok); }
+.reject:hover:not(:disabled) { background: color-mix(in srgb, var(--bad-deep) 14%, transparent); }
+.allow:focus-visible,
+.reject:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
   outline-offset: 2px;
 }
-:where(.fl-page, .fl-standalone) button:disabled { opacity: 0.5; cursor: default; }
-button.allow {
+.allow:disabled,
+.reject:disabled { opacity: 0.4; cursor: not-allowed; }
+/* Allow is a filled success action; Reject is the quiet destructive one, a
+   tinted fill rather than a solid red — a solid red beside a solid green reads
+   as two equally-weighted outcomes, and refusing is the rarer, safer default. */
+.allow {
   background: var(--ok-deep);
-  border-color: var(--ok-deep);
   /* A mid-tone fill takes the page's own primary label, not the dark-fill
      foreground: that token is white in the light theme and measured 2.3:1 here. */
   color: var(--text);
 }
-button.allow:hover:not(:disabled) {
-  background: var(--ok);
-  border-color: var(--ok);
-}
-button.reject {
+.reject {
   background: color-mix(in srgb, var(--bad) 10%, var(--panel));
-  border-color: color-mix(in srgb, var(--bad) 60%, var(--border));
   color: color-mix(in srgb, var(--bad) 62%, var(--text));
-}
-button.reject:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--bad-deep) 14%, transparent);
-  border-color: var(--bad);
 }
 
 /* ── stockbroker-like approval thread ──────────────────────────────── */
@@ -1055,7 +1046,7 @@ button.reject:hover:not(:disabled) {
   background: color-mix(in srgb, var(--bad-deep) 12%, var(--panel-2));
 }
 .sig.warning {
-  color: #F0F0F0;
+  color: var(--text);
   border-left-color: var(--warn);
   background: color-mix(in srgb, var(--warn) 10%, var(--panel-2));
 }

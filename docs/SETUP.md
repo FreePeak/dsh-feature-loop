@@ -215,6 +215,47 @@ both. The team layer also disables the older `subagent` / `subagent_fork` tools
 so that direct delegation goes through `spawn_teammate` instead — that is
 intentional, and it is why the delegation tool names change once teams are on.
 
+### The profile must also supply the plugin's two runtime peers
+
+This is the most expensive failure in
+[`KNOWN-ISSUES.md`](KNOWN-ISSUES.md) §4, and it is worth the two lines here.
+The built plugin imports two harness packages at runtime —
+`@deepseek-ai/dsh-llm` and `@deepseek-ai/dsh-typert-protocol` — and both are
+`peerDependencies`, both optional, and `.npmrc` sets `auto-install-peers: false`,
+so pnpm never installs them. A profile that depends on **nothing else** that
+pulls the harness therefore installs the plugin cleanly, composes it
+(`--dump-config` shows all three rows, and the client row is in the boot graph),
+and then does absolutely nothing: no gate, no review, no approval.
+
+Two details make this failure quiet, and both are worth knowing before you
+debug the wrong thing:
+
+- **A row in the boot graph is not proof the plugin works.** `client-modules`
+  reads `dsh.client` from `package.json` **on disk** and never imports the
+  module, so a plugin that cannot import still gets a graph row.
+- **The store key tells you whether the peers resolved.** pnpm encodes them in
+  the virtual-store directory name:
+
+  ```
+  @freepeak+dsh-feature-loop@file+…dsh-feature-loop                            # peers NOT resolved
+  @freepeak+dsh-feature-loop@file+…dsh-feature-loop_@deepseek-ai+c_q7p3s2fiohg… # peers resolved
+  ```
+
+The fix is one dependency: depend on a bundle that brings the harness packages
+into the profile's store. `@deepseek-ai/dsh-experimental-agent-team-profile`
+(which this guide already installs for Agent Teams) does. If you install the
+plugin alone, add it or another harness bundle explicitly.
+
+Two more gotchas when building such a profile by hand, both reproduced here:
+
+- **Use the same pnpm major as the lockfile.** `pnpm@11` silently re-resolved a
+  v9 lockfile and dropped the peer wiring. `npx pnpm@9.15.9 install
+  --frozen-lockfile` reproduced the working install.
+- **Boot a named profile without an app argument.** `bin.js --profile X --port N`
+  boots X's bundle tree. `bin.js web --port N` boots the default web app and
+  ignores the profile's bundles — the plugin composes in `--dump-config` and is
+  still never mounted.
+
 ---
 
 ## Step 3 — Install the plugin into the profile
