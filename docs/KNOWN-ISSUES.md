@@ -51,6 +51,22 @@ the remote mount.
 **Fix:** the tag is owned by an `ctx.effect` with a `remove()` teardown, the
 same ownership the host's own theme sheets use. PR #23.
 
+### 7. The dashboard page was only a watcher half the time
+
+**Observed:** an approval raised while the Feature Loop page was open and
+polling appeared in the composer instead — from the page you were watching,
+which reads as a flaky gate.
+
+**Why:** `web/app.tsx` re-read live state every 30s as a safety net, and that
+read is exactly what calls `noteWatcher`. The registry only counts a front end as
+watching for 15s (`WATCHER_TTL_MS`). So the page was a watcher for 15s out of
+every 30, and a gate firing in the gap lost the claim to the composer panel.
+
+**Fix:** the interval is now derived from the TTL (`WATCHER_POLL_MS`), and the
+TTL moved to `src/watcher-ttl.ts` so the two cannot drift — it could not live in
+`approvals.ts`, which imports `node:crypto` and cannot enter a browser bundle.
+`test/dashboard.test.ts` asserts the interval the page actually schedules.
+
 ---
 
 ## Environment — the one that breaks everything silently
@@ -191,16 +207,47 @@ Gate reason string, verbatim from the live run:
 REVIEW REQUESTED (policy): write: irreversible is always approved by a human.
 ```
 
-### Still unverified
+### The HITL cycle in a real browser, both directions
 
-- The approval card as rendered by the in-UI page, driven by a run started from
-  that page's own composer. The card is present and wired (the panel reads
-  "When a run reaches a review gate, the ask appears in this thread"), and the
-  same registry was exercised end to end headlessly, but the browser click path
-  has not been driven.
-- `README`/`SETUP` do not mention that the plugin needs a profile supplying
-  `@deepseek-ai/dsh-llm` and `@deepseek-ai/dsh-typert-protocol`. That is the
-  single most expensive failure in this document and it deserves a doc fix.
+Driven over CDP against the :3188 instance: type a task, press **Start loop**,
+the gate intercepts the model's `write`, the card appears, a human clicks.
+
+**Allow**
+
+| | |
+|---|---|
+| Card | `APPROVAL REQUIRED` — `write`, `REVIEW REQUESTED (policy): write: irreversible is always approved by a human.` |
+| Controls | **Allow once** / **Reject** |
+| Before click | `/tmp/fl-ui-proof.txt` **does not exist** — the call is genuinely gated |
+| After click | thread `1 → 0`, card cleared, file written, contents `ui-proof` |
+
+**Reject**
+
+| | |
+|---|---|
+| Card | same card, at step 1/15 |
+| After click | feed records `APPROVAL rejected: write`, thread `0`, **no file** |
+
+Both runs reported `ROUTE ONEGW/EXECUTION`, live spend, and a judge score
+(`0.9833/3`, `1.2289/3`) — the meters are real, not placeholders.
+
+### Two things that made this hard to reach
+
+**A patch entry for `id: feature-loop` REPLACES the whole config.** It does not
+merge. A partial override — the natural thing to write when you only want to
+change one policy — silently deletes `spec`, and a spec-less policy builds no
+gate at all: every tool call proceeds and the loop looks perfectly healthy while
+reviewing nothing. I hit this myself and lost a cycle to it. Override the whole
+row, or none of it.
+
+**`gatePolicies` is keyed by TOOL NAME, and `auto-if-confident` proceeds when
+the judge is confident.** The shipped default is `write: auto-if-confident`
+with a working local judge, so writes are routinely auto-approved and a human
+sees no approval at all. That is the intended production posture — a judge that
+clears confident steps is the feature, not a bug — but it means "the gate never
+asks" is the expected behaviour of the shipped config, and is a poor default for
+anyone expecting to see the loop work. `write: always-approve` makes it
+deterministic.
 
 ---
 
