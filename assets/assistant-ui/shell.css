@@ -15,14 +15,27 @@
    CSP-safe: system fonts only (no Google Fonts).
    ────────────────────────────────────────────────────────────────────── */
 
-/* The aliases live on `body`, not `:root`, and that is load-bearing: the
-   harness declares its `--dsw-alias-*` tokens on `body`. An alias block on
-   `:root` (the html element) resolves before those tokens are ever in scope
-   and silently keeps its hex fallback forever — which is exactly how this
-   file ended up looking like a guest in the host UI. Declared on `body`, the
-   same declarations still carry their fallbacks when the stylesheet renders
-   outside the harness (the standalone page), which keeps that path honest. */
-body {
+/* SCOPE. This file is injected into the HOST's <head>, so every rule that can
+   match something has to be anchored to a root we own. There are exactly two
+   mount paths, and two roots between them:
+
+     .fl-page        the page inside the DSH UI (web/entry.tsx)
+     .fl-standalone  the standalone page, which owns <html>/<body> outright
+                     (src/dashboard-page.ts puts the class on <html>)
+
+   The aliases used to be declared on `body` — correct only while this file
+   lived on its own origin, where `body` WAS the dashboard. Folded into the
+   host, that same block restyled the harness: its background, its text ramp,
+   its 15 generic custom properties. Declared on the roots instead, the
+   declarations still resolve per theme (the harness keeps `--dsw-alias-*` on
+   `body`, an ancestor of `.fl-page`, so it inherits them) and still carry
+   their fallbacks on the standalone page.
+
+   `:where()` is the scope prefix throughout because it adds ZERO specificity:
+   `.fl-page button` would outrank the plugin's own `.fl-actions button`
+   rules, while `:where(.fl-page) button` keeps the original `button`
+   specificity and changes nothing about the cascade inside the page. */
+:where(.fl-page, .fl-standalone) {
   /* Harness surfaces. Layer 1 is the page, 2/3 are raised strips. */
   --bg: var(--dsw-alias-bg-base, #101114);
   --panel: var(--dsw-alias-bg-layer-1, #15161a);
@@ -63,11 +76,16 @@ body {
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
-* { box-sizing: border-box; }
+/* The universal reset, anchored: the host runs its own, and a plugin-wide
+   `*` would silently redefine box-sizing for the whole product. */
+:where(.fl-page, .fl-standalone),
+:where(.fl-page, .fl-standalone) * { box-sizing: border-box; }
 
-html { scroll-padding-top: calc(var(--header-h) + 12px); }
+/* Page furniture. These three are the standalone page's own document, and are
+   exactly the rules that restyled the host when they were unscoped. */
+html.fl-standalone { scroll-padding-top: calc(var(--header-h) + 12px); }
 
-body {
+body.fl-standalone {
   margin: 0;
   background: var(--bg);
   color: var(--text);
@@ -92,7 +110,7 @@ body {
 .skip-link:focus { top: 8px; }
 
 /* ── header ────────────────────────────────────────────────────────── */
-header {
+.fl-standalone header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -106,25 +124,25 @@ header {
   top: 0;
   z-index: 10;
 }
-header .brand {
+.fl-standalone header .brand {
   display: flex;
   align-items: baseline;
   gap: 8px;
   min-width: 0;
 }
-header h1 {
+.fl-standalone header h1 {
   margin: 0;
   font-size: 15px;
   font-weight: 650;
   letter-spacing: -0.01em;
 }
-header .sep { color: var(--faint); }
-header .product {
+.fl-standalone header .sep { color: var(--faint); }
+.fl-standalone header .product {
   font-family: var(--font-mono);
   font-size: 12.5px;
   color: var(--muted);
 }
-header .header-meta {
+.fl-standalone header .header-meta {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -229,7 +247,7 @@ header .header-meta {
 }
 
 /* ── main frame ────────────────────────────────────────────────────── */
-main {
+.fl-standalone main {
   max-width: 1480px;
   margin: 0 auto;
   padding: 16px 20px 48px;
@@ -458,7 +476,7 @@ main {
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border-soft);
 }
-h2 {
+:where(.fl-page, .fl-standalone) h2 {
   margin: 0;
   font-size: 12px;
   font-weight: 600;
@@ -513,16 +531,16 @@ details.help {
   padding-top: 16px;
   border-top: 1px solid var(--border-soft);
 }
-details summary {
+.fl-standalone details summary {
   cursor: pointer;
   color: var(--muted);
   font-size: 12.5px;
   outline-offset: 3px;
 }
-details summary:hover { color: var(--text); }
-details .hint { margin-top: 10px; max-width: 72ch; }
+.fl-standalone details summary:hover { color: var(--text); }
+.fl-standalone details .hint { margin-top: 10px; max-width: 72ch; }
 
-code {
+:where(.fl-page, .fl-standalone) code {
   font-family: var(--font-mono);
   font-size: 0.92em;
   background: var(--panel-2);
@@ -635,7 +653,7 @@ code {
 }
 
 /* buttons — pill controls like the stockbroker confirm card */
-button {
+:where(.fl-page, .fl-standalone) button {
   font: inherit;
   font-weight: 600;
   font-size: 13.5px;
@@ -648,12 +666,12 @@ button {
   color: var(--text);
   transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, opacity 150ms ease;
 }
-button:hover:not(:disabled) { border-color: var(--faint); }
-button:focus-visible {
+:where(.fl-page, .fl-standalone) button:hover:not(:disabled) { border-color: var(--faint); }
+:where(.fl-page, .fl-standalone) button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-button:disabled { opacity: 0.5; cursor: default; }
+:where(.fl-page, .fl-standalone) button:disabled { opacity: 0.5; cursor: default; }
 button.allow {
   background: var(--ok-deep);
   border-color: var(--ok-deep);

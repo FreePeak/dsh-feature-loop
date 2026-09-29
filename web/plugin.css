@@ -316,14 +316,14 @@
   outline-offset: 2px;
 }
 
-.fl-start-session {
+.fl-start-workspace {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
 }
-.fl-start-sessionlabel { color: var(--dsw-alias-label-secondary); }
-.fl-start-session select {
+.fl-start-wspacelabel { color: var(--dsw-alias-label-secondary); }
+.fl-start-workspace select {
   flex: 1 1 auto;
   min-width: 0;
   height: 28px;

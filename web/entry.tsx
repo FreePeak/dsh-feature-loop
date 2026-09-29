@@ -22,8 +22,8 @@ import { APPROVAL_MODES, approvalModeFor } from '../src/approval-bridge.ts'
 
 import { assertSettleAccepted } from '../src/approval-bridge.ts'
 import type { ApprovalModeName, BridgeOutcome } from '../src/approval-bridge.ts'
-import { decideStart } from './start-target.ts'
-import type { StartCandidate } from './start-target.ts'
+import { decideStart, openedWorkspaceId } from './start-target.ts'
+import type { SessionRow, StartWorkspace } from './start-target.ts'
 
 import dashboardCss from '../assets/assistant-ui/dashboard.css'
 import assistantShellCss from '../assets/assistant-ui/shell.css'
@@ -45,6 +45,28 @@ interface FeatureLoopService {
   answer(id: string, outcome: string, feedback: string): Promise<RemoteAnswer<{ settled: boolean }>>
   labelRun(sessionId: string, task: string): Promise<RemoteAnswer<unknown>>
   save(settings: Record<string, unknown>): Promise<RemoteAnswer<Record<string, unknown>>>
+}
+
+/**
+ * The host services this page reads, narrowed to the members it calls.
+ *
+ * `workspaces` is the Host-authoritative Workspace registry and `uiWorkspace`
+ * the navigation facade over it. Both are the harness's own client services
+ * (dsh-api-workspace-controller and the ui-workspace browser half), declared
+ * here structurally because the client bundle cannot import host modules.
+ */
+interface WorkspacesService {
+  list: { getSnapshot(): { items: readonly WorkspaceRow[] } }
+}
+interface UiWorkspaceService {
+  /** Reuse-or-create the blank Session for a Workspace, and address it. */
+  connectWorkspace(workspaceId: string): Promise<string>
+}
+interface WorkspaceRow {
+  workspaceId: string
+  path: string
+  title: string
+  sessionIds: readonly string[]
 }
 
 interface Host {
@@ -300,20 +322,23 @@ function FeatureLoopPage({ host }: { host: Host }): React.ReactElement {
    The page is a main-column slot, and the slot catalog is explicit that a
    non-`conversation` key receives NO session binding ("slotInject: ''"), so
    there is no sessionId to borrow — `ui-goal` has one only because it lives in
-   the session-scoped `conversation.input.dock`. `ISessions.list` carries no
-   "current" either; selection belongs to shell navigation.
+   the session-scoped `conversation.input.dock`.
 
-   So the target is resolved explicitly, never guessed silently: one live
-   session is used and shown; several offer a picker; none disables the button
-   and says why. The call itself is `sessionController.prompt` — the same
-   first-class turn submission the composer uses — so the loop's policies apply
-   because they hang off the agent loop's hooks, not off who typed the line. */
+   So the target is a WORKSPACE, and it is the one the user already has open.
+   A Workspace is a directory, and the directory is what a loop writes into, so
+   it is the only target worth showing: the previous session picker asked people
+   to choose between transcripts to decide which checkout got edited, listed
+   every session in every project, and fell back to the most recently touched
+   one — routinely the wrong repository.
+
+   Resolution is the host's own, not ours: `uiWorkspace.connectWorkspace`
+   reuses that workspace's blank session or creates one, and hands back a
+   session id to prompt. The turn then goes through `sessionController.prompt`
+   — the same first-class submission the composer uses — so the loop's policies
+   apply because they hang off the agent loop's hooks, not off who typed it. */
 interface SessionSummary {
   id: string
-  displayTitle: string
-  blank: boolean
-  running: boolean
-  updatedAt: number
+  readonly retainedBy: Readonly<Record<string, number | undefined>>
 }
 interface SessionsService {
   list: { getSnapshot(): { ids: readonly string[], byId: Record<string, SessionSummary> } }
@@ -335,17 +360,25 @@ function StartLoop({ host }: { host: Host }): React.ReactElement {
   const [result, setResult] = useState<StartResult | null>(null)
   const [picked, setPicked] = useState<string | undefined>(undefined)
 
-  const sessions = useMemo<StartCandidate[]>(() => {
-    const svc = host.get('sessions') as SessionsService | undefined
-    if (svc === undefined) return []
-    const { ids, byId } = svc.list.getSnapshot()
-    return ids.map(id => byId[id]).filter((s): s is StartCandidate => s !== undefined)
+  // Re-read on every render: both stores are plain snapshots with no React
+  // subscription here, and a stale one would name a workspace that has since
+  // been closed. Cheap, and it cannot go stale mid-session.
+  const { workspaces, opened } = useMemo(() => {
+    const wsSvc = host.get('workspaces') as WorkspacesService | undefined
+    const rows = wsSvc?.list.getSnapshot().items ?? []
+    const spaces: StartWorkspace[] = rows.map(w => ({
+      id: w.workspaceId, title: w.title, path: w.path, sessionIds: w.sessionIds,
+    }))
+    const sessSvc = host.get('sessions') as SessionsService | undefined
+    const { ids, byId } = sessSvc?.list.getSnapshot() ?? { ids: [], byId: {} }
+    const rowsIn: SessionRow[] = ids.map(id => byId[id]).filter((s): s is SessionRow => s !== undefined)
+    return { workspaces: spaces, opened: openedWorkspaceId(spaces, rowsIn) }
   }, [host, picked])
 
-  // Every judgement — which session, whether a choice is required, why submit
+  // Every judgement — which workspace, whether a choice is required, why submit
   // is blocked — lives in `decideStart`, where it is unit-tested. This
   // component only renders and submits.
-  const decision = decideStart(sessions, picked, task)
+  const decision = decideStart(workspaces, opened, picked, task)
   const { target, ambiguous, note, blocked } = decision
   const disabled = busy || blocked !== undefined
 
@@ -358,19 +391,24 @@ function StartLoop({ host }: { host: Host }): React.ReactElement {
       // see the typert descriptor in @deepseek-ai/dsh-session-controller/remote.
       const controller = host.get('remote.session') as SessionControllerService | undefined
       if (controller === undefined) { setResult({ kind: 'error', text: 'the session controller is not available' }); return }
+      const nav = host.get('uiWorkspace') as UiWorkspaceService | undefined
+      if (nav === undefined) { setResult({ kind: 'error', text: 'the workspace controller is not available' }); return }
+      // The host resolves workspace → session (reuse the blank one, else create
+      // it), so the page never has to guess which inbox belongs to this project.
+      const sessionId = await nav.connectWorkspace(target.id)
       // Name the run before submitting, so the dashboard's first frame already
       // says what this run is for instead of listing a raw agent id.
       const fl = host.get('remote.featureLoop') as FeatureLoopService | undefined
-      try { await fl?.labelRun(target.id, task.trim()) } catch { /* naming is cosmetic; never block a run on it */ }
+      try { await fl?.labelRun(sessionId, task.trim()) } catch { /* naming is cosmetic; never block a run on it */ }
       const answer = await controller.prompt({
         // Client-minted, persisted on the accepted user message.
         requestId: globalThis.crypto.randomUUID(),
-        sessionId: target.id,
+        sessionId,
         mode: 'queue',
         content: [{ type: 'text', text: task.trim() }],
       })
       if (!answer.ok) { setResult({ kind: 'error', text: answer.error.message }); return }
-      setResult({ kind: 'ok', text: `Running in “${target.displayTitle}” — the composer has the transcript.` })
+      setResult({ kind: 'ok', text: `Running in “${target.title}” — the composer has the transcript.` })
       setTask('')
     } catch (error) {
       setResult({ kind: 'error', text: (error as Error).message })
@@ -388,10 +426,12 @@ function StartLoop({ host }: { host: Host }): React.ReactElement {
       </div>
 
       {ambiguous ? (
-        <label className="fl-start-session">
-          <span className="fl-start-sessionlabel">Session</span>
+        <label className="fl-start-workspace">
+          <span className="fl-start-wspacelabel">Workspace</span>
           <select value={target?.id ?? ''} onChange={ev => setPicked(ev.target.value)}>
-            {sessions.map(s => <option key={s.id} value={s.id}>{s.displayTitle}{s.running ? ' (running)' : ''}</option>)}
+            {workspaces.map(w => (
+              <option key={w.id} value={w.id}>{w.title === '' ? w.path : `${w.title} — ${w.path}`}</option>
+            ))}
           </select>
         </label>
       ) : null}
@@ -471,14 +511,30 @@ const TYPERT_REMOTE = {
 }
 
 export default {
-  inject: ['slots', 'locale', 'remote'],
+  // `workspaces` and `uiWorkspace` are the harness's own client services: the
+  // Workspace registry and the navigation facade that maps a workspace to a
+  // session. Injected (not merely read) so the page is never mounted before
+  // they exist — a start submission with no workspace controller is a dead
+  // control, and a dead control is the bug this replaced.
+  inject: ['slots', 'locale', 'remote', 'workspaces', 'uiWorkspace'],
   apply(ctx: Host) {
     // The designed shell's CSS travels with the bundle: one file, no second
     // origin to style from, and the page looks identical wherever it mounts.
-    const style = document.createElement('style')
-    style.dataset.plugin = '@freepeak/dsh-feature-loop'
-    style.textContent = `${assistantShellCss}\n${dashboardCss}\n${pluginCss}`
-    document.head.append(style)
+    //
+    // Owned by an effect, not by `apply` directly, so the tag lives exactly as
+    // long as the plugin does. Appending it here leaked one copy per reload: a
+    // profile with `patchReload: live` re-applies this plugin on every change,
+    // and a stylesheet nobody removes stacks up in the host's <head>, each copy
+    // fighting the last. Same ownership the host's own theme sheets use
+    // (`ui-theme/src/client/styles.ts`).
+    ctx.effect(() => {
+      const style = document.createElement('style')
+      style.dataset.plugin = '@freepeak/dsh-feature-loop'
+      style.dataset.pluginCss = '@freepeak/dsh-feature-loop/dashboard'
+      style.textContent = `${assistantShellCss}\n${dashboardCss}\n${pluginCss}`
+      document.head.append(style)
+      return () => { style.remove() }
+    }, 'dsh-feature-loop: dashboard stylesheet')
 
     ctx.effect(() => ctx.locale.register('featureLoop', {
       zh: { 'featureLoop.panel': 'Feature Loop' },

@@ -26,6 +26,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`allow`/`deny`/`ask`) — denies the call before it is dispatched. This closes
   the defect the fork filed as an unfinished refinement.
 
+- **Starting a loop targets the open workspace, not a session.** The picker
+  listed every session in every project — reasoning about transcripts to decide
+  which checkout gets edited — and silently fell back to the most recently
+  touched session, which is routinely a different repository. It now offers the
+  Workspace the user has open, derived the way the sidebar derives it, and
+  resolves workspace → session through the host's own
+  `uiWorkspace.connectWorkspace`. With several workspaces and none open, submit
+  is blocked and says why: a loop writes files.
+
+### Fixed
+
+- **The plugin's stylesheet no longer restyles the host UI.** Folded into the
+  DSH UI as a main-column page, the dashboard kept the stylesheet it had when
+  it stood on its own origin: palette declared on `body`, and bare `header`,
+  `main`, `h2`, `code`, `button` and `details` rules. Injected into the
+  harness's `<head>`, those overrode the product — the host `<body>`'s
+  background, a 56px sticky `<header>`, every `<h2>` forced to 12px uppercase,
+  and every `<button>` given a 999px radius and a 40px min-height. Every rule
+  is now anchored to a root the plugin owns.
+- **The injected stylesheet is removed when the plugin unloads.** It was
+  appended in `apply()` and never disposed, so a profile with
+  `patchReload: live` stacked one copy per reload into the host's `<head>`.
+
 ### Added
 
 - Standard open-source community documents: `LICENSE` (MIT),
