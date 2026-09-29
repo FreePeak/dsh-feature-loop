@@ -20,6 +20,9 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import {
   DashboardState,
@@ -933,4 +936,41 @@ test('an SSE client is a watcher while open, and stops being one when the last t
   disconnect()
   await delay(50)
   assert.equal(watcherActive(), false, 'the last tab going releases the claim')
+})
+
+// ── the watcher TTL and the page poll must not drift apart ─────────────────
+// The in-UI page claims an ask only while it counts as a watcher, and this poll
+// is what keeps it one. A poll at or above the TTL leaves the page a watcher
+// part of the time, so a gate firing in the gap hands its ask to the composer
+// instead — from the page the operator is watching.
+//
+// This test failed to catch that regression when it only checked the derived
+// constant, so it now asserts what the page actually schedules with.
+test('the in-UI page polls well inside the watcher TTL', () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const approvals = readFileSync(join(here, '..', 'src', 'watcher-ttl.ts'), 'utf8')
+  const app = readFileSync(join(here, '..', 'web', 'app.tsx'), 'utf8')
+
+  const ttlText = /WATCHER_TTL_MS\s*=\s*([\d_]+)/.exec(approvals)?.[1]
+  assert.ok(ttlText !== undefined, 'the watcher TTL must be a literal this test can read')
+  const ttl = Number(ttlText.replace(/_/g, ''))
+
+  // The scheduled interval is what matters, so read it back out of the source.
+  const scheduled = /setInterval\(tick,\s*([^)]+)\)/.exec(app)?.[1]?.trim()
+  assert.ok(scheduled !== undefined, 'the page must schedule its safety-net poll')
+
+  if (/^[\d_]+$/.test(scheduled)) {
+    // A literal: it must clear the TTL, with room for a slow remote read.
+    const literal = Number(scheduled.replace(/_/g, ''))
+    assert.ok(literal * 2 < ttl,
+      `the page polls every ${literal}ms against a ${ttl}ms watcher TTL — it is a `
+      + 'watcher only part of the time, so asks escape to the composer panel')
+  } else {
+    // A derived value: it must be WATCHER_POLL_MS, and that must be < the TTL.
+    assert.equal(scheduled, 'WATCHER_POLL_MS',
+      'the poll interval must come from the derived constant, not ad hoc')
+    assert.match(app, /const WATCHER_POLL_MS = Math\.round\(WATCHER_TTL_MS \/ 3\)/,
+      'WATCHER_POLL_MS must be derived from the shared TTL so the two cannot drift')
+    assert.ok(Math.round(ttl / 3) < ttl, 'the derived poll must clear the TTL')
+  }
 })

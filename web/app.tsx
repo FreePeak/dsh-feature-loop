@@ -31,6 +31,7 @@ import type { ThreadMessageLike, ToolCallMessagePartProps } from '@assistant-ui/
 import { outcomeForResponse, toApprovalGate } from '../src/approval-bridge.ts'
 import type { BridgeOutcome } from '../src/approval-bridge.ts'
 import type { BriefNode, DashboardSnapshot, PendingApproval } from '../src/dashboard.ts'
+import { WATCHER_TTL_MS } from '../src/watcher-ttl.ts'
 
 /** Where this page gets its state and sends its decisions. */
 export interface DashboardSource {
@@ -245,6 +246,17 @@ function ApprovalCard(props: ToolCallMessagePartProps): React.ReactElement {
 
 const ASK_BY_ID = new Map<string, PendingApproval>()
 
+/**
+ * How often the page re-reads live state as a safety net.
+ *
+ * Bounded by the registry's watcher TTL (`WATCHER_TTL_MS` in
+ * `src/approvals.ts`), because this read is what keeps the page a watcher: the
+ * registry claims an ask for this page only inside that window, and an ask
+ * raised outside it falls through to the composer panel. Half the TTL leaves
+ * room for a slow remote read without polling hard enough to matter.
+ */
+const WATCHER_POLL_MS = Math.round(WATCHER_TTL_MS / 3)
+
 function useSnapshot(source: DashboardSource): DashboardSnapshot | null {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(
     () => window.__FL_DASHBOARD_SNAPSHOT__ ?? null,
@@ -257,12 +269,20 @@ function useSnapshot(source: DashboardSource): DashboardSnapshot | null {
         .catch(() => { /* a failed read keeps the last good frame */ })
     }
     // The Host pushes `featureLoop/changed` and this re-reads on that signal.
-    // The interval is a SAFETY NET for a dropped frame, not the mechanism: at
-    // 2s the poll WAS the mechanism and the event was decoration. 30s means a
-    // missed event is staleness rather than a dead page.
+    // The interval is a SAFETY NET for a dropped frame, not the mechanism — but
+    // it is bounded by the WATCHER TTL, and getting that wrong is subtle.
+    //
+    // The shared registry claims an ask for this page only while the page is a
+    // known watcher, and `noteWatcher()` is called by this very `load()`: the
+    // flag is valid for WATCHER_TTL_MS (15s) after the last read. A poll
+    // interval at or above that TTL leaves the page a watcher for only part of
+    // every cycle, and a gate firing in the gap hands its ask to the composer
+    // panel instead — which reads, from the page you are watching, as "the gate
+    // is flaky". Keep the interval comfortably under the TTL. It is one small
+    // remote read; the change event is what makes it feel instant.
     tick()
     const unsubscribe = source.onChange?.(tick) ?? (() => undefined)
-    const timer = setInterval(tick, 30_000)
+    const timer = setInterval(tick, WATCHER_POLL_MS)
     return () => { alive = false; clearInterval(timer); unsubscribe() }
   }, [source])
   return snapshot
