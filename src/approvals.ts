@@ -72,8 +72,7 @@ export interface ApprovalRegistry {
   stop(): void
 }
 
-/** How long a front end counts as "watching" after its last call. */
-const WATCHER_TTL_MS = 15_000
+import { WATCHER_TTL_MS } from './watcher-ttl.ts'
 
 let lastWatchedAt = 0
 
