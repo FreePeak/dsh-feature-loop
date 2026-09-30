@@ -203,39 +203,18 @@ test: ## Run the unit test suite (no network)
 	@node --experimental-strip-types --test test/*.test.ts 2>&1 | tail -8
 
 .PHONY: typecheck
-typecheck: ## Typecheck src/ (mirrors the CI file list)
-	@# Compiler selection first, so the reason is visible in the output.
-	@# Then the CI invocation. --ignoreConfig is required on TypeScript 6: a
-	@# tsconfig.json is present but files are named on the command line (TS5112),
-	@# and the explicit list is deliberate — it is the harness-free closure.
-	@tsc_bin=""; why=""; \
-	  if [ -x node_modules/.bin/tsc ]; then tsc_bin=node_modules/.bin/tsc; why="project tsconfig"; \
-	  elif [ -f "$(DSH_HARNESS)/node_modules/typescript/lib/tsc.js" ]; then \
-	    tsc_bin="node $(DSH_HARNESS)/node_modules/typescript/lib/tsc.js"; why="harness checkout"; \
-	  elif command -v tsc >/dev/null 2>&1; then tsc_bin=tsc; why="PATH"; fi; \
-	  if [ -z "$$tsc_bin" ]; then echo "  ! no TypeScript compiler found. Run: pnpm install"; exit 1; fi; \
-	  echo "  compiler: $$why"; \
-	  if [ "$$why" = "project tsconfig" ]; then \
-	    $$tsc_bin --noEmit && echo "  typecheck clean ($$why)"; \
-	  else \
-	    roots=""; \
-	    if [ -d "$(HOME)/node_modules/@types" ]; then \
-	      roots="--typeRoots $(HOME)/node_modules/@types --types node"; \
-	    fi; \
-	    $$tsc_bin --noEmit --ignoreConfig \
-	      --target ES2024 --module NodeNext --moduleResolution NodeNext \
-	      --strict --esModuleInterop --skipLibCheck --isolatedModules \
-	      --allowImportingTsExtensions $$roots \
-	      $(CI_FILES) && echo "  typecheck clean (CI file list)"; \
-	  fi
+typecheck: ## Typecheck src/ (whole src/ when the harness packages resolve, else CI's list)
+	@node scripts/check-typecheck-list.mjs
+	@bash scripts/typecheck.sh
 
-# The harness-free import closure, exactly as CI lists it.
-CI_FILES := src/agent-policy.ts src/budget.ts src/dashboard.ts \
-            src/dashboard-page.ts src/envelope.ts src/explainer.ts src/judge.ts src/laya.ts \
-            src/llm.ts src/messages.ts src/metrics.ts src/optimize.ts src/optimizer.ts \
-            src/brief.ts src/approval-bridge.ts src/prompts.ts src/questioner.ts \
-            src/refine.ts src/review.ts src/routing.ts src/runlog.ts \
-            src/runner.ts src/signals.ts src/spec.ts src/tools.ts
+# The harness-free import closure, exactly as CI lists it. Read from the
+# workflow rather than repeated here: this file is a COPY of that list, and a
+# copy is how it drifted — `approvals.ts`, `watcher-tl.ts` and `change-event.ts`
+# were in neither. One source, and `check-typecheck-list` fails when it stops
+# covering src/. The harness-coupled modules (plugin, index, remote, command,
+# change-event) are checked by the `project tsconfig` branch above.
+CI_FILES := $(shell sed -n '/- name: tsc --noEmit/,$$p' .github/workflows/ci.yml \
+             | grep -o 'src/[a-z0-9-]*\.ts' | tr '\n' ' ')
 
 .PHONY: integration
 integration: ## Run the real-DSH integration spec (needs the harness checkout)

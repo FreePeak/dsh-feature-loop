@@ -82,23 +82,34 @@ jobs:
       # gains a harness import (`test/plugin-approval.test.ts` already has one,
       # through `src/plugin.ts`) or a dependency import must leave this list,
       # exactly as `src/plugin.ts` leaves the typecheck list. `test/dashboard.test.ts`,
-      # `test/assistant-ui.test.ts` and `test/explainer.test.ts` run locally via
-      # `make test`; `test/approval-bridge.test.ts`, `test/brief.test.ts`, and
-      # `test/questioner.test.ts` are pure and run here.
+      # `test/assistant-ui.test.ts` and the CSS pair run locally via `make test` —
+      # they need the built bundle or import `src/plugin.ts`. Everything pure runs
+      # here, including `test/approvals.test.ts` (the registry behind the gate),
+      # added 2026-10-01 because `scripts/check-test-list.mjs` noticed it was in
+      # neither this list nor any other: the most consequential test in the repo
+      # was running nowhere in CI.
       # `test/judge-config.test.ts` is out for the same reason as
       # `test/plugin-approval.test.ts`: it imports `src/plugin.ts` to reach
       # `resolveJudge`, which carries a runtime `@deepseek-ai/dsh-llm` import.
       # `test/judge.test.ts` stays IN this list — the judge client itself is pure,
       # so the config resolution lives in its own file rather than dragging a
       # harness import into a file that currently runs here.
+      # The same drift the typecheck job checks for: a new PURE test file is not
+      # in this list, so it never runs in CI and nothing says so. The step after
+      # this one fails on that.
+      - name: The no-install test list is not stale
+        run: node scripts/check-test-list.mjs
+
       - name: Run the test suite
         run: node --experimental-strip-types --test \
           test/agent-policy.test.ts test/approval-bridge.test.ts \
-          test/budget.test.ts test/envelope.test.ts test/judge.test.ts \
+          test/approvals.test.ts test/brief.test.ts \
+          test/budget.test.ts test/envelope.test.ts test/explainer.test.ts \
+          test/judge.test.ts \
           test/metrics.test.ts test/optimize.test.ts test/optimizer.test.ts \
           test/questioner.test.ts \
           test/policy.test.ts test/refine.test.ts test/runlog.test.ts \
-          test/runner.test.ts test/tools.test.ts
+          test/runner.test.ts test/start-target.test.ts test/tools.test.ts
 
   typecheck:
     name: typecheck (harness-free src/ modules)
@@ -139,6 +150,13 @@ jobs:
       # the two harness-coupled modules are typechecked locally instead, against
       # the prebuilt packages from a harness checkout. Add a new pure module to
       # this list; a module that gains a harness import must leave it.
+      # `src/change-event.ts` looks harness-free — it imports nothing at all —
+      # but it is two `declare module` AUGMENTATIONS of `@deepseek-ai/cordis`
+      # and `@deepseek-ai/dsh-typert-protocol`, and a `tsc` run that has not
+      # installed those packages rejects an augmentation of a module it cannot
+      # resolve (TS2664). It is typechecked with `src/plugin.ts`, which imports
+      # the same two. A first draft of this change listed it anyway and CI went
+      # red on exactly that error.
       # src/brief.ts, src/approval-bridge.ts and src/explainer.ts are the pure
       # additions: `brief.ts` and `approval-bridge.ts` import nothing at all
       # (which is why their tests run in the no-install job above), and
@@ -151,11 +169,21 @@ jobs:
             --target ES2024 --module NodeNext --moduleResolution NodeNext \
             --strict --esModuleInterop --skipLibCheck --isolatedModules \
             --allowImportingTsExtensions \
-            src/agent-policy.ts src/budget.ts \
-            src/approval-bridge.ts src/brief.ts \
+            src/agent-policy.ts src/approval-bridge.ts src/approvals.ts \
+            src/brief.ts src/budget.ts \
             src/dashboard.ts src/dashboard-page.ts src/envelope.ts src/explainer.ts \
             src/judge.ts src/laya.ts src/llm.ts src/messages.ts \
             src/metrics.ts src/optimize.ts src/optimizer.ts src/prompts.ts \
             src/questioner.ts src/refine.ts \
-            src/review.ts src/routing.ts src/runlog.ts src/runner.ts src/signals.ts src/spec.ts \
-            src/tools.ts
+            src/review.ts src/routing.ts src/runlog.ts src/runner.ts \
+            src/signals.ts src/spec.ts src/tools.ts src/watcher-ttl.ts
+
+      # The list is hand-maintained and has already drifted twice — see the
+      # `change-event` note above — so this step recomputes it and fails on a
+      # module that has fallen off. Rule: a module belongs in the list unless it
+      # (or anything it reaches) imports or augments an `@deepseek-ai/*` module.
+      # `plugin.ts`, `index.ts`, `remote.ts`, `command.ts` and `change-event.ts`
+      # are the five excluded today, and each exclusion is named in
+      # `scripts/check-typecheck-list.mjs`, so a new one has to be written down.
+      - name: The typecheck list is not stale
+        run: node scripts/check-typecheck-list.mjs
