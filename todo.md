@@ -51,7 +51,7 @@ Older carry-overs, still true: Dependabot PRs #3-#7 are open. #3 and #4
 are **not** proven safe by green CI, because `src/plugin.ts` is excluded from
 the CI typecheck job.
 
-## P0 — A human should click the panel by hand
+## P1 — A human should click the panel by hand (was P0)
 
 Both buttons were exercised by an **automated browser script**
 (`docs/VERIFY-E2E-APPROVAL.md`). That proves the mechanism; it does not prove a
@@ -59,17 +59,35 @@ person finds the UI usable — and reaching a usable composer takes three gates:
 the Internal Testing Notice, the "Add an API key" prompt, and the workspace
 chooser.
 
-Either click it yourself, or decide the automated proof is sufficient and record
-that decision here. If the UI confuses you, that confusion is a real finding.
+Still open, and it stays open until it happens: every automated proof in this
+repo is written by the same person who wrote the thing being proven, and the
+scripts answer "does the mechanism work", never "did I understand it". Click it
+yourself. If the UI confuses you, that confusion is a real finding and outranks
+every check in `make verify`.
 
-## P0 — A human should click the DASHBOARD's Allow once by hand
+To do it (2026-10-01, profile created and proven by
+`scripts/make-profile.sh`):
 
-Same shape as the section above, for the new surface: server, guard, auth,
-fail-closed paths, and the exact endpoint the buttons call are verified over
-real HTTP, but no browser has executed the page's own JavaScript. The
-two-minute script (bring-up + three checks) is in
-[`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md); record the outcome
-there.
+```bash
+node ~/work/harvey/freepeak/deepseek-harness/apps/cli/lib/bin.js \
+  --profile feature-loop --port 4188 --no-open
+```
+
+Then open the `dsh web:` URL, go to **Feature Loop** in the sidebar, type a task
+that writes a file, and click **Allow once** / **Reject** on the card.
+
+## P1 — A human should click the DASHBOARD's Allow once by hand (was P0)
+
+Same shape, for the standalone surface. **Mechanically closed 2026-10-01**:
+`make e2e-dashboard` drives the real page and both buttons resolve the
+server-side ask, and it now runs with no environment variables (it used to need
+`PLAYWRIGHT_CORE` and `CHROME_PATH` set by hand, and failed on a machine where
+neither was where it looked). Transcript in
+[`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md).
+
+What is still missing is the human reading the page, not clicking it. Downgraded
+from P0 because the mechanism has now been proven twice — over HTTP and in a
+real browser — and what remains is a taste question, not a correctness one.
 
 ## P1 — Docker: isolated data mount (sessions, …)
 
