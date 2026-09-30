@@ -214,6 +214,35 @@ bash scripts/make-profile.sh --help
 #   [name] [--port N] [--dashboard-port N] [--web|--headless]
 ```
 
+**Two things must be true before the first run, and neither produces an error.**
+
+The script cannot set either one for you, because both are facts about the
+machine rather than about the profile — and both were found by running this
+(2026-10-01, against DSH 0.2.0-rc.1):
+
+1. **`ONEGW_API_KEY` must be in the environment that boots the server.** The
+   profile references it by name (`apiKeyEnv: ONEGW_API_KEY`), so no key is
+   ever written into the profile. A server started without it boots perfectly:
+   both surfaces answer, the dashboard records the run, and the *first model
+   call* dies with
+
+   ```
+   llm-pi-ai: no credential for provider route "onegw"; its profile resolves
+   ONEGW_API_KEY, which is not set
+   ```
+
+   That reads like a plugin failure and is not one. Start the server from a
+   shell that exports it, or pass it inline.
+
+2. **Add a Workspace.** A fresh `DSH_HOME` has none, and the Feature Loop page
+   says so — correctly, since guessing which checkout to write into is the wrong
+   default:
+
+   > No workspace is registered yet — open a project folder, then start the loop.
+
+   Use the sidebar's **Add workspace**. Everything after that is one loop:
+   type a task, press **Start loop**, click **Allow once**.
+
 **One port per process.** Each dsh process owns its own approval registry *and*
 its own dashboard, so the headless twin needs a different dashboard port from
 the web one:

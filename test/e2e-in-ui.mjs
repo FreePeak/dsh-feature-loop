@@ -74,11 +74,23 @@ try {
   await page.goto(DSH_URL, { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(5000)
 
-  // The harness's own Preview Notice modal covers the sidebar, so "Feature
-  // Loop" is not clickable until it is dismissed. Every fresh instance shows it.
-  for (const label of ['Got it', 'OK', 'Continue', 'Close', 'Dismiss']) {
+  // Two modals stand between a fresh boot and this page, and BOTH block the
+  // sidebar — a click on "Feature Loop" under either one does nothing at all,
+  // which reads as a dead button rather than as a modal:
+  //
+  //   "Preview Notice"     — DeepSeek Harness 0.2 is still in preview
+  //   "Add an API key"     — offered until you Configure later; on a profile
+  //                          whose model route is already declared it is the
+  //                          onboarding gate, not a real key request
+  //
+  // Dismiss each if present, and re-check: dismissing the first can reveal the
+  // second, so this cannot `break` on the first hit. Found by running against a
+  // profile with no sessions (2026-10-01), where the script sat on a 30s
+  // locator timeout with no clue why.
+  for (const label of ['Got it', 'OK', 'Continue', 'Close', 'Dismiss', 'Configure later']) {
     const b = page.getByRole('button', { name: label, exact: false }).first()
-    if (await b.count()) { await b.click().catch(() => undefined); break }
+    if (await b.count()) await b.click().catch(() => undefined)
+    await page.waitForTimeout(1500)
   }
   await page.waitForTimeout(2000)
 
