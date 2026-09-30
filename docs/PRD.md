@@ -13,6 +13,18 @@ shipped bugs came through; and `scripts/make-profile.sh` takes a new
 installation from zero to a gating profile in one command, verified against
 DSH 0.2.0-rc.1 with a real model in both answer directions.
 
+**Release note.** The release workflow computes its bump from commit subjects:
+`feat:` → minor, `type(scope)!:` or a `BREAKING CHANGE` footer → major at 1.x,
+otherwise patch. The sixteen commits on this branch use prose subjects — the
+convention the repo has used throughout — so they will ship as **0.1.10**, a
+patch. That is the right number for what changed: nothing here alters the
+plugin's public API, and every change is either a bug fix, a new opt-in
+surface (`scripts/make-profile.sh`, `make e2e-in-ui`), or documentation. If a
+reviewer judges the shipped defaults (`write: always-approve`, the query token
+on the settle route, `/api/state` reporting `watching`) to be breaking for
+someone, the subject of the offending commit is the lever — say so and it is
+renamed.
+
 ---
 
 ## 1. Summary
