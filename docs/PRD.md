@@ -1,11 +1,17 @@
 # PRD — `@freepeak/dsh-feature-loop`
 
-**Status:** Phase 1 complete (de-fork executed). Phase 2 not started.
+**Status:** Phase 1 complete (de-fork executed). Phase 2 partial: real spend
+accounting, Laya, the optimizer block and the HITL dashboard have all landed
+since; the remaining items are §9.4 (now closed by `test/plugin-wiring.test.ts`)
+and the routing-ladder decision.
 **Owner:** Linh Doan
-**Last updated:** 2026-09-29 (plugin page brought onto the harness's own design
-metrics; browser click path driven end to end on an isolated instance — see
-[`KNOWN-ISSUES.md`](KNOWN-ISSUES.md) § "The browser click path, and the page's
-own geometry" and `test/css-parity.test.ts`)
+**Last updated:** 2026-10-01 — a human-facing readiness pass. Both open product
+warts in [`KNOWN-ISSUES.md`](KNOWN-ISSUES.md) are fixed (§5 query token, §6
+watcher); `write` is `always-approve` in both shipped configs so the gate is
+visible on a first run; `test/plugin-wiring.test.ts` closes §9.4, the gap two
+shipped bugs came through; and `scripts/make-profile.sh` takes a new
+installation from zero to a gating profile in one command, verified against
+DSH 0.2.0-rc.1 with a real model in both answer directions.
 
 ---
 
@@ -90,7 +96,8 @@ Grepping the entire harness checkout for `LoopBudget`, `ReviewGate`,
 | Phase prompts | `prompts.ts` |
 | Standalone loop, sandboxed tools, CLI, demo | `runner.ts`, `tools.ts`, `cli.ts`, `llm.ts` |
 
-These ≈3,556 lines, with 133 tests, are the product. **The fork was never the
+These ≈3,556 lines, with 133 tests, are the product (396 as of
+2026-10-01, once the dashboard and the plugin wiring were covered). **The fork was never the
 product; it was the scaffolding that hosted the product.**
 
 ---
@@ -176,7 +183,7 @@ Phase 1 is complete when **all** hold:
 
 | # | Criterion | Result |
 |---|---|---|
-| 1 | The test suite passes unchanged | ✅ 133 pass, 0 fail (126 at the time of the de-fork; the plugin tests were added later) |
+| 1 | The test suite passes unchanged | ✅ 396 pass, 0 fail (126 at the time of the de-fork; the plugin and dashboard tests were added later) |
 | 2 | `tsc --noEmit` is clean against the real harness packages | ✅ exit 0 |
 | 3 | `bash demo/run.sh` still reaches `goal-met` | ✅ (see §7) |
 | 4 | No file in `src/` imports a deleted module | ✅ verified |
@@ -232,8 +239,10 @@ making progress."* (The smoke script drove the handler with a synthetic tool
 named `edit_file` and a hand-written `pending` record; a real DSH session calls
 `edit`. See `docs/SETUP.md` on the two name spaces.) Detectors now fire.
 
-**This is the strongest argument for §9.4:** the plugin path has no test, and
-this bug is exactly what a test would have caught.
+**This is the strongest argument for §9.4:** the plugin path had no test, and
+this bug is exactly what a test would have caught. It now does —
+`test/plugin-wiring.test.ts` (2026-10-01) drives the three hooks and asserts the
+consequences; see §9.4.
 
 ### 7.2 A fail-open gap found while writing the setup guide
 
@@ -287,13 +296,16 @@ estimate is now **denied** rather than dispatched.
    `model-selection` or document why spec-level escalation is distinct.
 3. **Reach `agent/turn-stopping`** so `spec.termination.successCommand` drives
    termination rather than the runner checking it after each step.
-4. **Test the plugin path.** `src/plugin.ts` has no test today; the policy
-   decisions it calls are covered by `agent-policy.test.ts` (27 tests), but the
-   wiring is not. §7.1 and §7.2 are the evidence that this matters: one wiring
-   bug silently disabled every detector, and another left the gate **fail-open**
-   on the irreversible path. Both were found by reading and by manual
-   verification, not by CI. A fake-context harness driving the three hooks would
-   close this, and is the highest-value remaining work.
+4. ~~**Test the plugin path.**~~ **Done 2026-10-01** —
+   `test/plugin-wiring.test.ts` drives the three hooks through a fake context in
+   the harness's own payload shape and asserts the consequences: the gate
+   decides before dispatch, the agent-less path is still gated, a blocked call
+   becomes an error observation, both ceilings stop the run, the ladder routes.
+   Worth recording how it earned its place: the first draft got
+   `agent/pre-step`'s payload wrong (`{turn: {turn, step}, step: {…}}` instead of
+   the real `{turn: number, step: number}`) and **every ceiling assertion passed
+   vacuously** — `verdict(undefined)` never exceeded `maxSteps`. That is the
+   class of bug this file exists to catch, caught by the file meant to catch it.
 5. **Phase 3 — Laya.** Deploy the `systemone` provider in onegw, switch
    `--judge laya`.
 
