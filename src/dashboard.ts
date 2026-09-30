@@ -42,7 +42,7 @@ import type { ReviewSignal } from './signals.ts'
 // shared registry never lets it claim an ask and every POST times out. The
 // in-UI page does this from `remote.ts`'s `live()`; this is the same fact for
 // the loopback server.
-import { clearWatcher, noteWatcher } from './approvals.ts'
+import { clearWatcher, noteWatcher, watcherActive } from './approvals.ts'
 import type { ApprovalRegistry } from './approvals.ts'
 // Type-only on purpose: the measurement modules are authored concurrently by
 // other seams, and type-only imports are erased at runtime, so this module
@@ -216,6 +216,13 @@ export interface DashboardSnapshot {
    * recommendation is a human copying a config snippet, by hand.
    */
   recommendations?: Recommendation[]
+  /**
+   * Whether a front end is currently eligible to answer a pending ask — served
+   * by `GET /api/state` only. Without it a scripted client learns it is
+   * ineligible the one way the plugin can tell it: by the gate refusing an ask
+   * with "no approval channel is available", long after the fact.
+   */
+  watching?: boolean
 }
 
 /** Configured under the patch row's `dashboard:` key. All fields optional. */
@@ -771,11 +778,23 @@ export function startDashboard(
     return timingSafeEqual(a, b)
   }
 
-  /** Token from the header everywhere; query also accepted on GETs only. */
-  const authorized = (req: IncomingMessage, url: URL, allowQuery: boolean): boolean => {
+  /**
+   * Token from the header or — for every route, including the state-changing
+   * one — the query string.
+   *
+   * The query token used to be GET-only, on the theory that a state change
+   * should not be authorized by something that ends up in a proxy log, a
+   * `Referer`, or a browser history. That reasoning is real but it bought
+   * nothing: the header token is right there in the same `curl`, and the
+   * failure mode was a 401 that reads as "wrong token" when it means "wrong
+   * *mechanism*". Two halves of one five-route API disagreeing about how to
+   * authenticate is the worse defect, and `sameOrigin` is what actually guards
+   * a browser from another origin. The route stays token-gated either way.
+   */
+  const authorized = (req: IncomingMessage, url: URL): boolean => {
     const header = req.headers['x-dashboard-token']
     if (tokenMatches(Array.isArray(header) ? header[0] : header)) return true
-    return allowQuery && tokenMatches(url.searchParams.get('token') ?? undefined)
+    return tokenMatches(url.searchParams.get('token') ?? undefined)
   }
 
   const deny = (res: ServerResponse): void => {
@@ -812,7 +831,7 @@ export function startDashboard(
   }
 
   const openSse = (req: IncomingMessage, res: ServerResponse, url: URL): void => {
-    if (!authorized(req, url, true)) return deny(res)
+    if (!authorized(req, url)) return deny(res)
     res.writeHead(200, {
       'content-type': 'text/event-stream',
       'cache-control': 'no-cache',
@@ -849,8 +868,8 @@ export function startDashboard(
     })
   }
 
-  const approve = async (req: IncomingMessage, res: ServerResponse, id: string): Promise<void> => {
-    if (!authorized(req, new URL('/', 'http://x'), false)) return deny(res)
+  const approve = async (req: IncomingMessage, res: ServerResponse, id: string, url: URL): Promise<void> => {
+    if (!authorized(req, url)) return deny(res)
     if (!sameOrigin(req)) return sendJson(res, 403, { error: 'cross-origin approval denied' })
     let body: unknown
     try {
@@ -915,11 +934,22 @@ export function startDashboard(
     const method = req.method ?? 'GET'
     if (method === 'GET' && url.pathname === '/api/events') return openSse(req, res, url)
     if (method === 'GET' && url.pathname === '/api/state') {
-      if (!authorized(req, url, true)) return deny(res)
-      return sendJson(res, 200, snapshot())
+      if (!authorized(req, url)) return deny(res)
+      // A state poll IS a front end watching. It used not to count, which made
+      // a polling client invisible to the claim: the page was right there,
+      // reading the state every second, and an ask still came back "no
+      // approval channel is available". The precedence rule this weakens is
+      // "claim only while a real surface is connected" — and a token-holding
+      // caller polling this endpoint IS a real surface, exactly as much as one
+      // holding an SSE stream. The failure it re-enables (an ask stranded
+      // because the watcher then went away) is bounded by the same 15s TTL and
+      // the same `unavailable` settle, and `/api/state` says so out loud so a
+      // client can tell whether it is currently eligible to answer.
+      if (cfg.answers) noteWatcher()
+      return sendJson(res, 200, { ...snapshot(), watching: watcherActive() })
     }
     if (method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
-      if (!authorized(req, url, true)) return deny(res)
+      if (!authorized(req, url)) return deny(res)
       // Per-response nonce covering the page's two <link>s and its one inline
       // bootstrap script. The vendored bundle cannot carry a nonce (it is a
       // static file), so `script-src` names it explicitly as `'self'` — the
@@ -937,7 +967,7 @@ export function startDashboard(
       return serveAsset(res, url.pathname)
     }
     if (method === 'POST' && url.pathname.startsWith('/api/approvals/')) {
-      return approve(req, res, decodeURIComponent(url.pathname.slice('/api/approvals/'.length)))
+      return approve(req, res, decodeURIComponent(url.pathname.slice('/api/approvals/'.length)), url)
     }
     // Deliberately NO `POST /api/apply` — and no GET for it either. Applying
     // a recommendation means a human copying its config snippet into their

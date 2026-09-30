@@ -71,7 +71,20 @@
           glob: auto
           grep: auto
           edit: auto-if-confident
-          write: auto-if-confident
+          # `always-approve`, deliberately, and this is the one shipped default
+          # that changed. It used to be `auto-if-confident`, which asks only
+          # when the judge is NOT confident — so with a working local judge the
+          # shipped config cleared writes silently and a human watching a loop
+          # saw no approval at all. That reads as "the gate is broken" (it was
+          # in fact working exactly as configured), which is the worst first
+          # impression this plugin can give.
+          #
+          # `bash` is not listed because the spec's `actuator` classifies it
+          # `irreversible`, which already means `always-approve`.
+          #
+          # To get the throughput posture back once you trust the judge, put
+          # `write: auto-if-confident` here. Nothing else changes.
+          write: always-approve
 
         # How a review reaches a human. `ask` (the default) prompts in the Web
         # UI's conversation composer, so you can approve or reject the step.

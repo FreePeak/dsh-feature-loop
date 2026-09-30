@@ -2,7 +2,8 @@
 
 Everything below was found by running the plugin in a live harness, not by
 reading code. Each entry says what you observe, why it happens, and what fixes
-it. Three are fixed; two are product warts that remain.
+it. All of the open product warts are fixed; the section that remains open is
+the environment list, which is about the machine rather than the product.
 
 The headline: **an approval that appears not to work is usually not the gate.**
 In every case observed here the gate was either never loaded at all, or loaded
@@ -127,47 +128,48 @@ store key for a `_@deepseek-ai+…` suffix.
 
 ---
 
-## Open — product warts
+## Fixed (2026-10-01) — both open warts
 
-### 5. `POST /api/approvals/:id` ignores the query token
+### 5. `POST /api/approvals/:id` ignored the query token — **fixed**
 
 **Observed:** a scripted approval using `?token=…` got
 `401 missing or invalid dashboard token` while every read route accepted the
 same query token.
 
-**Why:** the settle route calls `authorized(req, url, false)` — `allowQuery` is
-`false` — so it takes the token from the `x-dashboard-token` header only. The
-read routes pass `true`.
+**Why:** the settle route called `authorized(req, url, false)` — `allowQuery`
+was `false` — so it took the token from the `x-dashboard-token` header only.
+The read routes passed `true`. The two halves of one five-route API disagreed
+about how to authenticate, and the failure was a 401 that reads as "wrong
+token" when it means "wrong *mechanism*".
 
-**Why it matters:** the two halves of one tiny API disagree about how to
-authenticate, and the failure mode is a 401 that looks like a wrong token rather
-than a wrong *mechanism*. Any non-browser client has to know the difference.
+**Fix:** `authorized()` no longer takes the flag — every route accepts the
+query token, header first. What the flag bought was nothing: the header token
+sits in the same `curl`, and the real guard against a browser reaching across
+an origin is `sameOrigin`, which still runs on the settle route and is still
+asserted by a test with `origin: http://evil.example`. `test/dashboard.test.ts`
+pins both halves: a query-token POST settles the ask, a no-token POST is still
+401, and a query token from another origin is still 403.
 
-**Suggested fix:** accept the query token here too (the route is token-gated
-already, and `sameOrigin` still guards the state change), or document the header
-requirement in the runbook. Not changed here — it alters the security posture of
-a state-changing route and deserves its own review.
+### 6. Only an SSE client counted as a "watcher" — **fixed**
 
-### 6. Only an SSE client counts as a "watcher"
-
-**Observed:** polling `GET /api/state` every second never let the registry claim
-an ask, so in a headless run the gate's `ask` was refused with
+**Observed:** polling `GET /api/state` every second never let the registry
+claim an ask, so in a headless run the gate's `ask` was refused with
 `tool "write" requires approval, but no approval channel is available` — the
 page was right there, polling, and still invisible to the claim.
 
-**Why:** `noteWatcher()` is called only from the `/api/events` SSE handler
-(`src/dashboard.ts:833`). A `/api/state` poll is not a watcher.
+**Why:** `noteWatcher()` was called only from the `/api/events` SSE handler.
+A `/api/state` poll was not a watcher. The suggested fix was left undone with
+the note that widening the precedence rule "risks stranding asks" — which is
+true of the *silent* version and false of this one, because the client is now
+told.
 
-**Why it matters:** the in-UI page is safe (it calls the host remote's `live()`,
-which notes the watcher), but the standalone page and any scripted client must
-hold the stream. The source comment describes exactly this failure, which is
-good, but the behaviour is a trap: "I am polling the state endpoint, surely that
-counts."
-
-**Suggested fix:** have `/api/state` note the watcher too, or return an explicit
-`watching: true/false` so a client can tell whether it is eligible to answer.
-Not changed here — it is a deliberate precedence rule (claim only while a real
-surface is connected) and widening it risks stranding asks.
+**Fix, both halves:** `/api/state` registers the heartbeat (the same
+`noteWatcher()` the SSE route and the in-UI page's `live()` already call), and
+the response carries `watching`. A client can now ask "am I currently eligible
+to answer?" instead of discovering it when a gate refuses an ask minutes later.
+The stranding case is bounded exactly as before — the 15s `WATCHER_TTL_MS` and
+the `unavailable` settle — and `answers: false` still never registers a
+heartbeat, so observe-only stays observe-only.
 
 ---
 
@@ -241,13 +243,15 @@ reviewing nothing. I hit this myself and lost a cycle to it. Override the whole
 row, or none of it.
 
 **`gatePolicies` is keyed by TOOL NAME, and `auto-if-confident` proceeds when
-the judge is confident.** The shipped default is `write: auto-if-confident`
-with a working local judge, so writes are routinely auto-approved and a human
-sees no approval at all. That is the intended production posture — a judge that
-clears confident steps is the feature, not a bug — but it means "the gate never
-asks" is the expected behaviour of the shipped config, and is a poor default for
-anyone expecting to see the loop work. `write: always-approve` makes it
-deterministic.
+the judge is confident.** This was the shipped default for `write`, with a
+working local judge, so writes were routinely auto-approved and a human saw no
+approval at all. The throughput posture is real — a judge that clears
+confident steps is the feature, not a bug — but as the *first* thing a new user
+ sees it reads as "the gate is broken", when it was working exactly as
+configured. **`write` is now `always-approve` in both shipped configs**
+(`cordis.patch.yml` and `docker/profile.patch.yml`); `edit` stays
+`auto-if-confident`. Put `write: auto-if-confident` back when you trust the
+judge; nothing else changes.
 
 ### The browser click path, and the page's own geometry (2026-09-29, live on :4100)
 

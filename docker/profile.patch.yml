@@ -32,7 +32,10 @@
       glob: auto
       grep: auto
       edit: auto-if-confident
-      write: auto-if-confident
+      # `always-approve`, matching the shipped `cordis.patch.yml`. With
+      # `auto-if-confident` and a judge that is confident, writes clear
+      # silently and a human watching sees no approval — see the note there.
+      write: always-approve
     # The HITL approval dashboard. Inside the container it binds 0.0.0.0 so the
     # published port can reach it — compose publishes 127.0.0.1:${DSH_DASHBOARD_PORT}
     # on the host, so the posture stays loopback-only end to end. The token is
