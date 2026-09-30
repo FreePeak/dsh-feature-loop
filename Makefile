@@ -69,7 +69,7 @@ help: ## Show this help
 	@echo "dsh-feature-loop — make targets"
 	@echo
 	@echo "  containers (docker/docker-compose.yml, service '$(SERVICE)')"
-	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+	@grep -hE '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN {FS = ":.*?## "}; {printf "    \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 	@echo
 	@echo "  variables: PROFILE=$(PROFILE)  HOST_PORT=$(HOST_PORT)  DASHBOARD_PORT=$(DASHBOARD_PORT)"
@@ -311,6 +311,11 @@ dashboard-bundle: ## Rebuild the vendored assistant-ui bundle into assets/ (comm
 e2e-dashboard: ## Click the real dashboard page in a real browser (needs Playwright + Chromium; opt-in, not part of verify)
 	@node --experimental-strip-types test/e2e-dashboard.mjs allow && \
 	 node --experimental-strip-types test/e2e-dashboard.mjs reject
+
+.PHONY: e2e-in-ui
+e2e-in-ui: ## Click Allow/Reject on the in-UI page against a RUNNING profile (DSH_URL=… PROOF_DIR=…)
+	@test -n "$(DSH_URL)" || { echo "DSH_URL is required: paste the 'dsh web:' line from the server log"; exit 2; }
+	@node test/e2e-in-ui.mjs allow && node test/e2e-in-ui.mjs reject
 
 .PHONY: compose-check
 compose-check: ## Validate the compose file
