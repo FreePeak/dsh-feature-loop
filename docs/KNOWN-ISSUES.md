@@ -128,7 +128,42 @@ store key for a `_@deepseek-ai+…` suffix.
 
 ---
 
-## Fixed (2026-10-01) — the environment set, plus the two it was hiding
+## Fixed (2026-10-01) — the environment set, plus the four it was hiding
+
+### 10. Every demo command had been broken for six days of commits
+
+**Observed:** `bash demo/run.sh` — the command the README opens with, and the
+proof that the loop reaches `goal-met` in one command — failed with
+`ERR_MODULE_NOT_FOUND: …/src/cli.ts`.
+
+**Why:** commit `633c1e2` ("Fold the HITL dashboard into the DSH UI") deleted
+`src/cli.ts` as a side effect of a change to something else. `demo/run.sh` kept
+pointing at the deleted path, and so did all four npm scripts (`demo`,
+`demo:steps`, `demo:cost`, `demo:nojudge`). Nothing referenced it from a test,
+the typecheck list, or CI — because `src/` is a hand-listed set and the deletion
+was consistent with it.
+
+**Why it survived six days of commits:** the one thing that would have caught it
+is a run, and every run in that window was `npm test` or a profile check. A demo
+that cannot run is not a failing test; it is an absence of one.
+
+**Fix:** the entry point is back as `demo/cli.ts` — the demo's, not the
+published package's, since `src/` is the plugin's import closure and the CI
+typecheck list is derived from what is in it. All four commands re-run against
+the real model:
+
+| Command | Outcome | Steps | Cost |
+|---|---|---|---|
+| `bash demo/run.sh` | `goal-met` | 6 of 15 | $0.0039 |
+| `bash demo/run.sh --max-steps 6` | `budget-stop` (step ceiling) | 6 of 6 | $0.0031 |
+| `bash demo/run.sh --budget 0.000001` | `budget-stop` (cost ceiling) | 2 of 15 | $0.0004 |
+| `bash demo/run.sh --judge none` | `goal-met` | 4 of 15 | $0.0024 |
+
+`scripts/check-typecheck-list.mjs` now also fails if `demo/cli.ts` goes missing
+or if `run.sh` stops referencing it — the check that would have caught it,
+attached to the one job already responsible for "what is checked by what".
+
+## Fixed (2026-10-01) — the environment set, plus the three it was hiding
 
 ### 8. A ladder rung naming an undeclared model is not a config smell — it is a dead run
 
