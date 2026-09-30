@@ -19,6 +19,22 @@
 #    `auto-if-confident` has no evidence of confidence and the gate ASKS the
 #    human. That fail-closed ask is what produces the approval panel.
 
+# The route the loop actually uses. WITHOUT this row the loop runs on the
+# harness's own default — `provider: deepseek-official` — and every model call
+# in the container dies with:
+#
+#   llm-deepseek: no API key for provider route "deepseek-official"
+#
+# while the UI, the dashboard and the approval panel all look perfect. Verified
+# 2026-10-01 against harness 0.2.0-rc.2: the row was missing, the container
+# booted clean, and the first `dsh headless` run failed on a key nobody supplied
+# because nobody had asked for that provider.
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: onegw
+    model: opencode/deepseek-v4.1-flash
+
 - id: feature-loop
   config:
     reviewBudget: 0.10
@@ -40,8 +56,16 @@
     # published port can reach it — compose publishes 127.0.0.1:${DSH_DASHBOARD_PORT}
     # on the host, so the posture stays loopback-only end to end. The token is
     # generated at start; `make dashboard` rebuilds the URL from the log line.
+    #
+    # `standalone: true` is REQUIRED and its absence is silent. Without it the
+    # dashboard is a page INSIDE the DSH UI, reached over the host remote — so no
+    # server binds, nothing listens on 8100, no `feature-loop dashboard:` line is
+    # printed, and the published port in compose connects to nothing. Verified
+    # 2026-10-01: exactly this profile, `enabled: true` and no `standalone`, gave
+    # a clean boot with no dashboard and no error of any kind.
     dashboard:
       enabled: true
+      standalone: true
       host: 0.0.0.0
       port: 8100
       answers: true

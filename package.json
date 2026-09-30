@@ -1,6 +1,6 @@
 {
   "name": "@freepeak/dsh-feature-loop",
-  "version": "0.2.2",
+  "version": "0.1.10",
   "description": "A book-shaped policy layer for bug-fixing and small features: budget ceilings, cheap-first routing, step-level review gate, and the Laya local judge. Hosts on the DeepSeek Harness agent loop rather than forking it.",
   "type": "module",
   "main": "lib/index.mjs",
@@ -71,7 +71,7 @@
     "lint:workflows": "actionlint .github/workflows/*.yml",
     "test:integration": "bash test/integration/run.sh",
     "dashboard-bundle": "node web/build.mjs",
-    "prepare": "git config core.hooksPath .githooks",
+    "prepare": "git config core.hooksPath .githooks || true",
     "add-bundle": "node scripts/add-bundle.mjs"
   },
   "dependencies": {

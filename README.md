@@ -401,6 +401,11 @@ gets reached.
   browser on the containerised deployment: the panel appears with this plugin's
   reason, **Allow once** writes the file, **Reject** blocks it.
 - **[`docker/README.md`](docker/README.md)** — the one-command container run.
+  The Docker path was verified on 2026-10-01 and had four silent breakages,
+  all fixed: a missing `git` in the build stage, `assets/` not copied into the
+  runtime image (so the plugin failed to import and the container booted clean,
+  served a UI, and gated nothing), no `standalone: true` on the dashboard, and
+  no model route. Evidence: [`docs/evidence/docker-20261001.md`](docs/evidence/docker-20261001.md).
 
 ---
 

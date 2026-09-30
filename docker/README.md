@@ -56,6 +56,33 @@ do not exist:
   (`runs.jsonl`). `make clean` removes this one only — metrics reset without
   touching sessions. `make clean-all` removes both.
 
+### Two things the container cannot do for you
+
+Both were found by running it, not by reading it, and neither produces an
+error — the UI boots clean and looks completely fine.
+
+**1. There is no Workspace until you add one.** A fresh container's
+`/data/storages/workspace.json` has `"workspaceIds": []`. Open the sidebar's
+**Add workspace** and point it at a project directory first. Until then the
+Feature Loop page says, correctly and usefully:
+
+> No workspace is registered yet — open a project folder, then start the loop.
+
+That is the plugin refusing to guess which checkout to write into, which is the
+behaviour you want. It is also the first thing that makes a fresh container look
+unusable, so the README says it here rather than letting you find it.
+
+**2. The loop's model route is set by the profile, not the gateway key.** The
+`agent-default-model` row in `docker/profile.patch.yml` points at
+`provider: onegw`. Without that row the loop runs on the harness's own default
+(`provider: deepseek-official`) and every model call in the container dies with
+
+```
+llm-deepseek: no API key for provider route "deepseek-official"
+```
+
+— while the UI, the dashboard and the approval panel all look perfect.
+
 Open `http://127.0.0.1:3090/?token=...` — host port **3090** maps to the
 container's relay port **8099**, which forwards to the UI on `127.0.0.1:3099`
 inside the container (see the port-binding section for why the relay exists).
