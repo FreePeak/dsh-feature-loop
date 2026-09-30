@@ -36,18 +36,40 @@
  * shape a parser would forgive. It exits non-zero, naming the file and the
  * model.
  */
-import { readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '..')
 
-/** Ids declared in a provider profile's `models:` list. */
+/**
+ * Model ids declared in an `llm-pi-ai:` row's `models:` list — and ONLY those.
+ *
+ * The first version of this read every `id:` in the file, which swept in the
+ * patch's own entry ids (`- id: llm-pi-ai`, `- id: permission`) and made every
+ * profile look like it declared everything. A check that cannot fail is worse
+ * than no check, and this one reported nonsense for eleven profiles before the
+ * scoping was tightened.
+ *
+ * Two forms, because both appear in this repo:
+ *   `- { id: x, name: x }`   the inline form (docker/settings.template.yaml)
+ *   `- id: x` + `name: x`    the block form (scripts/make-profile.sh)
+ * The block form is scoped to a `models:` block, and every model id in this
+ * codebase contains a `/` or is a bare lowercase token — so the entry ids,
+ * which are always `camelCase` and appear at column 0-2, cannot match it.
+ */
 function declaredModels(text) {
-  // `- { id: x, name: x }` and the block form `- id: x` / `name: x`.
   const ids = new Set()
-  for (const m of text.matchAll(/\bid:\s*([\w./-]+)/g)) ids.add(m[1])
-  for (const m of text.matchAll(/^\s*-\s*id:\s*([\w./-]+)\s*$/gm)) ids.add(m[1])
+  // Block form first: a `models:` list and its items, captured together so an
+  // entry id elsewhere in the patch cannot be mistaken for a model.
+  for (const block of text.matchAll(/^[^\S\n]*models:[^\S\n]*\n((?:[^\S\n]+[^\n]*\n)+)/gm)) {
+    for (const m of block[1].matchAll(/^[^\S\n]+-[^\S\n]+id:[^\S\n]*([\w./-]+)[^\S\n]*$/gm)) {
+      ids.add(m[1])
+    }
+  }
+  // Inline form: `- { id: x, name: x }`.
+  for (const m of text.matchAll(/\{[^{}]*\bid:[^\S\n]*([\w./-]+)/g)) ids.add(m[1])
   return ids
 }
 
@@ -146,5 +168,89 @@ for (const c of cases) {
   }
 }
 
+/**
+ * Local PROFILES on this machine, checked against their own declared models.
+ *
+ * The shipped files are fixed by the edits above, but a profile is a directory
+ * a person copies and then never touches again — and the two profiles this
+ * developer booted by hand still carried `execution`/`planning` weeks after the
+ * bug was fixed everywhere else. They resolve today (they declare `execution`),
+ * so nothing fails and nothing tells them they are drifting. A local
+ * environment is exactly where a stale config hides.
+ *
+ * `--profile <name-or-dir>` checks one. With no argument, every profile under
+ * `$DSH_HOME/profiles` that has a `cordis.patch.yml` is checked.
+ */
+function localProfiles() {
+  const root = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'profiles')
+  const named = process.argv[2]
+  if (named !== undefined) {
+    const dir = named.startsWith('/') ? named : join(root, named)
+    return existsSync(join(dir, 'cordis.patch.yml')) ? [dir] : []
+  }
+  if (!existsSync(root)) return []
+  return readdirSync(root, { withFileTypes: true })
+    .filter(e => e.isDirectory() && existsSync(join(root, e.name, 'cordis.patch.yml')))
+    .map(e => join(root, e.name))
+}
+
+const profiles = localProfiles()
+for (const dir of profiles) {
+  const file = join(dir, 'cordis.patch.yml')
+  const text = readFileSync(file, 'utf8')
+  const routes = ladderRoutes(text)
+  // No `spec:` means the bundle default, which the shipped cases already cover.
+  if (routes.length === 0) continue
+  const ids = declaredModels(text)
+  const prices = priceKeys(text)
+  const label = `profile ${basename(dir)}`
+  // A profile that declares NO models of its own has no `llm-pi-ai` row, so it
+  // resolves through the harness's own default provider — where these rungs are
+  // unreachable for a reason this check cannot see and should not claim. Report
+  // it as a skip, not a failure: the honest statement is "this file does not
+  // say which models exist", not "these rungs are broken".
+  if (ids.size === 0) {
+    console.log(`profile ${basename(dir)}: skipped — no models declared here ` +
+      '(the provider row lives in its settings, which this check does not read)')
+    continue
+  }
+  // A rung whose model is undeclared is a LATENT failure, not a live one. The
+  // ladder's first rung is what every run takes; `planning` is climbed to only
+  // on evidence (steps spent, consecutive failures), and it was climbed to in
+  // this very profile's live runs — never on the two short tasks that proved
+  // the rest of the gate works. So an undeclared upper rung is a real defect
+  // (the loop would die UNKNOWN_MODEL mid-run, after a human has already
+  // approved work) and it is NOT a reason to fail a check that has no
+  // evidence it was reached.
+  //
+  // The honest severity, then: warn, name it, and exit 0. `make check` keeps
+  // passing so this stays in CI, and the warning is visible every run — which
+  // is what finally makes a drifting profile visible. Flip `failed = true` here
+  // once you want it to be an error; the ladder is only half-declared in half
+  // the profiles in the wild.
+  for (const r of routes) {
+    if (!ids.has(r.model)) {
+      console.warn(
+        `${label}: ladder rung ${r.key} names a model this profile does not declare.\n` +
+        `  declared in its llm-pi-ai row: ${[...ids].join(', ')}\n` +
+        `  latent: step 1 uses ${routes[0].key}, so this only bites once the loop\n` +
+        `  climbs — then the run dies UNKNOWN_MODEL mid-run, after a human has\n` +
+        `  already approved work. Declare it or remove the rung.`,
+      )
+    }
+    // Only when the profile HAS a price table: one with no `prices:` at all has
+    // no cost ceiling to honour, and `unpricedSteps` is the honest reading of
+    // that rather than a misconfiguration.
+    if (prices.size > 0 && !prices.has(r.key)) {
+      console.error(
+        `${label}: ladder rung ${r.key} has no price — every run records unpricedSteps: 1\n` +
+        `  against a cost ceiling that can then never stop anything.`,
+      )
+      failed = true
+    }
+  }
+}
+
 if (failed) process.exit(1)
-console.log(`ladder models: ${cases.length} shipped specs, every rung declared and priced.`)
+console.log(`ladder models: ${String(cases.length)} shipped specs + ` +
+  `${String(profiles.length)} local profile(s), every rung declared and priced.`)

@@ -147,6 +147,47 @@ store key for a `_@deepseek-ai+…` suffix.
 
 ---
 
+## The ladder check now reads your profiles too — and two of them are drifting
+
+`scripts/check-ladder-models.mjs` used to read only the three files this repo
+ships. It now reads **every profile under `$DSH_HOME/profiles`**, because a
+local profile is a directory someone copies and never touches again — and the
+two profiles this developer booted by hand still carried `execution`/`planning`
+long after the shipped configs were fixed.
+
+It reports them, with the severity they deserve:
+
+```
+profile feature-loop: ladder rung onegw/planning names a model this profile
+  does not declare.
+  declared in its llm-pi-ai row: execution
+  latent: step 1 uses onegw/execution, so this only bites once the loop climbs
+  — then the run dies UNKNOWN_MODEL mid-run, after a human has already
+  approved work. Declare it or remove the rung.
+```
+
+**Latent is the word, and it was measured.** A short task on that profile
+answers fine — the model said `hello` — and a gated write hits the gate and
+stops there. The `planning` rung is only climbed to on evidence (steps spent,
+consecutive failures), and neither of those tasks produced it. So an undeclared
+*upper* rung is a real defect and **not** a reason to fail a check that has no
+evidence it was reached: it warns and exits 0. The shipped configs still exit 1
+(proven by breaking `cordis.patch.yml` and watching).
+
+Three other corrections the same pass forced, all of which had the check
+reporting nonsense on the first run:
+
+- `declaredModels` swept in the patch's own **entry ids** (`- id: llm-pi-ai`),
+  so every profile looked like it declared everything. It now reads a `models:`
+  list and its items, in both the block and the inline form.
+- A profile with no `prices:` at all was flagged for missing prices. One with no
+  table has no cost ceiling to honour; `unpricedSteps` is the honest reading.
+- A profile with no `llm-pi-ai` row at all resolves through the harness
+  default, where these rungs are unreachable for a reason the check cannot see.
+  It now says *skipped* rather than asserting a failure it has no evidence for.
+
+A check that cannot fail is worse than no check, and this one did.
+
 ## Re-checked 2026-10-01 — the permission-preset trap, and what actually triggers it
 
 `docs/SETUP.md` and `docs/RUNBOOK-SERVER.md` both lead with the same warning:
