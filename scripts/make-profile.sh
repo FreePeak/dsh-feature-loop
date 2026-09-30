@@ -259,4 +259,26 @@ Next:
 Then read the two token lines in the log:
   dsh web: http://127.0.0.1:$PORT/?token=...
   feature-loop dashboard: http://127.0.0.1:$DASH/?token=...
+
+TWO THINGS BEFORE YOUR FIRST LOOP — both are silent, both were found by
+running this (2026-10-01, against DSH 0.2.0-rc.1):
+
+1. ONEGW_API_KEY must be in the ENVIRONMENT that boots the server. The profile
+   references it by name (apiKeyEnv), so the key is never written into the
+   profile — and a server started without it boots perfectly, serves both
+   surfaces, records the run on the dashboard, and then fails the first model
+   call with:
+       llm-pi-ai: no credential for provider route "onegw"
+   which reads as a plugin failure and is not one.
+
+       ONEGW_API_KEY=sk-... node "$CLI" --profile $NAME --port $PORT --no-open
+
+   or start it from a shell that already exports it.
+
+2. Add a Workspace. A new DSH home has none, and the Feature Loop page says
+   so — correctly, because guessing which checkout to write into is the wrong
+   default:
+       No workspace is registered yet — open a project folder, then start the loop.
+   Use the sidebar's **Add workspace**. Once one exists every run is: type a
+   task, press **Start loop**, click **Allow once**.
 EOF
