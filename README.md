@@ -254,12 +254,22 @@ is in the boot graph, and nothing is gated.
 [`docs/KNOWN-ISSUES.md` §4](docs/KNOWN-ISSUES.md), and
 [`docs/SETUP.md`](docs/SETUP.md) §Step 2.
 
-Once it is running, a gated step **prompts you in the browser**: the composer
-shows the reason with **Reject** / **Allow once**, and your answer decides
-whether the tool runs. **This has been observed end to end** — a real browser
-rendered this plugin's own `REVIEW REQUESTED` reason, **Allow once** wrote the
-file, and **Reject** on the same prompt wrote nothing:
-[`docs/VERIFY-E2E-APPROVAL.md`](docs/VERIFY-E2E-APPROVAL.md). You are not writing that UI — it ships with DSH as
+Once it is running, a gated step **prompts you on the Feature Loop page**:
+the card shows the reason with **Reject** / **Allow once**, and your answer
+decides whether the tool runs. **Observed end to end on the current build**,
+against a real model, in a real browser, in both directions:
+
+```
+$ make e2e-in-ui DSH_URL='http://127.0.0.1:4188/?token=…'
+e2e-in-ui (allow): Allow once → the file exists at …/dsh-feature-loop/proof.txt
+e2e-in-ui (reject): Reject → no file at …/dsh-feature-loop/proof.txt
+```
+
+That script drives the path a person takes — dismiss the harness's Preview
+Notice, click **Feature Loop** in the sidebar, type a task, press **Start
+loop**, click the card's own button — and asserts the disk. Transcript and
+frames: [`docs/VERIFY-E2E-APPROVAL.md`](docs/VERIFY-E2E-APPROVAL.md). You are
+not writing that UI — it ships with DSH as
 `@deepseek-ai/dsh-client-ui-approval`; the plugin's job is to emit `ask` so it
 gets reached.
 

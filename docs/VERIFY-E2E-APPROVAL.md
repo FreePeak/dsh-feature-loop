@@ -1,10 +1,68 @@
 # END-TO-END — a human approved a gated step in the real Web UI
 
-**Status: PASS. Observed in a real browser, on the containerised deployment.**
+**Status: PASS. Observed in a real browser, on the containerised deployment,
+and again on 2026-10-01 against a local profile with the current build.**
 
 This closes the last link of the human-in-the-loop objective. Every prior
 verification covered something *behind* the panel; this one drives the panel
 itself and clicks the button.
+
+---
+
+## Re-run 2026-10-01 — the in-UI page, current build, local profile
+
+The containerised run below predates the assistant-ui migration and the
+`always-approve` default, and its reason string is the OLD one
+(`needs a confidence estimate and none was available`). This is the same claim
+against the current build, and it is now a script: `test/e2e-in-ui.mjs`
+(`make e2e-in-ui`).
+
+```bash
+# terminal 1
+node ~/work/harvey/freepeak/deepseek-harness/apps/cli/lib/bin.js \
+  --profile feature-loop --port 4188 --no-open
+# terminal 2 — paste the `dsh web:` line, token included
+make e2e-in-ui DSH_URL='http://127.0.0.1:4188/?token=…'
+```
+
+The whole human path, with nothing scripted inside it: open the UI, dismiss the
+harness's Preview Notice, click **Feature Loop** in the sidebar, type a task,
+press **Start loop**, then click the card's own button.
+
+| | Allow once | Reject |
+|---|---|---|
+| Target the page named | `Runs in “dsh-feature-loop” — …/dsh-feature-loop` | same |
+| Card | `APPROVAL REQUIRED` · `write` · `REVIEW REQUESTED (policy): write: irreversible is always approved by a human.` | same |
+| Click | Allow once | Reject |
+| Approval thread after | `0` — `No pending approval requests.` | `0` |
+| File on disk | **exists**, contents `hello` | **absent** |
+
+Verbatim tails:
+
+```
+e2e-in-ui (allow): Allow once → the file exists at …/dsh-feature-loop/proof.txt
+e2e-in-ui (reject): Reject → no file at …/dsh-feature-loop/proof.txt
+```
+
+Frames: [`evidence/in-ui-allow.png`](evidence/in-ui-allow.png),
+[`evidence/in-ui-reject.png`](evidence/in-ui-reject.png).
+
+Three things this run taught, which no earlier check recorded:
+
+- **The harness's Preview Notice blocks the sidebar.** A fresh instance puts a
+  modal over `Feature Loop`, so a first click does nothing and reads as a dead
+  button. The script dismisses it, and a person has to find it too.
+- **The card's button is stable.** An earlier probe saw
+  `element was detached from the DOM, retrying` and never landed; measuring node
+  identity directly showed **0 replacements in 20s** of the page's own polling,
+  so that was the harness of the probe, not the page. Worth recording because
+  the symptom looks exactly like a re-render race and is not one.
+- **The target is the OPENED Workspace, and it is the main checkout.** Running
+  the script from a git worktree still wrote to the repository root — because
+  that is what the page said it would do (`Runs in “dsh-feature-loop” — …`),
+  which is the whole point of the note. The file landed where the UI said it
+  would, and the script deletes it afterwards so a stale one cannot make the
+  next run pass for free.
 
 ---
 
