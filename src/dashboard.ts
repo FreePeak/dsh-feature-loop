@@ -771,7 +771,13 @@ export function startDashboard(
     return timingSafeEqual(a, b)
   }
 
-  /** Token from the header everywhere; query also accepted on GETs only. */
+  /**
+   * Token from the header, or from `?token=` when `allowQuery` is true.
+   * Settle POSTs pass `allowQuery: true` too: the route is already token-gated
+   * and `sameOrigin` still blocks cross-origin browsers, so rejecting a valid
+   * query token only taught scripted clients a 401 that looked like a wrong
+   * secret rather than a wrong mechanism (KNOWN-ISSUES §5).
+   */
   const authorized = (req: IncomingMessage, url: URL, allowQuery: boolean): boolean => {
     const header = req.headers['x-dashboard-token']
     if (tokenMatches(Array.isArray(header) ? header[0] : header)) return true
@@ -849,8 +855,15 @@ export function startDashboard(
     })
   }
 
-  const approve = async (req: IncomingMessage, res: ServerResponse, id: string): Promise<void> => {
-    if (!authorized(req, new URL('/', 'http://x'), false)) return deny(res)
+  const approve = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    id: string,
+    url: URL,
+  ): Promise<void> => {
+    // Pass the real request URL so `?token=` works the same as on GET routes.
+    // Header still wins when present; query is the scripted-client path.
+    if (!authorized(req, url, true)) return deny(res)
     if (!sameOrigin(req)) return sendJson(res, 403, { error: 'cross-origin approval denied' })
     let body: unknown
     try {
@@ -937,7 +950,12 @@ export function startDashboard(
       return serveAsset(res, url.pathname)
     }
     if (method === 'POST' && url.pathname.startsWith('/api/approvals/')) {
-      return approve(req, res, decodeURIComponent(url.pathname.slice('/api/approvals/'.length)))
+      return approve(
+        req,
+        res,
+        decodeURIComponent(url.pathname.slice('/api/approvals/'.length)),
+        url,
+      )
     }
     // Deliberately NO `POST /api/apply` — and no GET for it either. Applying
     // a recommendation means a human copying its config snippet into their

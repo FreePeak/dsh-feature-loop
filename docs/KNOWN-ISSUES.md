@@ -51,6 +51,21 @@ the remote mount.
 **Fix:** the tag is owned by an `ctx.effect` with a `remove()` teardown, the
 same ownership the host's own theme sheets use. PR #23.
 
+### 5. `POST /api/approvals/:id` ignored the query token
+
+**Observed:** a scripted approval using `?token=…` got
+`401 missing or invalid dashboard token` while every read route accepted the
+same query token.
+
+**Why:** the settle route called `authorized(req, new URL('/', 'http://x'), false)`
+— a placeholder URL with `allowQuery: false` — so the real `?token=` was discarded
+and only `x-dashboard-token` worked.
+
+**Fix:** `approve` now receives the request URL and passes `allowQuery: true`.
+Header still wins when present; `sameOrigin` still blocks cross-origin browsers.
+Covered by `test/dashboard.test.ts` ("POST settle accepts ?token= without the
+header").
+
 ### 7. The dashboard page was only a watcher half the time
 
 **Observed:** an approval raised while the Feature Loop page was open and
@@ -128,25 +143,6 @@ store key for a `_@deepseek-ai+…` suffix.
 ---
 
 ## Open — product warts
-
-### 5. `POST /api/approvals/:id` ignores the query token
-
-**Observed:** a scripted approval using `?token=…` got
-`401 missing or invalid dashboard token` while every read route accepted the
-same query token.
-
-**Why:** the settle route calls `authorized(req, url, false)` — `allowQuery` is
-`false` — so it takes the token from the `x-dashboard-token` header only. The
-read routes pass `true`.
-
-**Why it matters:** the two halves of one tiny API disagree about how to
-authenticate, and the failure mode is a 401 that looks like a wrong token rather
-than a wrong *mechanism*. Any non-browser client has to know the difference.
-
-**Suggested fix:** accept the query token here too (the route is token-gated
-already, and `sameOrigin` still guards the state change), or document the header
-requirement in the runbook. Not changed here — it alters the security posture of
-a state-changing route and deserves its own review.
 
 ### 6. Only an SSE client counts as a "watcher"
 
