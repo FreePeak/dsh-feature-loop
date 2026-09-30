@@ -284,6 +284,40 @@ that asked for 32px: `shell.css` still had a bare `button` rule. That rule is
 invisible to `css-scope.test.ts` — it is anchored — so `test/css-parity.test.ts`
 is what holds it gone.
 
+### The page was taller than the window on every small window
+
+**Observed:** at a small window the page needed scrolling to reach the approval
+card, and the plugin page behaved differently from the harness's own pages in the
+same column.
+
+**Why:** `shell.css` sized three page-height rules in `vh`. The page is the
+centre COLUMN, so the window's height is not the page's height — the window also
+carries the host's sidebar (56px collapsed, 280px open) and the frame's top
+clearance, and that gap widens as the window narrows. Two of the three were
+floors, and a floor is the worst direction for this: the approval thread's
+`min-height: min(70vh, 720px)` resolved to 334px at a 480x560 window with the
+page's furniture already taking 384px above it, leaving 176px of the thread
+visible. (`min()` also took the SMALLER of its two arguments, so the `720px`
+ceiling applied only below a 1029px-tall window — the range where a ceiling was
+least needed, and the floor dominated everywhere else.)
+
+**Fix:** the thread floor is `min(420px, 60cqh)`, the sticky columns take
+`100cqh`, and the page root declares `container-type: size` so a container height
+is queryable at all. Measured after: the thread is fully above the fold at
+1280x760, 1024x700 and 820x700; at 480x560 the page scrolls to the rest, which is
+what a page that is taller than the window should do.
+
+**What is NOT the plugin's problem, and was worth measuring before changing
+anything:** below 1024px the harness auto-collapses its sidebar to a 56px rail
+(`ui-layout/src/client/stores.ts`, `SIDEBAR_AUTO_COLLAPSE`), which leaves the
+centre column ~460px at a 520px window. Below ~600px of window the column is
+narrower than the harness's own `CENTER_MIN` of 400px and the page's own
+`clamp(24px, 4vw, 48px)` gutter starts to dominate. The harness's own pages
+behave the same way there — the conversation page and the plugin manager were
+both measured in the same 240px and 200px columns, and both overflow. The
+plugin's page gutter is deliberately the harness's own, so it is not narrowed
+here to compensate for a frame the harness itself does not support at that size.
+
 ### Still unverified
 
 - Nothing in the two sections above. The last open item from §"Still

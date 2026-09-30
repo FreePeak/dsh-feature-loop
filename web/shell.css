@@ -265,8 +265,14 @@ body.fl-standalone {
    start control and the settings form sit outside it, so their own responsive
    rules (`@container fl-dashboard (max-width: 520px)`) could never match and the
    narrow layout silently never applied. One page, one container. */
+/* `size`, not `inline-size`: the thread's height floor below is a `cqh` query,
+   and `inline-size` publishes no height to resolve it against, so the floor
+   would be invalid and the thread would size to its content. The usual risk of
+   a size container — height growing with content — cannot apply here: the page
+   is `height: 100%` (plugin.css) and scrolls internally, so its height is
+   decided by the window and never by what is in it. */
 .fl-page {
-  container-type: inline-size;
+  container-type: size;
   container-name: fl-dashboard;
 }
 
@@ -286,14 +292,25 @@ body.fl-standalone {
     grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
     gap: 20px;
   }
+  /* `cqh`, not `vh`: a sticky column fills the height of the thing it is
+     sticky within, and that thing is the PAGE, not the window. `100vh` here
+     made a column taller than its own scroll container by the height of the
+     host's sidebar rail and the frame's top clearance — which is the page
+     growing a scrollbar it did not have. `top` keeps `var(--header-h)`: sticky
+     is genuinely a window concept, and on this page the header is the
+     standalone page's own bar. */
   .sidebar {
     position: sticky;
     top: calc(var(--header-h) + 12px);
-    height: calc(100vh - var(--header-h) - 28px);
-    max-height: calc(100vh - var(--header-h) - 28px);
+    height: calc(100cqh - var(--header-h) - 28px);
+    max-height: calc(100cqh - var(--header-h) - 28px);
     overflow: hidden;
   }
-  .rail { grid-column: 1 / -1; max-height: 70vh; overflow: hidden; }
+  /* No `70vh` here: a viewport unit capping a page-height element is wrong at
+     every width, and at this one the rail is a full-width row under the thread
+     rather than a column beside it. The pane scrolls inside itself instead
+     (`min-height: 0` + the pane's own scroller). */
+  .rail { grid-column: 1 / -1; max-height: none; overflow: hidden; }
 }
 
 /* Three columns: workspaces · thread · runs, each in its own track. */
@@ -306,8 +323,8 @@ body.fl-standalone {
     grid-column: auto;
     position: sticky;
     top: calc(var(--header-h) + 12px);
-    height: calc(100vh - var(--header-h) - 28px);
-    max-height: calc(100vh - var(--header-h) - 28px);
+    height: calc(100cqh - var(--header-h) - 28px);
+    max-height: calc(100cqh - var(--header-h) - 28px);
     overflow: hidden;
   }
 }
@@ -688,8 +705,35 @@ details.help {
 .hitl-thread-root {
   display: flex;
   flex-direction: column;
-  min-height: min(70vh, 720px);
-  max-height: calc(100vh - var(--header-h) - 120px);
+  /* A floor, in CONTAINER height, and deliberately small.
+     `min(70vh, 720px)` was three things wrong at once, and they compound:
+       1. `vh` describes the WINDOW; this page is the CENTRE COLUMN, so the
+          window's height overstates the space available by the host's sidebar
+          rail and the frame's top clearance — a margin that grows as the window
+          narrows, which is exactly backwards;
+       2. it is a FLOOR, so on a short window the thread claimed its height
+          before the start control and the tab row were given any. Measured at
+          480x560: the thread was 334px tall with 176px above the fold, and the
+          approval card — the reason a person is on this page — sat under it;
+       3. `min()` takes the SMALLER of its arguments, so `min(70vh, 720px)` was
+          720px on every window taller than 1029px and `70vh` below that: the
+          ceiling the author wrote existed only in the range where it was least
+          needed, and the floor dominated everywhere else.
+     A floor is still wanted — an empty thread with no composer is not a usable
+     dashboard — but it has to yield to the page. `min(420px, 60cqh)` is at most
+     420px, and at most 60% of the page's OWN height, which leaves the rest to
+     the start control, the tab row and the page's scroll.
+     The host's conversation page needs no floor at all: its column is
+     `height: 100%` and its scroller is `flex: 1; min-height: 0`
+     (`ui-conversation/src/client/skeleton/ConversationRoot.module.css`). This
+     page cannot use that shape while the start control, the tab row and the
+     settings form share the same column, so the floor is explicit here — and
+     explicit, small, and container-relative is the whole contract.
+     `max-height: none` was `calc(100vh - …)`, the same window-versus-column
+     error on the other side: a ceiling in viewport units is not a ceiling on
+     anything on this page. */
+  min-height: min(420px, 60cqh);
+  max-height: none;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: calc(var(--radius-chat) + 4px);

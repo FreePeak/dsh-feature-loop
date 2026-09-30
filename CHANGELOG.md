@@ -37,6 +37,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The page no longer measures itself in viewport units.** `shell.css` sized
+  three page-height rules in `vh`, which is the wrong axis for a page that is
+  the harness's *centre column*: the window also carries the host's sidebar rail
+  and the frame's top clearance, so `vh` overstates the space the page has — by a
+  margin that grows as the window narrows. The worst was the approval thread's
+  floor, `min-height: min(70vh, 720px)`, which is a floor rather than a ceiling:
+  at a 480x560 window it resolved to 334px with only 176px above the fold, so the
+  approval card — the reason a person is on the page — sat below it. It is now
+  `min(420px, 60cqh)`: a floor of at most 420px and at most 60% of the page's
+  own height, with the rest left to the start control, the tab row and the page's
+  scroll. The two sticky columns take `100cqh` for the same reason, and the
+  container is declared `container-type: size` so a height query has a height to
+  resolve against. Measured after the fix, the thread is fully above the fold at
+  1280x760, 1024x700 and 820x700, and the page scrolls to the rest at every
+  width; the harness's own conversation page was the control in the same
+  squeeze and does not overflow at 440px either.
 - **The plugin page is now drawn with the harness's own metrics.** The colours
   were already bound to `--dsw-alias-*`; the geometry was not, and it showed.
   Measured on a live instance, against the harness's own pages:

@@ -256,6 +256,46 @@ test('no hardcoded colour is left in the two page stylesheets', () => {
   }
 })
 
+test('no page-height rule is measured in viewport units', () => {
+  // A `vh` in a page-height rule is wrong on this page for one specific reason:
+  // the page is the CENTRE COLUMN, not the window. The window also carries the
+  // host's sidebar (56px collapsed, 280px open), the frame's top clearance, and
+  // the window's own chrome — so `vh` overstates the space the page has by a
+  // margin that grows as the window narrows, which is exactly backwards.
+  //
+  // Measured on a live instance at 480x560: `.hitl-thread-root` declared
+  // `min-height: min(70vh, 720px)`, resolved to 334px, and sat with 176px above
+  // the fold — the approval card, the reason a person is on the page, below it.
+  // With the floor expressed in `cqh` the same window shows 60% of the page's
+  // own height and the rest of the page scrolls to the rest.
+  //
+  // `100vh` in a STICKY offset (`top: calc(var(--header-h) + …)`) is a different
+  // thing and stays: it positions a sticky column against the window, which is
+  // what sticky means. So the assertion is on height, not on every `vh`.
+  const heightVh = /(?:^|[;{])\s*(?:min-|max-)?height\s*:\s*[^;}]*?\d*\.?\d+v(?:h|min|max)\b/g
+  for (const [name, css] of [['shell.css', shellCss], ['plugin.css', pluginCss]] as const) {
+    const body = stripComments(css)
+    const hits: string[] = []
+    for (const match of body.matchAll(heightVh)) {
+      hits.push(`${name}: ${body.slice(Math.max(0, match.index! - 10), match.index! + match[0].length).replace(/\s+/g, ' ').trim()}`)
+    }
+    assert.deepEqual(hits, [], `viewport units in a height: the page is the column, not the window\n  ${hits.join('\n  ')}`)
+  }
+  // And the thread's floor must actually be the container-relative one.
+  assert.match(
+    rule(shellCss, '.hitl-thread-root'),
+    /min-height:\s*min\(\d+px, \d+cqh\)/,
+    'the thread floor must be a container-height query, in both axes of its min()',
+  )
+  // A size container is what publishes `cqh` at all: `inline-size` alone leaves
+  // the height query invalid and the whole declaration is dropped.
+  assert.match(
+    rule(shellCss, '.fl-page'),
+    /container-type:\s*size/,
+    'a `cqh` floor needs container-type: size — inline-size publishes no height',
+  )
+})
+
 test('the page uses the harness scrollbar skin rather than a second one', () => {
   // ui-theme/src/styles/scrollbar.css styles every ::-webkit-scrollbar* in the
   // document. shell.css drew its own 8px accent-gradient thumb with its own
