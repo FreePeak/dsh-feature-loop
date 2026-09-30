@@ -388,6 +388,54 @@ test('POST validation: no token 401, cross-origin 403, bad outcome 400, bad body
   assert.equal(await pending, 'allowed-once')
 })
 
+test('every route takes the query token, the settling one included', async (t) => {
+  // KNOWN-ISSUES §5. The settle route used to require the HEADER while every
+  // read route accepted `?token=` too, so the two halves of one five-route API
+  // disagreed about how to authenticate and the failure was a 401 that read
+  // as "wrong token" when it meant "wrong mechanism".
+  const { dash } = await started(t)
+  const close = await connectSse(dash)
+  t.after(close)
+
+  const pending = dash.answer(QUESTION, delegatingNext().next)
+  const { id } = (await getState(dash)).pending[0] as { id: string }
+
+  const res = await fetch(
+    `${dash.url}api/approvals/${encodeURIComponent(id)}?token=${encodeURIComponent(dash.token)}`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: new URL(dash.url).origin },
+      body: JSON.stringify({ outcome: 'allowed-once' }),
+    },
+  )
+  assert.equal(res.status, 200)
+  assert.equal(await pending, 'allowed-once')
+
+  // Query auth is not a hole: no token at all is still a 401, and a browser
+  // from another origin is still a 403 even when it holds the query token.
+  const second = dash.answer(QUESTION, delegatingNext().next)
+  const next = (await getState(dash)).pending[0] as { id: string }
+  assert.equal(
+    (await fetch(`${dash.url}api/approvals/${next.id}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ outcome: 'rejected' }),
+    })).status,
+    401,
+  )
+  assert.equal(
+    (await fetch(`${dash.url}api/approvals/${next.id}?token=${encodeURIComponent(dash.token)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'http://evil.example' },
+      body: JSON.stringify({ outcome: 'rejected' }),
+    })).status,
+    403,
+    'the query token must not buy a cross-origin state change',
+  )
+  assert.equal((await post(dash, next.id, 'rejected', { token: dash.token })).status, 200)
+  assert.equal(await second, 'rejected')
+})
+
 test('an abort (the ask was withdrawn) cancels the pending approval', async (t) => {
   const { dash } = await started(t)
   const close = await connectSse(dash)
@@ -877,12 +925,17 @@ test('absent metrics/recommendations still produce a valid snapshot shape', asyn
   const { dash } = await started(t)
   const snapshot = await getState(dash)
   // Exact key set: absent surfaces are absent keys, never zeroed numbers
-  // that would read as "measured, and it is all fine".
+  // that would read as "measured, and it is all fine". `watching` is the one
+  // addition — a `/api/state` poll is itself the heartbeat that makes this
+  // caller eligible to answer, so it is always true on the response that
+  // carries it. (The SSE frame is the other place `snapshot()` is served, and
+  // it does NOT carry the key: nothing has proven a watcher at that point.)
   assert.deepEqual(snapshot, {
     answers: true,
     pending: [],
     runs: [],
     feed: [],
+    watching: true,
   })
 })
 
@@ -936,6 +989,32 @@ test('an SSE client is a watcher while open, and stops being one when the last t
   disconnect()
   await delay(50)
   assert.equal(watcherActive(), false, 'the last tab going releases the claim')
+})
+
+/**
+ * KNOWN-ISSUES §6: a client that polls `/api/state` is watching, even though it
+ * holds no stream. It used not to count, so a headless run was told "no
+ * approval channel is available" while its own poller sat right there — and
+ * the only way to learn it was ineligible was to watch a gate refuse an ask.
+ */
+test('a /api/state poll counts as a watcher and says so', async (t) => {
+  clearWatcher()
+  t.after(clearWatcher)
+  const { dash } = await started(t, { host: '127.0.0.1', answers: true })
+  assert.equal(watcherActive(), false, 'starts unwatched')
+  const state = await getState(dash)
+  assert.equal(watcherActive(), true, 'a poll is the heartbeat a stream would have been')
+  assert.equal(state.watching, true, 'and the response says the client is eligible to answer')
+
+  // `answers: false` means observe-only: the page may render, but the registry
+  // must not let it claim, so it never registers a heartbeat and `watching`
+  // stays false. That is the field's whole job — it answers "if I POST an
+  // answer right now, am I eligible to have it counted?".
+  clearWatcher()
+  const { dash: observer } = await started(t, { host: '127.0.0.1', answers: false })
+  const seen = await getState(observer)
+  assert.equal(seen.answers, false, 'observe-only stays observe-only')
+  assert.equal(seen.watching, false, 'and reports itself ineligible to answer')
 })
 
 // ── the watcher TTL and the page poll must not drift apart ─────────────────

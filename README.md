@@ -866,7 +866,7 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 ### Verifying the whole thing
 
 ```bash
-node --experimental-strip-types --test test/*.test.ts   # 296 pass
+node --experimental-strip-types --test test/*.test.ts   # 396 pass
 pnpm test:integration                                   # 9 pass, in the real harness
 tsc --noEmit                                            # clean
 bash demo/run.sh                                        # goal-met
@@ -900,6 +900,14 @@ approving runs the write and rejecting stops it. See
   dispatched **ungated**. An agent-less call now gets a shared policy and is
   gated like any other; the refusal happens downstream, where the harness denies
   an agent-less `ask`. Caught by independent verification, not by CI.
+
+Each of these is a *wiring* defect, and that is the class worth naming: the
+policy each one broke is unit-tested, the wiring that connects it was not.
+`test/plugin-wiring.test.ts` drives the three extension points the harness does,
+in the harness's own payload shape, and asserts the consequences — the gate
+decides before dispatch, the agent-less path is still gated, a blocked call
+becomes an error observation, both ceilings stop the run, the ladder routes.
+It exists because a policy can be perfect and still never be consulted.
 
 ---
 
