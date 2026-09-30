@@ -166,127 +166,130 @@ grep -c "export {" lib/index.mjs && grep -o "apply" lib/index.mjs | head -1
 
 ---
 
-## Step 2 — Create a scratch profile
-
-**Do not test in your working `web` profile.** Make a throwaway one; if the
-plugin misbehaves, you delete a directory instead of repairing your daily setup.
+## Step 2 — Create the profile (one command)
 
 ```bash
-cd ~/.dsh/profiles
-mkdir -p fltest && cd fltest
-
-# Copy the profile scaffolding (an empty root + your user patch layer).
-cp ../web/cordis.yml          cordis.yml
-cp ../web/pnpm-workspace.yaml pnpm-workspace.yaml
-cp ../web/cordis.patch.yml    cordis.patch.yml
+bash scripts/make-profile.sh fltest
 ```
 
-Now the profile manifest. This lists the bundles that compose the profile, in
-order — note that **both** the team bundles and the feature-loop plugin are
-present:
+That writes `~/.dsh/profiles/fltest/` (manifest, pnpm settings, patch layer),
+runs the install, prints the resolved plugin row, and ends with the boot
+command. It encodes five things this guide used to have to state one by one,
+each of which is a silent failure when you get it wrong:
+
+1. **The plugin must be in `dsh.profile.bundles`.** A dependency alone composes
+   nothing — which is exactly why the `web` profile can list the plugin as a
+   dependency and still run an ordinary, ungated agent loop.
+2. **The profile must also depend on a harness bundle**, or the plugin's
+   optional `peerDependencies` never resolve and the plugin is inert:
+   `ERR_MODULE_NOT_FOUND: @deepseek-ai/dsh-llm`, the fiber never constructs,
+   `apply()` never runs. The row still composes and the client bundle is still
+   in the boot graph — `client-modules` reads `dsh.client` from `package.json`
+   on disk and never imports the module, so **a graph row is not proof**.
+3. **The harness packages are pinned in `pnpm.overrides`**, to the version the
+   harness checkout itself runs (read from it, not hardcoded). Without them the
+   install fails with the least readable error pnpm has:
+   `ERR_PNPM_NO_MATCHING_VERSION: No matching version found for @deepseek-ai/dsh-llm@>=0.1.5 <0.2.0`,
+   followed by `The latest release of @deepseek-ai/dsh-llm is "0.0.1-rc.1"` —
+   which is true and useless, because the version you want is published.
+4. **pnpm 9, always.** The lockfile is v9; `pnpm@11` silently re-resolves it and
+   drops the peer wiring, so the install succeeds and the plugin is inert.
+5. **The patch row is a REPLACE, not a merge.** The generated patch spells out
+   every key it keeps. A partial override — the natural thing to write when you
+   only want to change one policy — silently deletes `spec`, and a spec-less
+   policy builds no gate at all.
+
+It also prints the peer-resolution check, which reads the plugin's own entry in
+the lockfile:
+
+```
+==> peers resolved (10 harness packages on the plugin's entry)
+```
+
+Without that line the install still reports success and the plugin still does
+nothing. The script's full help:
 
 ```bash
-cat > package.json <<'JSON'
+bash scripts/make-profile.sh --help
+#   [name] [--port N] [--dashboard-port N] [--web|--headless]
+```
+
+**One port per process.** Each dsh process owns its own approval registry *and*
+its own dashboard, so the headless twin needs a different dashboard port from
+the web one:
+
+```bash
+bash scripts/make-profile.sh fltest-headless --headless --dashboard-port 8102
+```
+
+Pointing both at one port is a specific and confusing failure: the second boot
+logs `EADDRINUSE`, the gate fails closed with `no approval channel is
+available`, and a perfectly good dashboard sits open on the *other* port.
+
+### Doing it by hand instead
+
+If you would rather build it manually, the files are:
+
+```bash
+cd ~/.dsh/profiles && mkdir -p fltest && cd fltest
+cp ../web/cordis.yml       cordis.yml
+cp ../web/cordis.patch.yml cordis.patch.yml
+```
+
+```jsonc
+// package.json — the four rows that matter
 {
   "name": "dsh-profile-fltest",
   "private": true,
-  "dependencies": {},
+  "dependencies": {
+    "@deepseek-ai/dsh-experimental-agent-team-profile": "0.1.5-rc.3",
+    "@freepeak/dsh-feature-loop": "file:/path/to/dsh-feature-loop"
+  },
+  "pnpm": { "overrides": { "@deepseek-ai/dsh-llm": "<harness version>", "…": "…" } },
   "dsh": {
     "profile": {
       "bundles": [
         "@deepseek-ai/dsh-base",
         "@deepseek-ai/dsh-web-app",
-        "@deepseek-ai/dsh-experimental-agent-team-web-profile",
         "@deepseek-ai/dsh-experimental-agent-team-profile",
         "@freepeak/dsh-feature-loop"
-      ],
-      "patchReload": "live"
+      ]
     }
   }
 }
-JSON
 ```
 
-### Why both team bundles
+`pnpm-workspace.yaml` needs `autoInstallPeers: true` — the shipped profiles set
+it `false`, which is what makes a plugin-only profile inert — and the install
+must be `npx pnpm@9.15.9 install -w`. `-w` is required: a DSH profile is a
+single-package pnpm workspace root, and without it pnpm refuses with
+`ERR_PNPM_ADDING_TO_ROOT`.
 
-`agent-team-profile` inserts the team **service and tools**;
-`agent-team-web-profile` adds the **UI** for them. On a server profile you want
-both. The team layer also disables the older `subagent` / `subagent_fork` tools
-so that direct delegation goes through `spawn_teammate` instead — that is
-intentional, and it is why the delegation tool names change once teams are on.
+## Step 3 — (already done by Step 2)
 
-### The profile must also supply the plugin's two runtime peers
-
-This is the most expensive failure in
-[`KNOWN-ISSUES.md`](KNOWN-ISSUES.md) §4, and it is worth the two lines here.
-The built plugin imports two harness packages at runtime —
-`@deepseek-ai/dsh-llm` and `@deepseek-ai/dsh-typert-protocol` — and both are
-`peerDependencies`, both optional, and `.npmrc` sets `auto-install-peers: false`,
-so pnpm never installs them. A profile that depends on **nothing else** that
-pulls the harness therefore installs the plugin cleanly, composes it
-(`--dump-config` shows all three rows, and the client row is in the boot graph),
-and then does absolutely nothing: no gate, no review, no approval.
-
-Two details make this failure quiet, and both are worth knowing before you
-debug the wrong thing:
-
-- **A row in the boot graph is not proof the plugin works.** `client-modules`
-  reads `dsh.client` from `package.json` **on disk** and never imports the
-  module, so a plugin that cannot import still gets a graph row.
-- **The store key tells you whether the peers resolved.** pnpm encodes them in
-  the virtual-store directory name:
-
-  ```
-  @freepeak+dsh-feature-loop@file+…dsh-feature-loop                            # peers NOT resolved
-  @freepeak+dsh-feature-loop@file+…dsh-feature-loop_@deepseek-ai+c_q7p3s2fiohg… # peers resolved
-  ```
-
-The fix is one dependency: depend on a bundle that brings the harness packages
-into the profile's store. `@deepseek-ai/dsh-experimental-agent-team-profile`
-(which this guide already installs for Agent Teams) does. If you install the
-plugin alone, add it or another harness bundle explicitly.
-
-Two more gotchas when building such a profile by hand, both reproduced here:
-
-- **Use the same pnpm major as the lockfile.** `pnpm@11` silently re-resolved a
-  v9 lockfile and dropped the peer wiring. `npx pnpm@9.15.9 install
-  --frozen-lockfile` reproduced the working install.
-- **Boot a named profile without an app argument.** `bin.js --profile X --port N`
-  boots X's bundle tree. `bin.js web --port N` boots the default web app and
-  ignores the profile's bundles — the plugin composes in `--dump-config` and is
-  still never mounted.
-
----
-
-## Step 3 — Install the plugin into the profile
-
-Use the official command. It forwards to `pnpm` inside the profile directory.
+`scripts/make-profile.sh` performs the install itself, because the official
+command cannot do the one thing that matters:
 
 ```bash
-DSH=~/work/harvey/freepeak/deepseek-harness
-node "$DSH/apps/cli/lib/bin.js" plugin --profile fltest \
-  add -w file:~/work/harvey/freepeak/dsh-feature-loop
+node "$DSH/apps/cli/lib/bin.js" plugin --profile fltest add -w file:…
 ```
 
-> **`-w` is required.** Without it pnpm refuses with
-> `ERR_PNPM_ADDING_TO_ROOT`, because a DSH profile is a single-package pnpm
-> workspace root. This is the most common stumble in this setup.
-
-Expected:
-
-```
-dependencies:
-+ @freepeak/dsh-feature-loop 0.1.0
-Done in 2s using pnpm v9.15.9
-```
+is the right command and it installs the package — but it does not know that
+this profile must ALSO carry the harness peers, and `pnpm@11` will re-resolve
+the lockfile and drop the peer wiring while reporting success. Use it when you
+are adding the plugin to a profile that already works; for a new one, use the
+script.
 
 ---
 
-## Step 4 — Turn the policies on
+
+
+## Step 4 — (already done by Step 2 — this is where you TUNE it)
 
 The plugin registers itself with **no spec by default**, which means it loads and
 does nothing. That is deliberate: the row is safe to add before you have decided
-on a budget. Edit the profile's patch layer:
+on a budget. `scripts/make-profile.sh` has already written the full row; this
+step is for changing it. Edit the profile's patch layer:
 
 ```bash
 cd ~/.dsh/profiles/fltest
@@ -428,23 +431,52 @@ node "$DSH/apps/cli/lib/bin.js" --profile fltest --dump-config \
 If `feature-loop` is missing, the package did not install (step 3). If the
 `config:` block is empty, your patch layer did not take (step 4).
 
+**The row composing is not the same as the plugin working.** It is the check
+above plus one more, and the second one catches the failure the first cannot:
+peers unresolved. The plugin imports two harness packages at runtime; when they
+do not resolve, the import throws, the fiber never constructs, and the loop runs
+with default permissions — while `--dump-config` still shows all three rows.
+
+```bash
+awk '/^  \.:$/,/^packages:$/' ~/.dsh/profiles/fltest/pnpm-lock.yaml \
+  | grep -A2 "dsh-feature-loop':" | tail -1
+```
+
+```
+        version: file:…/dsh-feature-loop(@deepseek-ai/cordis@4.0.4)(@deepseek-ai/dsh-agent@…)…
+```
+
+Peer suffixes present = wired. A bare `file:…/dsh-feature-loop` = inert.
+
 ---
 
 ## Step 6 — Boot it
 
 ```bash
 DSH=~/work/harvey/freepeak/deepseek-harness
-node "$DSH/apps/cli/lib/bin.js" --profile fltest --port 3099 --no-open
+node "$DSH/apps/cli/lib/bin.js" --profile fltest --port 4188 --no-open
 ```
 
-Expected:
+Expected — **two** token lines, and the second is the one that matters:
 
 ```
-dsh web: http://127.0.0.1:3099/?token=...
+dsh web: http://127.0.0.1:4188/?token=...
+feature-loop dashboard: http://127.0.0.1:8100/?token=...
 ```
 
-Open that URL (it carries the auth token). **Use a port other than 3081** unless
-you intend to replace the GUI you are already running.
+Open the first URL (it carries the auth token). **Use a port other than 3081**
+unless you intend to replace the GUI you are already running.
+
+- **The web URL** is the harness UI. The plugin's page lives inside it, at
+  **Feature Loop** in the sidebar.
+- **The dashboard URL** is the standalone approval surface, on its own origin.
+  You only need it if you are driving approvals from somewhere other than the
+  UI's composer — a script, or a second machine's worth of tabs.
+
+If the second line is missing, `dashboard.standalone` is not `true` in your patch
+row. `enabled: true` alone starts **no server**: the default dashboard is a page
+*inside* the DSH UI, reached over the host remote, and the loopback server is
+opt-in. Both readings are correct and the difference is silent.
 
 A clean boot with no `MODULE_NOT_FOUND` / `SyntaxError` means the plugin loaded.
 
@@ -584,16 +616,20 @@ Full detail: [`docs/VERIFY-INTEGRATION.md`](VERIFY-INTEGRATION.md).
 | Symptom | Cause | Fix |
 |---|---|---|
 | `ERR_PNPM_ADDING_TO_ROOT` | Missing `-w` | `dsh plugin --profile fltest add -w file:...` |
-| `ERR_PNPM_NO_MATCHING_VERSION` for `@deepseek-ai/schemastery` | A workspace-internal version (`0.1.5`) was requested; only `3.18.x` is published | The package now pins `^3.18.2` — update if you forked it |
-| `feature-loop` absent from `--dump-config` | Package not installed into *this* profile | Re-run step 3 against `--profile fltest` |
+| `ERR_PNPM_NO_MATCHING_VERSION` for `@deepseek-ai/dsh-llm`, with `latest is 0.0.1-rc.1` in the message | The plugin's peers were never pinned; pnpm looked them up against `latest`, which is not the version you want | The profile's `package.json` needs `pnpm.overrides` pinning the harness packages — `scripts/make-profile.sh` writes them |
+| `feature-loop` absent from `--dump-config` | Package not installed into *this* profile, or not in `dsh.profile.bundles` | Re-run `bash scripts/make-profile.sh fltest` |
+| Row present, but **nothing is ever gated** | The peers did not resolve: the module import throws, the fiber never constructs | The plugin's lockfile entry has no `@deepseek-ai/…@` suffixes — see the check in Step 5 |
 | Row present but `config:` empty | Patch layer not applied | Check your edit landed in `~/.dsh/profiles/fltest/cordis.patch.yml`, not the repo's |
+| No `feature-loop dashboard:` line at boot | `dashboard.standalone` is not `true` | `enabled: true` alone starts no server; the default dashboard is a page inside the UI |
+| `EADDRINUSE` on the dashboard port, then `no approval channel is available` | Two dsh processes share one dashboard port | One port per process — see Step 2 |
 | Boot fails naming a spec dimension | `validateSpec` rejected it | Add the named field; all eight are required |
 | `irreversible tools ... with no termination guards` | You declared an irreversible tool with `guards: []` | Add `guards: ["error-cascade", "tool-cycle"]` |
-| Nothing ever asks for review | Gate policies all `auto`, or no judge configured, or `spec` omitted | `edit: auto-if-confident`; omit `spec` and nothing runs at all |
+| `no adapter registered for provider "onegw"` | No LLM route in the profile | The generated patch has an `llm-pi-ai` row; if you overwrote it, put it back |
+| Nothing ever asks for review | Gate policies all `auto`, or no judge configured, or `spec` omitted | `write: always-approve` (the shipped default); omit `spec` and nothing runs at all |
 | Gate asks with `always-approve` instead of your policy | Your `gatePolicies`/`actuator` key is not a real harness tool name | Use `read`/`write`/`edit`/`bash`/`glob`/`grep`, not `write_file`/`edit_file` |
 | **Tool error instead of an approval panel** | The session's permission preset is `danger-full-access`, whose approval policy `never` rejects before any UI | Select the **workspace-write** preset in the session, or run a private `DSH_HOME` with it pinned; see §2.5-2.6 of the runbook |
 | Approval panel appears but the run then stops | You clicked **Reject**, or the request was cancelled | Expected. Approval is one-shot and per request; the step counts as a failure |
-| Port 3081 already in use | You are already running the main GUI | Use `--port 3099` |
+| Port 3081 already in use | You are already running the main GUI | Use `--port 4188` |
 
 ---
 
@@ -642,14 +678,18 @@ These are real and documented in [`docs/PRD.md`](PRD.md). Setup does not fix the
 # build
 cd ~/work/harvey/freepeak/dsh-feature-loop && pnpm build
 
-# install into a profile
-node "$DSH/apps/cli/lib/bin.js" plugin --profile fltest add -w file:~/work/harvey/freepeak/dsh-feature-loop
+# create a profile that actually runs the loop (install + compose check)
+bash scripts/make-profile.sh fltest
 
 # verify composition (cheapest check)
 node "$DSH/apps/cli/lib/bin.js" --profile fltest --dump-config | grep -A14 -m1 "id: feature-loop"
 
-# boot
-node "$DSH/apps/cli/lib/bin.js" --profile fltest --port 3099 --no-open
+# and that the peers resolved (the check above cannot see this)
+awk '/^  \.:$/,/^packages:$/' ~/.dsh/profiles/fltest/pnpm-lock.yaml \
+  | grep -A2 "dsh-feature-loop':" | tail -1
+
+# boot — two token lines: the UI, and the standalone dashboard
+node "$DSH/apps/cli/lib/bin.js" --profile fltest --port 4188 --no-open
 
 # the standalone runner — same policies, no harness at all
 bash demo/run.sh
