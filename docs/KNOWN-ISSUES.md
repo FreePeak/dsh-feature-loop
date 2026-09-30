@@ -147,6 +147,41 @@ store key for a `_@deepseek-ai+…` suffix.
 
 ---
 
+## Fixed (2026-10-01) — the environment set, plus the five it was hiding
+
+### 11. A stale checked-in bundle passed every test that claimed to check it
+
+**Observed:** `npm run dashboard-bundle` rewrote one line of
+`assets/assistant-ui/MANIFEST.txt` — the `built:` timestamp — and nothing else.
+The three assets and `client.js` were byte-identical to what was committed.
+
+**Why that is the finding, not the non-finding:** the manifest records the sizes
+the build measured, and the build rounds to whole kB. So a rebuild is
+*indistinguishable from a no-op*, and equally: **a stale artefact was
+indistinguishable from a fresh one.** `web/entry.tsx` is a source, `assets/` is
+build output, and the artefact is what the page actually serves — so editing a
+stylesheet and not rebuilding leaves the page serving yesterday's CSS while every
+assertion about the bundle passes, because the bundle is self-consistent.
+
+**Fix:** `test/assistant-ui.test.ts` compares the three files against the sizes
+MANIFEST.txt recorded, and names the fix in the failure message. Proven by
+appending 80 kB to `dashboard.css` without rebuilding — the test failed and
+named the file and the command.
+
+The ceiling is stated in the test rather than hidden: a SIZE check cannot see a
+one-line edit inside a 480 kB bundle that rounds to the same kB. It catches a
+stale artefact, which is the failure that happens. A hash would be strictly
+better and needs the builder to write hashes into a manifest nobody edits by
+hand.
+
+**And the exclusion it sat behind was wrong.** `test/assistant-ui.test.ts` was
+in `scripts/check-test-list.mjs`'s EXCLUDED set with the note *"asserts against
+the built client bundle, which is not in a bare checkout"* — but the bundle is
+CHECKED IN, so it runs with no install. Verified on a bare clone with only
+`npm install`, then moved into the CI list. Its 7 tests now run there (272 pure
+tests, was 265). An exclusion note that was never tested is a comment with
+authority, and it had removed the only test watching the artefact.
+
 ## Fixed (2026-10-01) — the environment set, plus the four it was hiding
 
 ### 10. Every demo command had been broken for six days of commits

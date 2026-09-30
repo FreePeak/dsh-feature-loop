@@ -85,6 +85,17 @@ jobs:
       # `test/assistant-ui.test.ts` and `test/explainer.test.ts` run locally via
       # `make test`; `test/approval-bridge.test.ts`, `test/brief.test.ts`, and
       # `test/questioner.test.ts` are pure and run here.
+      # exactly as `src/plugin.ts` leaves the typecheck list. `test/dashboard.test.ts`
+      # and the CSS pair run locally via `make test` — they import
+      # `src/plugin.ts`, which the harness-free job cannot load.
+      # `test/assistant-ui.test.ts` IS in this list: the bundle it asserts against
+      # is CHECKED IN, not built here, so it runs with no install — verified on a
+      # bare clone before it was moved here (2026-10-01); its exclusion note
+      # claimed the opposite. Everything pure runs
+      # here, including `test/approvals.test.ts` (the registry behind the gate),
+      # added 2026-10-01 because `scripts/check-test-list.mjs` noticed it was in
+      # neither this list nor any other: the most consequential test in the repo
+      # was running nowhere in CI.
       # `test/judge-config.test.ts` is out for the same reason as
       # `test/plugin-approval.test.ts`: it imports `src/plugin.ts` to reach
       # `resolveJudge`, which carries a runtime `@deepseek-ai/dsh-llm` import.
@@ -115,6 +126,14 @@ jobs:
           test/refine.test.ts test/runlog.test.ts test/runner.test.ts test/sandbox.test.ts \
           test/ship.test.ts test/start-target.test.ts test/tools.test.ts test/yolo.test.ts
 
+          test/agent-policy.test.ts test/approval-bridge.test.ts \
+          test/approvals.test.ts test/assistant-ui.test.ts test/brief.test.ts \
+          test/budget.test.ts test/envelope.test.ts test/explainer.test.ts \
+          test/judge.test.ts \
+          test/metrics.test.ts test/optimize.test.ts test/optimizer.test.ts \
+          test/questioner.test.ts \
+          test/policy.test.ts test/refine.test.ts test/runlog.test.ts \
+          test/runner.test.ts test/start-target.test.ts test/tools.test.ts
 
   typecheck:
     name: typecheck (harness-free src/ modules)
