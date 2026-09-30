@@ -17,10 +17,21 @@
  *              per boot and this script cannot know it.
  *   OUTCOME    `allow` (the file must appear) or `reject` (it must not).
  *
- * `PROOF_DIR` decides where the file must land. The plugin's own target picker
- * runs in whichever Workspace the host has OPEN, which is not necessarily this
- * checkout — the default is the repository root named by `PROOF_DIR`, so a
- * clean pass proves the picker did what the page said it would.
+ * `PROOF_DIR` decides where the file must land, and it is the ONE thing that
+ * can make this fail for a reason that has nothing to do with the gate: the
+ * loop runs in whichever Workspace the host has OPEN, so passing a directory
+ * the page did not name proves nothing and asserts the wrong path.
+ *
+ * That is not hypothetical — it is how this script failed the first time it was
+ * run against a real profile (2026-10-01): the page said
+ * `Runs in "dsh-feature-loop" — /…/dsh-feature-loop`, the click worked, the
+ * file appeared there, and the assertion failed because PROOF_DIR pointed
+ * elsewhere. So the target is now READ FROM THE PAGE and used as the default;
+ * `PROOF_DIR` only overrides it when a person means to.
+ *
+ * The override is still worth having — mounting a checkout at a path the
+ * harness registered under a different name is exactly the case where the page
+ * is right and the caller knows better.
  *
  * Everything it needs (playwright-core, Chrome) is discovered the same way
  * `e2e-dashboard.mjs` does it; see that file for why.
@@ -58,14 +69,14 @@ if (DSH_URL === undefined || DSH_URL === '') {
 }
 
 const outcome = process.argv[2] === 'reject' ? 'reject' : 'allow'
-const proofDir = process.env.PROOF_DIR ?? join(homedir(), 'work/harvey/freepeak/dsh-feature-loop')
-const proof = join(proofDir, 'proof.txt')
 const buttonLabel = outcome === 'allow' ? 'Allow once' : 'Reject'
 const buttonClass = outcome === 'allow' ? 'allow' : 'reject'
 const task = 'Create the file proof.txt in the current working directory, ' +
   'containing exactly the word hello and nothing else, then read it back.'
 
-if (existsSync(proof)) rmSync(proof)
+/** Where the file must land: what the page said, unless overridden. */
+let proofDir = process.env.PROOF_DIR
+let proof = proofDir === undefined ? undefined : join(proofDir, 'proof.txt')
 
 const executablePath = resolveChrome()
 const browser = await chromium.launch(executablePath === undefined ? {} : { executablePath })
@@ -97,22 +108,66 @@ try {
   await page.getByRole('button', { name: 'Feature Loop', exact: false }).first().click({ force: true })
   await page.waitForTimeout(3500)
 
-  // The note is the target the run WILL use, printed by the page itself.
+  // The note is the target the run WILL use, printed by the page itself — and
+  // it is the AUTHORITY on where the file lands. `Runs in "x" — /path`.
   const note = (await page.locator('.fl-start-note').textContent()) ?? ''
   console.log('target:', note)
+  const fromNote = /—\s*(\S+)\s*$/.exec(note)?.[1]
+  proofDir ??= fromNote
+  proof = join(proofDir ?? '', 'proof.txt')
+  if (!existsSync(proofDir ?? '')) {
+    console.error(`the page named a target this machine does not have: ${proofDir}`)
+    process.exit(2)
+  }
+  if (existsSync(proof)) rmSync(proof)
+
+  // Clear the thread before starting, because this script clicks the FIRST card
+  // it finds. A run left over from an earlier invocation (or a loop the human
+  // abandoned) parks its own ask here, and the click then settles THAT one —
+  // which is how this failed the first time it ran against a real profile
+  // (2026-10-01): the feed showed `allowed once: bash` while the write this
+  // script asked about never happened. A human arriving at a thread with an
+  // unexpected card rejects it; that is what this does, and it says so.
+  const stale = await page.locator('.card button.reject').count()
+  if (stale > 0) {
+    console.log(`rejecting ${String(stale)} ask(s) already on screen — not this script's`)
+    for (let i = 0; i < stale; i++) {
+      await page.locator('.card button.reject').first().click().catch(() => undefined)
+      await page.waitForTimeout(1500)
+    }
+  }
 
   await page.locator('input.fl-start-input').fill(task)
   await page.locator('button.fl-start-button').click()
 
-  await page.waitForSelector(`.card button.${buttonClass}`, { timeout: 180_000 })
+  // Wait for THIS run's card, not merely a card: the thread can hold another
+  // run's ask, and the feed records what each settle actually was — which is
+  // how the mismatch below was diagnosed rather than guessed at.
+  await page.waitForFunction(
+    (reason) => [...document.querySelectorAll('.card')]
+      .filter(e => /APPROVAL REQUIRED/.test(e.innerText ?? ''))
+      .some(e => (e.innerText ?? '').includes(reason)),
+    'REVIEW REQUESTED',
+    { timeout: 180_000 },
+  )
   const card = await page.evaluate(() => {
-    const el = [...document.querySelectorAll('.card')].find(e => /APPROVAL REQUIRED/.test(e.innerText ?? ''))
+    const el = [...document.querySelectorAll('.card')]
+      .find(e => /APPROVAL REQUIRED/.test(e.innerText ?? '') && /REVIEW REQUESTED/.test(e.innerText ?? ''))
     return (el?.innerText ?? '').replace(/\n+/g, ' | ')
   })
   console.log('card:', card)
   assert.match(card, /REVIEW REQUESTED/, 'the card must carry the gate reason')
 
-  await page.locator(`.card button.${buttonClass}`).first().click()
+  // Click the card the run actually produced. `askedAt` is unique per ask and
+  // is in the card's own text, so matching on it cannot hit a neighbour — and
+  // the wrong card is a silent failure: the click settles, the file is not
+  // written, and the assertion that follows reports the plugin rather than the
+  // harness that aimed the click.
+  const askedAt = /asked ([^|]+?)\s*\|/.exec(card)?.[1]?.trim()
+  const selector = askedAt === undefined
+    ? `.card button.${buttonClass}`
+    : `.card:has-text("asked ${askedAt}") button.${buttonClass}`
+  await page.locator(selector).first().click()
   console.log('clicked', buttonLabel)
 
   // Wait for the thread to drain rather than for the file: the file is the
