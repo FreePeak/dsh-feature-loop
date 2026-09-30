@@ -85,7 +85,7 @@
    exactly the rules that restyled the host when they were unscoped. */
 html.fl-standalone { scroll-padding-top: calc(var(--header-h) + 12px); }
 
-body.fl-standalone {
+html.fl-standalone body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
@@ -265,9 +265,69 @@ body.fl-standalone {
    start control and the settings form sit outside it, so their own responsive
    rules (`@container fl-dashboard (max-width: 520px)`) could never match and the
    narrow layout silently never applied. One page, one container. */
+/* `size`, not `inline-size`: the thread's height floor below is a `cqh` query,
+   and `inline-size` publishes no height to resolve it against, so the floor
+   would be invalid and the thread would size to its content. The usual risk of
+   a size container — height growing with content — cannot apply here: the page
+   is `height: 100%` (plugin.css) and scrolls internally, so its height is
+   decided by the window and never by what is in it. */
 .fl-page {
-  container-type: inline-size;
+  container-type: size;
   container-name: fl-dashboard;
+}
+
+/* The STANDALONE page is the other front end onto this sheet, and it needed the
+   same treatment for the same reason. Its thread is a direct child of `#root`,
+   not of `.fl-page`, so nothing above it was a query container at all — and an
+   uncontained `cqh` resolves against the SMALLEST container, which is the
+   viewport. So the standalone thread's floor was still measuring the WINDOW on
+   the second front end, long after the host page had stopped: at a 1280x300
+   window it came out 180px, exactly 60% of the window, and the composer — the
+   reason anybody opens this page — sat 115px below the fold.
+   Two things make it real, and both are load-bearing:
+
+   - the height has to be on the CONTAINER element, not on `<html>`. `size`
+     containment means the box's size cannot come from its content, and the root
+     has no content to take a size from: measured, `html` came out **0px** tall
+     and every `cqh` on the page resolved to 0, which silently deleted the
+     thread's floor entirely rather than merely mis-sizing it.
+   - `html.fl-standalone body`, not `body.fl-standalone`. The class is on `<html>`
+     (src/dashboard-page.ts), so the short selector matches nothing and every rule
+     written that way is dead with no diagnostic at all — measured
+     `body containerType=normal` against a stylesheet that plainly declared it.
+
+   `100dvh` rather than `vh`: this page is a browser tab a person can resize
+   mid-read. */
+html.fl-standalone body {
+  container-type: size;
+  container-name: fl-dashboard;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* `main` is the scroller, and that is the honest answer for this page: three
+   panes of real content do not fit in a 300px window, and squeezing the thread to
+   fit would hide the composer rather than move it. Measured at a 1280x300 window
+   after this: `main` scrolls 130px and scrolling it puts the composer at
+   bottom=285 in a 300px window.
+   …and the page scrolls rather than each pane trying to scroll itself, because
+   the panes have no height to scroll within: the shell is `display: grid` with
+   auto rows, so it is 358px of content inside a 112px page. The content boxes are
+   left as they are; what this fixes is that the SCROLLER is one, reachable, and
+   not the document's. */
+html.fl-standalone main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+html.fl-standalone #root {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .dashboard-shell {
@@ -286,14 +346,25 @@ body.fl-standalone {
     grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
     gap: 20px;
   }
+  /* `cqh`, not `vh`: a sticky column fills the height of the thing it is
+     sticky within, and that thing is the PAGE, not the window. `100vh` here
+     made a column taller than its own scroll container by the height of the
+     host's sidebar rail and the frame's top clearance — which is the page
+     growing a scrollbar it did not have. `top` keeps `var(--header-h)`: sticky
+     is genuinely a window concept, and on this page the header is the
+     standalone page's own bar. */
   .sidebar {
     position: sticky;
     top: calc(var(--header-h) + 12px);
-    height: calc(100vh - var(--header-h) - 28px);
-    max-height: calc(100vh - var(--header-h) - 28px);
+    height: calc(100cqh - var(--header-h) - 28px);
+    max-height: calc(100cqh - var(--header-h) - 28px);
     overflow: hidden;
   }
-  .rail { grid-column: 1 / -1; max-height: 70vh; overflow: hidden; }
+  /* No `70vh` here: a viewport unit capping a page-height element is wrong at
+     every width, and at this one the rail is a full-width row under the thread
+     rather than a column beside it. The pane scrolls inside itself instead
+     (`min-height: 0` + the pane's own scroller). */
+  .rail { grid-column: 1 / -1; max-height: none; overflow: hidden; }
 }
 
 /* Three columns: workspaces · thread · runs, each in its own track. */
@@ -306,8 +377,8 @@ body.fl-standalone {
     grid-column: auto;
     position: sticky;
     top: calc(var(--header-h) + 12px);
-    height: calc(100vh - var(--header-h) - 28px);
-    max-height: calc(100vh - var(--header-h) - 28px);
+    height: calc(100cqh - var(--header-h) - 28px);
+    max-height: calc(100cqh - var(--header-h) - 28px);
     overflow: hidden;
   }
 }
@@ -323,6 +394,19 @@ body.fl-standalone {
   .sidebar { order: 3; }
   .sidebar,
   .rail { position: static; height: auto; max-height: none; overflow: visible; }
+  /* `overflow: visible` on the column is what released the PANES' own height
+     too, and a pane with `overflow: hidden` and no height cap then grows to
+     its content: the activity feed was 941px tall (11 entries) inside a 744px
+     page, and the page scrolled 1483px past the thread to reach it. The panes
+     keep their own scrollers — they are lists, and a list that scrolls inside
+     its card is what the two-column layout does too (`max-height: 70vh` there,
+     `calc(100cqh - …)` for the sticky columns). At this width the page scrolls;
+     the pane does not need to. */
+  .sidebar .pane-activity,
+  .rail .pane-runs {
+    max-height: calc(100cqh - var(--header-h) - 28px);
+    overflow: hidden;
+  }
 }
 
 .stage { min-width: 0; }
@@ -688,8 +772,35 @@ details.help {
 .hitl-thread-root {
   display: flex;
   flex-direction: column;
-  min-height: min(70vh, 720px);
-  max-height: calc(100vh - var(--header-h) - 120px);
+  /* A floor, in CONTAINER height, and deliberately small.
+     `min(70vh, 720px)` was three things wrong at once, and they compound:
+       1. `vh` describes the WINDOW; this page is the CENTRE COLUMN, so the
+          window's height overstates the space available by the host's sidebar
+          rail and the frame's top clearance — a margin that grows as the window
+          narrows, which is exactly backwards;
+       2. it is a FLOOR, so on a short window the thread claimed its height
+          before the start control and the tab row were given any. Measured at
+          480x560: the thread was 334px tall with 176px above the fold, and the
+          approval card — the reason a person is on this page — sat under it;
+       3. `min()` takes the SMALLER of its arguments, so `min(70vh, 720px)` was
+          720px on every window taller than 1029px and `70vh` below that: the
+          ceiling the author wrote existed only in the range where it was least
+          needed, and the floor dominated everywhere else.
+     A floor is still wanted — an empty thread with no composer is not a usable
+     dashboard — but it has to yield to the page. `min(420px, 60cqh)` is at most
+     420px, and at most 60% of the page's OWN height, which leaves the rest to
+     the start control, the tab row and the page's scroll.
+     The host's conversation page needs no floor at all: its column is
+     `height: 100%` and its scroller is `flex: 1; min-height: 0`
+     (`ui-conversation/src/client/skeleton/ConversationRoot.module.css`). This
+     page cannot use that shape while the start control, the tab row and the
+     settings form share the same column, so the floor is explicit here — and
+     explicit, small, and container-relative is the whole contract.
+     `max-height: none` was `calc(100vh - …)`, the same window-versus-column
+     error on the other side: a ceiling in viewport units is not a ceiling on
+     anything on this page. */
+  min-height: min(420px, 60cqh);
+  max-height: none;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: calc(var(--radius-chat) + 4px);
@@ -703,28 +814,49 @@ details.help {
   overflow-x: hidden;
   overflow-y: auto;
   scroll-behavior: smooth;
-  padding: 16px 16px 0;
+  /* Horizontal padding belongs to the THREAD's own edges, not to a scroll
+     container that then holds the composer as a sticky child — and the child
+     brings its own. Four layers were stacking: this 32px, the footer's 24px,
+     the composer's 24px, the textarea's 8px. The textarea lost 88px to padding
+     before it typed a character, and in a 384px column (a 440px window) that
+     left it 23px wide — unusable, with a 36px send button beside it. The host's
+     own composer stacks two layers (54px) and is still 341px wide in the same
+     column. Vertical padding is unchanged; the horizontal inset is the card's
+     own, one layer down. */
+  padding: 16px 0 0;
 }
 .hitl-thread-footer {
   position: sticky;
   bottom: 0;
   z-index: 2;
   margin-top: auto;
-  padding: 0 12px 14px;
+  /* No horizontal padding: it is a sticky wrapper around the composer's own
+     card, and the card carries the inset (see `.hitl-composer-shell`). */
+  padding: 0 0 14px;
   background: linear-gradient(180deg, transparent, var(--panel) 28%);
 }
 .hitl-welcome {
+  /* `width: 100%` of a container with no padding does NOT inset the box: 100% is
+     the parent's CONTENT width and a margin is added outside it, so the card's
+     border lands 16px beyond the thread's own edge (measured: viewport right 1226,
+     welcome right 1242). `auto` sides with a definite `max-width` is what
+     actually centres and insets a block, which is what the message rule below
+     already does. */
   margin: 24px auto;
   max-width: var(--thread-max-width);
-  width: 100%;
 }
 
 .hitl-assistant-msg,
 .hitl-user-msg {
-  width: 100%;
   max-width: var(--thread-max-width);
+  /* The viewport no longer insets its content (the sticky composer is a child of
+     it and brings its own), so the messages carry the thread's edge inset
+     themselves. `max-width` with `auto` sides is what does it: it centres the
+     message under the thread's `--thread-max-width` and clamps to the container
+     when that is narrower, which is exactly the inset. `width: 100%` did not —
+     100% is the parent's full content width, so a margin went outside the box
+     and a `padding` took 32px out of the content instead. */
   margin: 0 auto 14px;
-  padding: 0;
 }
 
 .hitl-user-msg {
@@ -756,7 +888,7 @@ details.help {
   background: var(--composer);
   border: 1px solid var(--border);
   border-radius: var(--radius-chat);
-  padding: 10px 12px 10px;
+  padding: 10px 12px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
   transition: border-color 150ms ease, box-shadow 150ms ease;
 }
@@ -781,7 +913,14 @@ details.help {
   line-height: 1.5;
   min-height: 3.2rem;
   max-height: 8rem;
-  padding: 4px 4px 0;
+  /* The card insets; the field does not. It had `4px 4px 0` — four px of inset
+     on a control inside a card that already had twelve, so the text started 16px
+     in and the field itself was 8px narrower than the card's content box, for
+     nothing. The host's own composer editor is `padding: 0 4px`
+     (`ui-conversation/src/client/input/editor/composer-editor.module.css`) on a
+     card that insets 16px; same two layers, and the top padding moves to the
+     card's own row gap. */
+  padding: 0;
 }
 .hitl-composer-input::placeholder { color: var(--faint); }
 .hitl-composer-input:disabled { cursor: default; }

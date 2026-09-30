@@ -37,6 +37,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The approval composer is usable in a narrow column.** Four nested layers of
+  horizontal padding sat between the thread's edge and the composer's field — the
+  thread viewport's 32px, the sticky footer's 24px, the composer card's 24px, the
+  textarea's own 8px. At a 440px window (a 331px content column) that left the
+  field 23px wide, with its 36px send button beside it. The viewport and the
+  footer are wrappers, not insets, and now carry no horizontal padding; the field
+  takes the card's inset rather than adding one. The field is 303px at 440px and
+  243px at 380px, against 23px and 8px before. The harness's own composer stacks
+  two layers (54px) in the same column; this one now stacks one (24px).
+- **The standalone dashboard page stops measuring itself in viewport units too.**
+  It is the second front end onto this stylesheet — it owns `<html>`/`<body>` — and
+  it had none of the above: its thread sat outside `.fl-page`, so no query container
+  was above it and every `cqh` resolved against the *smallest* container, the
+  viewport. At a 1280x300 window the thread's floor came out 180px, exactly 60% of
+  the window, with the composer 115px below the fold. The page is now a size
+  container with a real height (`100dvh`, `dvh` because a tab can be resized
+  mid-read) and `main` is its scroller: scrolling it puts the composer at 285px in a
+  300px window. The height has to be on the container box itself — size containment
+  means the box's size cannot come from its content, and measured against `<html>`
+  it came out 0px tall with every `cqh` on the page resolving to 0, which deleted
+  the floor outright rather than mis-sizing it.
+- **No card is drawn outside the thread any more.** With the viewport's padding
+  gone the messages had to carry the edge inset themselves, and both obvious ways
+  to do it are wrong: `padding: 0 16px` took 32px out of the message's content box
+  so the text sat inside a border the card draws itself, and `margin: 0 16px 14px`
+  on `width: 100%` put the card's border 16px *beyond* its container — measured at
+  1280, the welcome plate's right edge was 1242 inside a viewport that ended at
+  1226, i.e. over the thread's own border. The messages and the welcome plate are
+  now `max-width: var(--thread-max-width)` with `auto` sides, which centres under
+  the thread's width and clamps to the container when that is narrower.
+- **The activity and runs panes keep their own height cap below 760px.** The
+  narrow-layout query released `.sidebar`/`.rail` to `position: static; height:
+  auto; overflow: visible` — correct for sticky columns, but it also released the
+  `overflow: hidden` panes inside them, which then grew to their content: the
+  activity feed was 941px tall (11 entries) inside a 744px page, and reaching it
+  meant scrolling 1483px past the approval thread. The panes are lists, so they
+  take `max-height: calc(100cqh - …)` and scroll inside their cards, which is
+  what the wider layouts already did.
+- **The page no longer measures itself in viewport units.** `shell.css` sized
+  three page-height rules in `vh`, which is the wrong axis for a page that is
+  the harness's *centre column*: the window also carries the host's sidebar rail
+  and the frame's top clearance, so `vh` overstates the space the page has — by a
+  margin that grows as the window narrows. The worst was the approval thread's
+  floor, `min-height: min(70vh, 720px)`, which is a floor rather than a ceiling:
+  at a 480x560 window it resolved to 334px with only 176px above the fold, so the
+  approval card — the reason a person is on the page — sat below it. It is now
+  `min(420px, 60cqh)`: a floor of at most 420px and at most 60% of the page's
+  own height, with the rest left to the start control, the tab row and the page's
+  scroll. The two sticky columns take `100cqh` for the same reason, and the
+  container is declared `container-type: size` so a height query has a height to
+  resolve against. Measured after the fix, the thread is fully above the fold at
+  1280x760, 1024x700 and 820x700, and the page scrolls to the rest at every
+  width; the harness's own conversation page was the control in the same
+  squeeze and does not overflow at 440px either.
 - **The plugin page is now drawn with the harness's own metrics.** The colours
   were already bound to `--dsw-alias-*`; the geometry was not, and it showed.
   Measured on a live instance, against the harness's own pages:

@@ -256,6 +256,163 @@ test('no hardcoded colour is left in the two page stylesheets', () => {
   }
 })
 
+test('no page-height rule is measured in viewport units', () => {
+  // A `vh` in a page-height rule is wrong on this page for one specific reason:
+  // the page is the CENTRE COLUMN, not the window. The window also carries the
+  // host's sidebar (56px collapsed, 280px open), the frame's top clearance, and
+  // the window's own chrome — so `vh` overstates the space the page has by a
+  // margin that grows as the window narrows, which is exactly backwards.
+  //
+  // Measured on a live instance at 480x560: `.hitl-thread-root` declared
+  // `min-height: min(70vh, 720px)`, resolved to 334px, and sat with 176px above
+  // the fold — the approval card, the reason a person is on the page, below it.
+  // With the floor expressed in `cqh` the same window shows 60% of the page's
+  // own height and the rest of the page scrolls to the rest.
+  //
+  // `100vh` in a STICKY offset (`top: calc(var(--header-h) + …)`) is a different
+  // thing and stays: it positions a sticky column against the window, which is
+  // what sticky means. So the assertion is on height, not on every `vh`.
+  const heightVh = /(?:^|[;{])\s*(?:min-|max-)?height\s*:\s*[^;}]*?\d*\.?\d+v(?:h|min|max)\b/g
+  for (const [name, css] of [['shell.css', shellCss], ['plugin.css', pluginCss]] as const) {
+    const body = stripComments(css)
+    const hits: string[] = []
+    for (const match of body.matchAll(heightVh)) {
+      hits.push(`${name}: ${body.slice(Math.max(0, match.index! - 10), match.index! + match[0].length).replace(/\s+/g, ' ').trim()}`)
+    }
+    assert.deepEqual(hits, [], `viewport units in a height: the page is the column, not the window\n  ${hits.join('\n  ')}`)
+  }
+  // And the thread's floor must actually be the container-relative one.
+  assert.match(
+    rule(shellCss, '.hitl-thread-root'),
+    /min-height:\s*min\(\d+px, \d+cqh\)/,
+    'the thread floor must be a container-height query, in both axes of its min()',
+  )
+  // A size container is what publishes `cqh` at all: `inline-size` alone leaves
+  // the height query invalid and the whole declaration is dropped.
+  assert.match(
+    rule(shellCss, '.fl-page'),
+    /container-type:\s*size/,
+    'a `cqh` floor needs container-type: size — inline-size publishes no height',
+  )
+})
+
+test('a control is not inset by more padding than it has width for', () => {
+  // Measured on a live instance at a 440px window (a 384px page, 331px of
+  // content): the composer's textarea was 23px wide, with a 36px send button
+  // beside it. The width went to FOUR nested layers of horizontal padding on
+  // the way down — the thread viewport's 32px, the sticky footer's 24px, the
+  // composer card's 24px, the textarea's own 8px — so 88px went to padding
+  // before a character was typed. The harness's own composer stacks TWO layers
+  // (its card's 32px and its editor's 4px) and is still 341px wide in the same
+  // column.
+  //
+  // This asserts the shape, not the number: a horizontal-padding declaration on
+  // a LAYOUT box that also holds a control is the thing to look for, because
+  // every one of them is a subtraction from the control's width at every width,
+  // and the subtraction is invisible until the column is narrow. The messages
+  // carry the thread's edge inset themselves (they are the only content that
+  // needs it), so the viewport and the footer must not.
+  // `0 0 14px` and `16px 16px 0` both pass; `0 12px 14px` and `16px` do not.
+  // The shorthand's left and right values are what matter, and they are the
+  // second and fourth tokens for a four-value form, the first and third for a
+  // three-value form, the first and last for two, and the single value for one.
+  // A three-value shorthand is `top horizontal bottom`, so `16px 0 0` is 16px
+  // of TOP padding and no horizontal inset at all — which is what the thread
+  // viewport wants, and the two-value and four-value forms have to agree.
+  const sides = (padding: string): [number, number] => {
+    const parts = padding.trim().split(/\s+/)
+    const num = (t: string | undefined) => (t === undefined ? 0 : Number.parseFloat(t) || 0)
+    switch (parts.length) {
+      case 1: return [num(parts[0]), num(parts[0])]
+      case 2: return [num(parts[0]), num(parts[0])]
+      case 3: return [num(parts[1]), num(parts[1])]
+      default: return [num(parts[0]), num(parts[1])]
+    }
+  }
+  for (const [box, why] of [
+    ['.hitl-thread-viewport', 'it holds the sticky composer, which insets itself'],
+    ['.hitl-thread-footer', 'it is a wrapper around the composer card'],
+  ] as const) {
+    const pad = decl(rule(shellCss, box), 'padding')
+    const [left, right] = sides(pad ?? '0')
+    assert.ok(
+      left === 0 && right === 0,
+      `${box} carries horizontal padding (${pad}) — ${why}, so every descendant pays it again`,
+    )
+  }
+  // The field itself must not inset: the card it lives in already does.
+  const field = rule(shellCss, '.hitl-composer-input')
+  assert.equal(
+    decl(field, 'padding'),
+    '0',
+    'the composer field must take the card\'s inset, not add a second one',
+  )
+})
+
+test('a pane that holds a list keeps its own height cap below 760px', () => {
+  // The `max-width: 759px` block releases `.sidebar`/`.rail` to `position:
+  // static; height: auto; overflow: visible` — sticky is meaningless once the
+  // page is one scroll. It also released the PANES inside them, and a pane is
+  // `overflow: hidden` with no cap, so it grew to its content: the activity feed
+  // was 941px tall (11 entries) inside a 744px page, and reaching it meant
+  // scrolling 1483px past the approval thread. The panes are lists; a list
+  // scrolls inside its card, which is what they do in the wider layouts too.
+  // A nested block means a non-greedy `\n\}` match stops at the FIRST closing
+  // brace, so the assertions below would read only the rules before the
+  // `.sidebar, .rail` group and never see the pane rules at all. Match to the
+  // rule that ends the block instead: the query's own closing brace, after the
+  // pane declaration.
+  const narrow = /@container fl-dashboard \(max-width: 759px\)\s*\{([\s\S]*?overflow:\s*hidden;[\s\S]*?\n  \})/.exec(shellCss)
+  assert.ok(narrow !== null, 'the sub-760px layout block should exist')
+  const block = narrow[1]!
+  // A cap expressed in viewport units is the defect being fixed; cqh is the
+  // same rule the thread floor and the sticky columns use. Asserted on the
+  // block rather than the file, so a `vh` cap elsewhere in the sheet is not
+  // mistaken for this one and a removal is not missed.
+  const cap = /\.sidebar \.pane-activity,[\s\S]*?max-height\s*:\s*([^;]+);/.exec(block)
+  assert.ok(cap !== null, 'the activity pane must keep a height cap once the column is released')
+  assert.match(cap[1]!, /cqh/, `the pane cap must measure the page, not the window (got ${cap[1]})`)
+  assert.doesNotMatch(cap[1]!, /\dv(?:h|min|max)\b/, 'a pane cap in viewport units is the original bug')
+  // And the runs pane shares the cap — one list may not be bounded while the
+  // other grows, which is how the page ends up 1483px taller than the thread.
+  const runs = /\.rail \.pane-runs[\s\S]*?max-height\s*:\s*([^;]+);/.exec(block)
+  assert.ok(runs !== null, 'the runs pane must keep a height cap too')
+  assert.match(runs[1]!, /cqh/, `the runs cap must measure the page, not the window (got ${runs[1]})`)
+})
+
+test('no card is drawn outside the container it sits in', () => {
+  // The viewport's horizontal padding came off (the sticky composer is a child
+  // of it and insets itself), which left the thread's edge inset to the
+  // messages. Both obvious ways to give it back are wrong, and both were tried:
+  //   - `padding: 0 16px` took 32px out of the message's CONTENT, so the text
+  //     sat 16px inside a border the card draws itself;
+  //   - `margin: 0 16px 14px` on `width: 100%` put the card's border 16px
+  //     OUTSIDE its container — measured at 1280: viewport right edge 1226,
+  //     welcome right edge 1242, over the thread's own border.
+  // `max-width` + `auto` sides is what both centres the message under the
+  // thread's `--thread-max-width` and clamps it to the container when that is
+  // narrower, so the values are pinned rather than pattern-matched: `width:
+  // 100%` defeats the clamp and a fixed side margin moves the box outward, and
+  // a loose `margin: … auto` pattern matches either side of a duplicated
+  // declaration instead of catching it.
+  assert.equal(decl(rule(shellCss, '.hitl-assistant-msg'), 'width'), undefined,
+    'width: 100% of a full-width block ignores the clamp the auto sides rely on')
+  assert.equal(decl(rule(shellCss, '.hitl-assistant-msg'), 'padding'), undefined,
+    'a message must not pad its content box; the edge inset is the box itself')
+  assert.equal(decl(rule(shellCss, '.hitl-assistant-msg'), 'margin'), '0 auto 14px')
+  assert.equal(decl(rule(shellCss, '.hitl-assistant-msg'), 'max-width'), 'var(--thread-max-width)')
+
+  assert.equal(decl(rule(shellCss, '.hitl-user-msg'), 'width'), undefined)
+  assert.equal(decl(rule(shellCss, '.hitl-user-msg'), 'padding'), undefined)
+
+  // The welcome plate is the one child that is not a message, and it has no
+  // border to prove the overflow visually — so the same shape is pinned.
+  const welcome = rule(shellCss, '.hitl-welcome')
+  assert.equal(decl(welcome, 'width'), undefined, 'the welcome plate must clamp, not fill')
+  assert.equal(decl(welcome, 'max-width'), 'var(--thread-max-width)')
+  assert.equal(decl(welcome, 'margin'), '24px auto')
+})
+
 test('the page uses the harness scrollbar skin rather than a second one', () => {
   // ui-theme/src/styles/scrollbar.css styles every ::-webkit-scrollbar* in the
   // document. shell.css drew its own 8px accent-gradient thumb with its own

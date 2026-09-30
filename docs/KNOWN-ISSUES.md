@@ -284,6 +284,127 @@ that asked for 32px: `shell.css` still had a bare `button` rule. That rule is
 invisible to `css-scope.test.ts` — it is anchored — so `test/css-parity.test.ts`
 is what holds it gone.
 
+### The page was taller than the window on every small window
+
+**Observed:** at a small window the page needed scrolling to reach the approval
+card, and the plugin page behaved differently from the harness's own pages in the
+same column.
+
+**Why:** `shell.css` sized three page-height rules in `vh`. The page is the
+centre COLUMN, so the window's height is not the page's height — the window also
+carries the host's sidebar (56px collapsed, 280px open) and the frame's top
+clearance, and that gap widens as the window narrows. Two of the three were
+floors, and a floor is the worst direction for this: the approval thread's
+`min-height: min(70vh, 720px)` resolved to 334px at a 480x560 window with the
+page's furniture already taking 384px above it, leaving 176px of the thread
+visible. (`min()` also took the SMALLER of its two arguments, so the `720px`
+ceiling applied only below a 1029px-tall window — the range where a ceiling was
+least needed, and the floor dominated everywhere else.)
+
+**Fix:** the thread floor is `min(420px, 60cqh)`, the sticky columns take
+`100cqh`, and the page root declares `container-type: size` so a container height
+is queryable at all. Measured after: the thread is fully above the fold at
+1280x760, 1024x700 and 820x700; at 480x560 the page scrolls to the rest, which is
+what a page that is taller than the window should do.
+
+**What is NOT the plugin's problem, and was worth measuring before changing
+anything:** below 1024px the harness auto-collapses its sidebar to a 56px rail
+(`ui-layout/src/client/stores.ts`, `SIDEBAR_AUTO_COLLAPSE`), which leaves the
+centre column ~460px at a 520px window. Below ~600px of window the column is
+narrower than the harness's own `CENTER_MIN` of 400px and the page's own
+`clamp(24px, 4vw, 48px)` gutter starts to dominate. The harness's own pages
+behave the same way there — the conversation page and the plugin manager were
+both measured in the same 240px and 200px columns, and both overflow. The
+plugin's page gutter is deliberately the harness's own, so it is not narrowed
+here to compensate for a frame the harness itself does not support at that size.
+
+### The composer was 23px wide in a narrow column
+
+**Observed:** at a 440px window the approval composer's textarea was 23px wide,
+with a 36px send button beside it. At 380px it was 8px.
+
+**Why:** padding stacked four deep on the way from the thread's edge to the
+field. `.hitl-thread-viewport` inset 16px per side, `.hitl-thread-footer` 12px,
+`.hitl-composer-shell` 12px, `.hitl-composer-input` 4px — 88px gone before a
+character was typed, and every one of those is a subtraction at every width, not
+only a narrow one. The harness's own composer stacks two layers
+(`ui-conversation/src/client/input/editor/composer-editor.module.css`: its card
+insets, its editor does not) and measures 341px in the same 384px column.
+
+**Fix:** the viewport and the footer are wrappers, so they carry no horizontal
+padding, and the field takes the card's inset. One layer, 24px. Field width in
+that column: **23px → 303px**, and 8px → 243px at 380px.
+
+**Two wrong answers on the way, both worth recording.** The edge inset the
+viewport used to carry has to be given back to the messages, and:
+
+- `padding: 0 16px` on the message takes 32px out of its *content* box, so the
+  text sits 16px inside a border the card draws itself — a double inset at the
+  sides and none at the top and bottom;
+- `margin: 0 16px 14px` on `width: 100%` moves the *box* 16px outward, because
+  100% is already the parent's content width. Measured at 1280: viewport right
+  edge 1226, welcome plate right edge 1242 — the card's border over the thread's.
+
+`max-width` with `auto` sides is the property that does both jobs: it centres the
+message under the thread's `--thread-max-width` and clamps to the container when
+that is narrower. Asserted by value, not by pattern — a loose `margin: … auto`
+match passes either side of a duplicated declaration.
+
+### The activity pane grew to its content below 760px
+
+**Observed:** at a 744px page with 11 activity entries, the page scrolled 1483px
+past the approval thread to reach the end of the feed.
+
+**Why:** the `max-width: 759px` query releases `.sidebar`/`.rail` to `position:
+static; height: auto; overflow: visible` — right for a sticky column, which is
+meaningless once the page is one scroll. But it also released the panes inside
+them, and a pane is `overflow: hidden` with no cap, so it sized to its content.
+`.pane-scroll` is `flex: 1 1 auto; min-height: 0` inside a bounded parent, so in
+the two-column layout the parent's cap was what bounded it; released, nothing
+did.
+
+**Fix:** the panes keep `max-height: calc(100cqh - var(--header-h) - 28px)` and
+scroll inside their cards — a list that scrolls in its card is what the wider
+layouts already do. Measured with 6 entries at 1024x700: page scroll 1652px
+instead of 2227px, feed 481px in a 568px cap.
+
+### The standalone page was still measuring the window
+
+**Observed:** at a 1280x300 window the standalone dashboard's thread was sized by
+60% of the *window* — 180px — with the composer 115px below the fold.
+
+**Why:** the standalone page is the second front end onto this stylesheet, and the
+whole of this branch's work was under `.fl-page`. Its thread is a direct child of
+`#root`, so nothing above it was a query container, and a `cqh` with no ancestor
+container resolves against the smallest container there is: the viewport. Every
+other fix in this file was therefore correct on one front end and absent on the
+other, which is exactly the failure mode of testing one page and calling the sheet
+fixed.
+
+**Two more traps on the way, both silent:**
+
+- `body.fl-standalone { … }` matches **nothing**. The marker is on `<html>`
+  (`src/dashboard-page.ts`), so the body is its descendant — measured
+  `containerType=normal` on the live element against a stylesheet that plainly
+  declared it. There is no diagnostic for a rule that does not match.
+- `container-type: size` on that rule, with the `height` on `<html>` instead, put
+  `html` at **0px** tall: size containment means the box cannot take its size from
+  its content, and the root has no content. Every `cqh` on the page resolved to 0
+  and `min(420px, 60cqh)` collapsed to 0 — the thread lost its floor entirely,
+  which reads as "no floor at all" rather than as a CSS bug.
+
+**Fix:** `html.fl-standalone body` carries the container, the `container-name`, and
+`height: 100dvh` together, and `main` is the scroller. Verified at 1280x800,
+1024x700, 760x700, 600x600, 440x800 and 380x760: no horizontal overflow, no element
+outside its container, the composer in the viewport. At 1280x300 and 440x400 the
+page scrolls and the composer is reachable (285px and 385px after scrolling) —
+three panes of real content do not fit in a 300px window, and squeezing the thread
+to pretend otherwise hides the composer rather than moving it.
+
+`test/css-scope.test.ts` now fails any selector whose rightmost compound is a
+document element without reaching it through `html.fl-standalone`, and pins the
+container and the height on the same box.
+
 ### Still unverified
 
 - Nothing in the two sections above. The last open item from §"Still
