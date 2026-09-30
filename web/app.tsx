@@ -397,7 +397,15 @@ function ApprovalThread({ pending, feed, source }: {
   feed: FeedEntry[]
   source: DashboardSource
 }): React.ReactElement {
-  ASK_BY_ID.clear()
+  // The ask's details, as last seen. `clear()` on every render is what let a
+  // re-materialised card degrade: the ask had left `pending`, so its entry was
+  // gone, and `toApprovalGate`'s fallback prompt — "write needs approval" —
+  // replaced the gate's real reason text. Keeping what was seen and only
+  // ADDING to it is what the name says and what the card needs: a settled ask
+  // still has to read as the thing a human was asked about.
+  //
+  // Bounded by the same slice the settled list uses, so this cannot grow for
+  // the life of the page.
   for (const ask of pending) ASK_BY_ID.set(ask.id, ask)
   const live = new Set(pending.map(a => a.id))
 
@@ -431,7 +439,29 @@ function ApprovalThread({ pending, feed, source }: {
         askedAt: entry.t,
       })
     }
-    return out.slice(-12)
+    // The window is in STEPS, not wall-clock: a settled ask whose card is still
+    // on screen keeps its buttons, and a card with buttons on a tool that has
+    // already run is worse than no card at all — it invites a click that
+    // settles nothing. Twelve is enough to cover a human working through a
+    // burst; the feed's own 200-line retention is the outer bound.
+    const kept = out.slice(-12)
+    // Keep the details for exactly the asks the thread is showing.
+    for (const ask of kept) {
+      const entry: PendingApproval = {
+        id: ask.id,
+        toolName: ask.toolName,
+        ...ask.callId === undefined ? {} : { callId: ask.callId },
+        ...ask.reason === undefined ? {} : { reason: ask.reason },
+        ...ask.runId === undefined ? {} : { runId: ask.runId },
+        askedAt: ask.askedAt,
+        briefState: 'none',
+      }
+      if (!ASK_BY_ID.has(ask.id)) ASK_BY_ID.set(ask.id, entry)
+    }
+    for (const id of [...ASK_BY_ID.keys()]) {
+      if (!live.has(id) && !kept.some(a => a.id === id)) ASK_BY_ID.delete(id)
+    }
+    return kept
   }, [feed, live])
 
   const [localMessages, setLocalMessages] = useState<ThreadMessageLike[]>([])

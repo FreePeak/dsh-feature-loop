@@ -20,6 +20,12 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { startDashboard } from '../src/dashboard.ts'
+import {
+  expiredOutcomeOf,
+  resolutionForOutcome,
+  toApprovalGate,
+} from '../src/approval-bridge.ts'
+import type { BridgeAsk } from '../src/approval-bridge.ts'
 
 /** Start a dashboard on a free port and fetch one path. */
 async function withDashboard<T>(
@@ -173,5 +179,75 @@ test('the checked-in bundle matches the manifest that measured it', () => {
     onDisk(join(repoRoot, 'client.js')),
     recorded('client.js'),
     'client.js does not match MANIFEST.txt — run `make dashboard-bundle`',
+  )
+})
+
+/**
+ * The settled-card path, in the form that broke it.
+ *
+ * A card re-materialised from a feed line has no `PendingApproval` behind it —
+ * the ask left `pending` when it settled. Two things go wrong if that is not
+ * handled, and both are silent:
+ *
+ *   - `toApprovalGate`'s fallback prompt ("write needs approval") replaces the
+ *     gate's real reason, so a human reading the thread after the fact sees a
+ *     generic string instead of what they were asked about;
+ *   - `ASK_BY_ID.clear()` on every render drops the ask's details for good, so
+ *     the next render has nothing to fall back to either.
+ *
+ * This asserts the SHAPE, not the rendering: a re-materialised ask keeps the
+ * reason, and a settled card carries no buttons. The reason it must keep them
+ * is the `settled` gate in `ApprovalCard` — `gate.approved` or
+ * `gate.resolution` — which is set only when `askToMessage` is given the
+ * outcome, and an ask re-materialised with no outcome is a card that invites a
+ * click which settles nothing.
+ */
+test('a re-materialised ask keeps its reason, and a settled card has no buttons', async () => {
+  const ask: BridgeAsk = {
+    id: '973f503a-8d08-411b-9f73-5b6c2846478a',
+    toolName: 'write',
+    callId: 'chatcmpl-tool-1',
+    reason: 'REVIEW REQUESTED (policy): write: irreversible is always approved by a human.',
+    runId: 'run-7',
+    askedAt: 1_700_000_000_000,
+  }
+
+  // 1. The gate carries the ask's own reason, not the fallback.
+  const gate = toApprovalGate(ask)
+  assert.match(gate.prompt, /REVIEW REQUESTED/, 'the gate reason must survive')
+  assert.equal(gate.prompt, ask.reason, 'verbatim — the plugin authored it')
+  assert.ok(gate.approved === undefined && gate.resolution === undefined,
+    'an unanswered ask has neither: that is what makes the card live')
+
+  // 2. Given the outcome, the card is settled — and each outcome reaches it by
+  //    the right field, so an expiry is never rendered as a refusal.
+  for (const [outcome, expect] of [
+    ['allowed-once', 'approved'],
+    ['rejected', 'approved'],
+    ['unavailable', 'resolution'],
+    ['cancelled', 'resolution'],
+  ] as const) {
+    const settledGate = toApprovalGate(ask)
+    const resolution = resolutionForOutcome(outcome)
+    if (resolution !== undefined) settledGate.resolution = resolution
+    else settledGate.approved = outcome === 'allowed-once'
+    assert.equal(
+      settledGate[expect] !== undefined,
+      true,
+      `${outcome} must settle the card via ${expect}`,
+    )
+    if (expect === 'approved') assert.equal(typeof settledGate.approved, 'boolean')
+    else assert.equal(settledGate.approved, undefined, 'never both')
+  }
+
+  // 3. The feed line the card is rebuilt from round-trips.
+  const feed = [{
+    text: 'expired: write — no answer within 20000ms '
+      + '[973f503a-8d08-411b-9f73-5b6c2846478a]',
+  }]
+  assert.equal(
+    expiredOutcomeOf(feed).get(ask.id),
+    'unavailable',
+    'the re-materialised card must resolve to Expired, and the ask to write',
   )
 })
