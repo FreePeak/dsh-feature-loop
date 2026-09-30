@@ -147,7 +147,37 @@ store key for a `_@deepseek-ai+…` suffix.
 
 ---
 
-## Fixed (2026-10-01) — the environment set, plus the seven it was hiding
+## Re-checked 2026-10-01 — the permission-preset trap, and what actually triggers it
+
+`docs/SETUP.md` and `docs/RUNBOOK-SERVER.md` both lead with the same warning:
+if `permission.defaultPreset` is `danger-full-access`, a feature-loop `ask` is
+refused with `Error: the user rejected tool "X"` before any UI is consulted, so
+no panel appears. Both describe it as the step that "trips everyone up".
+
+**Re-tested on a fresh profile** (DSH 0.2.0-rc.1, this machine, whose global
+`~/.dsh` has no `permission` section at all):
+
+| Surface | Result |
+|---|---|
+| Mode chip | **`Workspace Write`** — not Danger |
+| Feature Loop page card | `APPROVAL REQUIRED · write · REVIEW REQUESTED (policy): write: irreversible is always approved by a human.` |
+| **The harness's own composer panel**, on a plain conversation | `Waiting for approval · REVIEW REQUESTED (policy): write: irreversible is always approved by a human. · Reject · Allow once` |
+| Pending ask | the file was not written, correctly — still awaiting a human |
+
+So the trap is real, and it is **not** the property the docs implied — it is a
+property of the *settings*, not of a fresh profile or of this plugin. A new
+profile on a machine without a `permission` section comes up correct, and the
+harness's own composer panel does render the plugin's reason verbatim.
+
+The second row is the one worth having: this plugin's whole premise is that it
+hosts a gate on the harness's loop, and the claim that a human can approve a
+step **in the harness's own conversation UI** was previously only ever proven
+through a container with the preset pinned by its settings template. It holds
+without that.
+
+Two doc changes follow, both about not sending a reader after a problem they do
+not have: the warning is now a verified note rather than a lead, and the
+troubleshooting row tells you to read the mode chip first.
 
 ### 13. A settled card lost the reason it was raised for
 

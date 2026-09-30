@@ -546,6 +546,17 @@ This is the whole payoff — the policies are visible in the transcript:
 
 ### Before you expect a prompt: pick the `workspace-write` preset
 
+> **Verified on a fresh profile, 2026-10-01 (DSH 0.2.0-rc.1).** A profile made
+> by `scripts/make-profile.sh` on a machine whose global `~/.dsh` has no
+> `permission` section comes up on **Workspace Write** already, and both
+> surfaces ask: the plugin's own card on the Feature Loop page, *and* the
+> harness's composer panel reading the plain conversation —
+> `Waiting for approval · REVIEW REQUESTED (policy): write: irreversible is
+> always approved by a human. · Reject · Allow once`. So the trap below is real
+> but it is a property of the SETTINGS, not of this plugin or of a fresh
+> profile: if you see `Danger Full Access` in the mode chip, this section is
+> for you; if you see `Workspace Write`, skip it.
+
 **This is the step that trips everyone up.** If your DSH settings set
 `permission.defaultPreset: danger-full-access`, that preset maps to
 `approval: never`, and a fresh session applies it *after* every config default —
@@ -656,7 +667,8 @@ Full detail: [`docs/VERIFY-INTEGRATION.md`](VERIFY-INTEGRATION.md).
 | `no adapter registered for provider "onegw"` | No LLM route in the profile | The generated patch has an `llm-pi-ai` row; if you overwrote it, put it back |
 | Nothing ever asks for review | Gate policies all `auto`, or no judge configured, or `spec` omitted | `write: always-approve` (the shipped default); omit `spec` and nothing runs at all |
 | Gate asks with `always-approve` instead of your policy | Your `gatePolicies`/`actuator` key is not a real harness tool name | Use `read`/`write`/`edit`/`bash`/`glob`/`grep`, not `write_file`/`edit_file` |
-| **Tool error instead of an approval panel** | The session's permission preset is `danger-full-access`, whose approval policy `never` rejects before any UI | Select the **workspace-write** preset in the session, or run a private `DSH_HOME` with it pinned; see §2.5-2.6 of the runbook |
+| **Tool error instead of an approval panel** | The session's permission preset is `danger-full-access`, whose approval policy `never` rejects before any UI | Select the **workspace-write** preset in the session, or run a private `DSH_HOME` with it pinned; see §2.5-2.6 of the runbook. **Check the mode chip first**: a fresh profile on this machine comes up on `Workspace Write` and both panels ask, so if you see that chip this row is not your problem |
+| The **plugin's card** appears but the conversation composer is silent | Not a fault — the two are different surfaces. The Feature Loop page is this plugin's; the composer panel is the harness's, and it renders the ask only when the session itself made the tool call | Both were verified separately on a fresh profile (2026-10-01): the plugin page shows the card, and the composer shows `Waiting for approval` for a loop started from the composer |
 | Approval panel appears but the run then stops | You clicked **Reject**, or the request was cancelled | Expected. Approval is one-shot and per request; the step counts as a failure |
 | Port 3081 already in use | You are already running the main GUI | Use `--port 4188` |
 
