@@ -91,17 +91,30 @@ jobs:
       # `test/judge.test.ts` stays IN this list — the judge client itself is pure,
       # so the config resolution lives in its own file rather than dragging a
       # harness import into a file that currently runs here.
+      # The same drift the typecheck job checks for: a new PURE test file is not
+      # in this list, so it never runs in CI and nothing says so. The step after
+      # this one fails on that.
+      - name: The no-install test list is not stale
+        run: node scripts/check-test-list.mjs
+
+      # The shipped specs' ladders must name models their deployment declares.
+      # A rung that does not is not a config smell, it is a run that dies
+      # UNKNOWN_MODEL on step 1 — after the dashboard has already recorded the
+      # route, the step and the spend, which reads as a working loop. The
+      # container shipped exactly that and it cost a day to find.
+      - name: Every ladder rung is a declared model, and is priced
+        run: node scripts/check-ladder-models.mjs
+
       - name: Run the test suite
         run: node --experimental-strip-types --test \
-          test/agent-policy.test.ts test/approval-bridge.test.ts \
-          test/budget.test.ts test/envelope.test.ts test/evidence.test.ts test/judge.test.ts \
-          test/metrics.test.ts test/optimize.test.ts test/optimizer.test.ts \
-          test/phases.test.ts test/phase-budget.test.ts test/pipeline.test.ts \
-          test/questioner.test.ts \
-          test/policy.test.ts test/refine.test.ts test/runlog.test.ts \
-          test/runner.test.ts test/sandbox.test.ts test/ship.test.ts test/tools.test.ts \
-          test/driver.test.ts \
-          test/yolo.test.ts
+          test/agent-policy.test.ts test/approval-bridge.test.ts test/approvals.test.ts test/brief.test.ts \
+          test/budget.test.ts test/driver.test.ts test/envelope.test.ts test/evidence.test.ts \
+          test/explainer.test.ts test/judge.test.ts test/metrics.test.ts test/optimize.test.ts \
+          test/optimizer.test.ts test/patch-config.test.ts test/phase-budget.test.ts test/phases.test.ts \
+          test/pipeline-guard.test.ts test/pipeline.test.ts test/policy.test.ts test/questioner.test.ts \
+          test/refine.test.ts test/runlog.test.ts test/runner.test.ts test/sandbox.test.ts \
+          test/ship.test.ts test/start-target.test.ts test/tools.test.ts test/yolo.test.ts
+
 
   typecheck:
     name: typecheck (harness-free src/ modules)
@@ -154,13 +167,11 @@ jobs:
             --target ES2024 --module NodeNext --moduleResolution NodeNext \
             --strict --esModuleInterop --skipLibCheck --isolatedModules \
             --allowImportingTsExtensions \
-            src/agent-policy.ts src/budget.ts \
-            src/approval-bridge.ts src/brief.ts \
-            src/dashboard.ts src/dashboard-page.ts src/envelope.ts src/evidence.ts src/explainer.ts \
-            src/judge.ts src/laya.ts src/llm.ts src/messages.ts \
-            src/metrics.ts src/optimize.ts src/optimizer.ts src/phases.ts \
-            src/phase-budget.ts src/pipeline.ts src/prompts.ts \
-            src/questioner.ts src/refine.ts \
-            src/review.ts src/routing.ts src/runlog.ts src/runner.ts src/signals.ts src/spec.ts \
-            src/sandbox.ts src/ship.ts src/tools.ts src/yolo.ts \
-            src/observation.ts src/driver.ts
+            src/agent-policy.ts src/approval-bridge.ts src/approvals.ts src/brief.ts src/budget.ts \
+            src/dashboard-page.ts src/dashboard.ts src/driver.ts src/envelope.ts src/evidence.ts \
+            src/explainer.ts src/judge.ts src/laya.ts src/llm.ts src/messages.ts \
+            src/metrics.ts src/observation.ts src/optimize.ts src/optimizer.ts src/phase-budget.ts \
+            src/phase-notice.ts src/phases.ts src/pipeline.ts src/prompts.ts src/questioner.ts \
+            src/refine.ts src/review.ts src/routing.ts src/runlog.ts src/runner.ts \
+            src/sandbox.ts src/ship.ts src/signals.ts src/spec.ts src/tools.ts \
+            src/watcher-ttl.ts src/yolo.ts

@@ -2,8 +2,8 @@
 
 Everything below was found by running the plugin in a live harness, not by
 reading code. Each entry says what you observe, why it happens, and what fixes
-it. All of the open product warts are fixed; the section that remains open is
-the environment list, which is about the machine rather than the product.
+it. Everything found by running it is now fixed; what remains below is the
+environment list, which is about the machine rather than the product.
 
 The headline: **an approval that appears not to work is usually not the gate.**
 In every case observed here the gate was either never loaded at all, or loaded
@@ -146,6 +146,40 @@ but nothing behaves differently, the module is not importing. Compare the pnpm
 store key for a `_@deepseek-ai+…` suffix.
 
 ---
+
+## Fixed (2026-10-01) — the environment set, plus the two it was hiding
+
+### 8. A ladder rung naming an undeclared model is not a config smell — it is a dead run
+
+**Observed:** the container's loop started, the dashboard recorded the run
+(`route: onegw/execution`, `step: 1`, spend metered), and then:
+
+```
+pi-ai provider "onegw" has no configured model "execution"    (UNKNOWN_MODEL)
+```
+
+**Why:** `execution` **is** a gateway alias — `/v1/models` returns it. But
+**llm-pi-ai resolves a ladder rung against the provider profile's own `models:`
+list, not against the gateway.** A deployment that never declared that id makes
+the rung unreachable, and the run dies on step 1 with the dashboard already
+showing a healthy-looking run. Nothing errors at boot; nothing errors at config
+load; `validateSpec` is happy because the spec is internally consistent.
+
+**Why it is not one deployment's mistake:** the same rung was in the shipped
+`cordis.patch.yml` that every deployment inherits, and in the profile
+`scripts/make-profile.sh` generates. Fixing only the container would have left
+the local profile shipping the same dead rung.
+
+**Fix:** all three now name ids their own provider profile declares, and the
+`prices:` table keys the same `provider/model` strings the ladder uses — the
+second half mattered just as much, because a price keyed by anything else left
+the route the loop actually took unpriced (`unpricedSteps: 1` against a ceiling
+that can then never stop anything).
+
+`scripts/check-ladder-models.mjs` now fails on any shipped spec with a rung that
+is undeclared, unpriced, or priced-but-unused. It ran on the repository as it
+stood and fired on `cordis.patch.yml` immediately, which is the cheapest
+possible proof that the check earns its place.
 
 ## Fixed (2026-10-01) — both open warts
 

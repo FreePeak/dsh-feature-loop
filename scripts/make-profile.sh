@@ -132,16 +132,25 @@ cat > "$PROFILE_DIR/cordis.patch.yml" <<YAML
         api: openai-completions
         baseURL: http://127.0.0.1:8080/v1
         displayName: OneGW
+        # Concrete model ids, NOT the gateway's role aliases. llm-pi-ai resolves
+        # a ladder rung (and this default) against THIS list, not against the
+        # gateway — so `execution` here but absent from a deployment that routes
+        # the aliases is a run that dies UNKNOWN_MODEL on step 1. The alias is a
+        # gateway concept; this list is a deployment concept.
         models:
-          - id: execution
-            name: execution
+          - id: opencode/deepseek-v4.1-flash
+            name: opencode/deepseek-v4.1-flash
+            contextWindow: 200000
+            maxTokens: 32000
+          - id: xai/grok-4.7
+            name: xai/grok-4.7
             contextWindow: 200000
             maxTokens: 32000
 - id: agent-default-model
   name: '@deepseek-ai/dsh-agent-default-model'
   config:
     provider: onegw
-    model: execution
+    model: opencode/deepseek-v4.1-flash
 
 - id: feature-loop
   name: '@freepeak/dsh-feature-loop'
@@ -174,9 +183,9 @@ cat > "$PROFILE_DIR/cordis.patch.yml" <<YAML
       controller:
         ladder:
           - provider: onegw
-            model: execution
+            model: opencode/deepseek-v4.1-flash
           - provider: onegw
-            model: planning
+            model: xai/grok-4.7
         stepsPerRung: 5
         escalateAfterFailures: 2
       actuator:
@@ -196,11 +205,11 @@ cat > "$PROFILE_DIR/cordis.patch.yml" <<YAML
       maxSteps: 15
       costBudgetUSD: 1
       prices:
-        onegw/execution:
+        onegw/opencode/deepseek-v4.1-flash:
           inputPerMTok: 0.3
           outputPerMTok: 1.2
           cacheReadPerMTok: 0.03
-        onegw/planning:
+        onegw/xai/grok-4.7:
           inputPerMTok: 2.5
           outputPerMTok: 10
       unpricedFallback:
