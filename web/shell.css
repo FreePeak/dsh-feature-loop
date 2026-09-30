@@ -340,6 +340,19 @@ body.fl-standalone {
   .sidebar { order: 3; }
   .sidebar,
   .rail { position: static; height: auto; max-height: none; overflow: visible; }
+  /* `overflow: visible` on the column is what released the PANES' own height
+     too, and a pane with `overflow: hidden` and no height cap then grows to
+     its content: the activity feed was 941px tall (11 entries) inside a 744px
+     page, and the page scrolled 1483px past the thread to reach it. The panes
+     keep their own scrollers — they are lists, and a list that scrolls inside
+     its card is what the two-column layout does too (`max-height: 70vh` there,
+     `calc(100cqh - …)` for the sticky columns). At this width the page scrolls;
+     the pane does not need to. */
+  .sidebar .pane-activity,
+  .rail .pane-runs {
+    max-height: calc(100cqh - var(--header-h) - 28px);
+    overflow: hidden;
+  }
 }
 
 .stage { min-width: 0; }
@@ -747,28 +760,49 @@ details.help {
   overflow-x: hidden;
   overflow-y: auto;
   scroll-behavior: smooth;
-  padding: 16px 16px 0;
+  /* Horizontal padding belongs to the THREAD's own edges, not to a scroll
+     container that then holds the composer as a sticky child — and the child
+     brings its own. Four layers were stacking: this 32px, the footer's 24px,
+     the composer's 24px, the textarea's 8px. The textarea lost 88px to padding
+     before it typed a character, and in a 384px column (a 440px window) that
+     left it 23px wide — unusable, with a 36px send button beside it. The host's
+     own composer stacks two layers (54px) and is still 341px wide in the same
+     column. Vertical padding is unchanged; the horizontal inset is the card's
+     own, one layer down. */
+  padding: 16px 0 0;
 }
 .hitl-thread-footer {
   position: sticky;
   bottom: 0;
   z-index: 2;
   margin-top: auto;
-  padding: 0 12px 14px;
+  /* No horizontal padding: it is a sticky wrapper around the composer's own
+     card, and the card carries the inset (see `.hitl-composer-shell`). */
+  padding: 0 0 14px;
   background: linear-gradient(180deg, transparent, var(--panel) 28%);
 }
 .hitl-welcome {
+  /* `width: 100%` of a container with no padding does NOT inset the box: 100% is
+     the parent's CONTENT width and a margin is added outside it, so the card's
+     border lands 16px beyond the thread's own edge (measured: viewport right 1226,
+     welcome right 1242). `auto` sides with a definite `max-width` is what
+     actually centres and insets a block, which is what the message rule below
+     already does. */
   margin: 24px auto;
   max-width: var(--thread-max-width);
-  width: 100%;
 }
 
 .hitl-assistant-msg,
 .hitl-user-msg {
-  width: 100%;
   max-width: var(--thread-max-width);
+  /* The viewport no longer insets its content (the sticky composer is a child of
+     it and brings its own), so the messages carry the thread's edge inset
+     themselves. `max-width` with `auto` sides is what does it: it centres the
+     message under the thread's `--thread-max-width` and clamps to the container
+     when that is narrower, which is exactly the inset. `width: 100%` did not —
+     100% is the parent's full content width, so a margin went outside the box
+     and a `padding` took 32px out of the content instead. */
   margin: 0 auto 14px;
-  padding: 0;
 }
 
 .hitl-user-msg {
@@ -800,7 +834,7 @@ details.help {
   background: var(--composer);
   border: 1px solid var(--border);
   border-radius: var(--radius-chat);
-  padding: 10px 12px 10px;
+  padding: 10px 12px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
   transition: border-color 150ms ease, box-shadow 150ms ease;
 }
@@ -825,7 +859,14 @@ details.help {
   line-height: 1.5;
   min-height: 3.2rem;
   max-height: 8rem;
-  padding: 4px 4px 0;
+  /* The card insets; the field does not. It had `4px 4px 0` — four px of inset
+     on a control inside a card that already had twelve, so the text started 16px
+     in and the field itself was 8px narrower than the card's content box, for
+     nothing. The host's own composer editor is `padding: 0 4px`
+     (`ui-conversation/src/client/input/editor/composer-editor.module.css`) on a
+     card that insets 16px; same two layers, and the top padding moves to the
+     card's own row gap. */
+  padding: 0;
 }
 .hitl-composer-input::placeholder { color: var(--faint); }
 .hitl-composer-input:disabled { cursor: default; }

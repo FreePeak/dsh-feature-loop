@@ -37,6 +37,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The approval composer is usable in a narrow column.** Four nested layers of
+  horizontal padding sat between the thread's edge and the composer's field — the
+  thread viewport's 32px, the sticky footer's 24px, the composer card's 24px, the
+  textarea's own 8px. At a 440px window (a 331px content column) that left the
+  field 23px wide, with its 36px send button beside it. The viewport and the
+  footer are wrappers, not insets, and now carry no horizontal padding; the field
+  takes the card's inset rather than adding one. The field is 303px at 440px and
+  243px at 380px, against 23px and 8px before. The harness's own composer stacks
+  two layers (54px) in the same column; this one now stacks one (24px).
+- **No card is drawn outside the thread any more.** With the viewport's padding
+  gone the messages had to carry the edge inset themselves, and both obvious ways
+  to do it are wrong: `padding: 0 16px` took 32px out of the message's content box
+  so the text sat inside a border the card draws itself, and `margin: 0 16px 14px`
+  on `width: 100%` put the card's border 16px *beyond* its container — measured at
+  1280, the welcome plate's right edge was 1242 inside a viewport that ended at
+  1226, i.e. over the thread's own border. The messages and the welcome plate are
+  now `max-width: var(--thread-max-width)` with `auto` sides, which centres under
+  the thread's width and clamps to the container when that is narrower.
+- **The activity and runs panes keep their own height cap below 760px.** The
+  narrow-layout query released `.sidebar`/`.rail` to `position: static; height:
+  auto; overflow: visible` — correct for sticky columns, but it also released the
+  `overflow: hidden` panes inside them, which then grew to their content: the
+  activity feed was 941px tall (11 entries) inside a 744px page, and reaching it
+  meant scrolling 1483px past the approval thread. The panes are lists, so they
+  take `max-height: calc(100cqh - …)` and scroll inside their cards, which is
+  what the wider layouts already did.
 - **The page no longer measures itself in viewport units.** `shell.css` sized
   three page-height rules in `vh`, which is the wrong axis for a page that is
   the harness's *centre column*: the window also carries the host's sidebar rail

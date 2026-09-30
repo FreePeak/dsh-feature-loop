@@ -318,6 +318,56 @@ both measured in the same 240px and 200px columns, and both overflow. The
 plugin's page gutter is deliberately the harness's own, so it is not narrowed
 here to compensate for a frame the harness itself does not support at that size.
 
+### The composer was 23px wide in a narrow column
+
+**Observed:** at a 440px window the approval composer's textarea was 23px wide,
+with a 36px send button beside it. At 380px it was 8px.
+
+**Why:** padding stacked four deep on the way from the thread's edge to the
+field. `.hitl-thread-viewport` inset 16px per side, `.hitl-thread-footer` 12px,
+`.hitl-composer-shell` 12px, `.hitl-composer-input` 4px — 88px gone before a
+character was typed, and every one of those is a subtraction at every width, not
+only a narrow one. The harness's own composer stacks two layers
+(`ui-conversation/src/client/input/editor/composer-editor.module.css`: its card
+insets, its editor does not) and measures 341px in the same 384px column.
+
+**Fix:** the viewport and the footer are wrappers, so they carry no horizontal
+padding, and the field takes the card's inset. One layer, 24px. Field width in
+that column: **23px → 303px**, and 8px → 243px at 380px.
+
+**Two wrong answers on the way, both worth recording.** The edge inset the
+viewport used to carry has to be given back to the messages, and:
+
+- `padding: 0 16px` on the message takes 32px out of its *content* box, so the
+  text sits 16px inside a border the card draws itself — a double inset at the
+  sides and none at the top and bottom;
+- `margin: 0 16px 14px` on `width: 100%` moves the *box* 16px outward, because
+  100% is already the parent's content width. Measured at 1280: viewport right
+  edge 1226, welcome plate right edge 1242 — the card's border over the thread's.
+
+`max-width` with `auto` sides is the property that does both jobs: it centres the
+message under the thread's `--thread-max-width` and clamps to the container when
+that is narrower. Asserted by value, not by pattern — a loose `margin: … auto`
+match passes either side of a duplicated declaration.
+
+### The activity pane grew to its content below 760px
+
+**Observed:** at a 744px page with 11 activity entries, the page scrolled 1483px
+past the approval thread to reach the end of the feed.
+
+**Why:** the `max-width: 759px` query releases `.sidebar`/`.rail` to `position:
+static; height: auto; overflow: visible` — right for a sticky column, which is
+meaningless once the page is one scroll. But it also released the panes inside
+them, and a pane is `overflow: hidden` with no cap, so it sized to its content.
+`.pane-scroll` is `flex: 1 1 auto; min-height: 0` inside a bounded parent, so in
+the two-column layout the parent's cap was what bounded it; released, nothing
+did.
+
+**Fix:** the panes keep `max-height: calc(100cqh - var(--header-h) - 28px)` and
+scroll inside their cards — a list that scrolls in its card is what the wider
+layouts already do. Measured with 6 entries at 1024x700: page scroll 1652px
+instead of 2227px, feed 481px in a 568px cap.
+
 ### Still unverified
 
 - Nothing in the two sections above. The last open item from §"Still
