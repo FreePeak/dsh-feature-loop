@@ -151,13 +151,27 @@
           controller:
             # Cheap-first: most steps run on the first rung, and the loop climbs
             # only on evidence (steps spent, consecutive failures) — never on
-            # vibes. `execution`/`planning` are onegw role aliases, resolved by
-            # the gateway; swap in provider/model pairs if you route directly.
+            # vibes.
+            #
+            # THE MODEL IDS MUST APPEAR IN YOUR PROVIDER PROFILE'S `models:`
+            # LIST. llm-pi-ai resolves a rung against that list, not against the
+            # gateway: a model the gateway serves but the deployment never
+            # declared makes the run die `UNKNOWN_MODEL` on step 1 — after the
+            # dashboard has already recorded the route, the step and the spend.
+            # Nothing errors at boot and nothing errors at config load.
+            #
+            # onegw's `execution` and `planning` are role aliases and the docs
+            # here tell you to declare them, but the Docker settings template
+            # lists concrete model ids instead, so that ladder could not resolve
+            # there. Both shipped deployments now use declared ids: the cheap
+            # flash model for the work, the expensive one for when it stalls.
+            # If you route through the aliases, declare them yourself first:
+            #   llm-pi-ai: { providers: { onegw: { models: [{ id: execution, … }] } } }
             ladder:
               - provider: onegw
-                model: execution
+                model: opencode/deepseek-v4.1-flash
               - provider: onegw
-                model: planning
+                model: xai/grok-4.7
             stepsPerRung: 5
             escalateAfterFailures: 2
 
@@ -186,15 +200,21 @@
           costBudgetUSD: 1.00
 
           # Without a price table the cost ceiling cannot price a step and would
-          # read $0.00 forever — the failure budget.ts refuses to hide. These are
-          # the plan rates for the onegw aliases above; replace them if you
-          # route to different models.
+          # read $0.00 forever — the failure budget.ts refuses to hide.
+          #
+          # The keys MUST be the same `provider/model` strings the ladder above
+          # names: a price keyed by anything else leaves the route the loop
+          # actually took unpriced, so every run records `unpricedSteps: 1`
+          # against a ceiling that can then never stop anything.
+          #
+          # Estimates, labelled as such — a gateway plan's marginal rate is not
+          # a published price. Replace them with your account's rates.
           prices:
-            onegw/execution:
+            onegw/opencode/deepseek-v4.1-flash:
               inputPerMTok: 0.30
               outputPerMTok: 1.20
               cacheReadPerMTok: 0.03
-            onegw/planning:
+            onegw/xai/grok-4.7:
               inputPerMTok: 2.50
               outputPerMTok: 10.00
           unpricedFallback:

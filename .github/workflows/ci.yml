@@ -100,6 +100,14 @@ jobs:
       - name: The no-install test list is not stale
         run: node scripts/check-test-list.mjs
 
+      # The shipped specs' ladders must name models their deployment declares.
+      # A rung that does not is not a config smell, it is a run that dies
+      # UNKNOWN_MODEL on step 1 — after the dashboard has already recorded the
+      # route, the step and the spend, which reads as a working loop. The
+      # container shipped exactly that and it cost a day to find.
+      - name: Every ladder rung is a declared model, and is priced
+        run: node scripts/check-ladder-models.mjs
+
       - name: Run the test suite
         run: node --experimental-strip-types --test \
           test/agent-policy.test.ts test/approval-bridge.test.ts \
