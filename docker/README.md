@@ -61,20 +61,32 @@ do not exist:
 Both were found by running it, not by reading it, and neither produces an
 error — the UI boots clean and looks completely fine.
 
-**1. There is no Workspace until you add one.** A fresh container's
-`/data/storages/workspace.json` has `"workspaceIds": []`. Open the sidebar's
-**Add workspace** and point it at a project directory first. Until then the
-Feature Loop page says, correctly and usefully:
+**1. Add a Workspace before your first loop.** A fresh container's
+`/data/storages/workspace.json` has `"workspaceIds": []`, and the Feature Loop
+page says, correctly and usefully:
 
 > No workspace is registered yet — open a project folder, then start the loop.
 
-That is the plugin refusing to guess which checkout to write into, which is the
-behaviour you want. It is also the first thing that makes a fresh container look
-unusable, so the README says it here rather than letting you find it.
+That is the plugin refusing to guess which checkout to write into, and it is the
+behaviour you want — but it is also the first thing that makes a fresh container
+look unusable. Click **Add workspace** in the sidebar. Inside the container the
+picker resolves to the browse flow, and **Open** with no argument registers the
+working directory (`/root`). To loop over a real checkout instead, mount it:
 
-**2. The loop's model route is set by the profile, not the gateway key.** The
-`agent-default-model` row in `docker/profile.patch.yml` points at
-`provider: onegw`. Without that row the loop runs on the harness's own default
+```yaml
+    volumes:
+      - ${PWD}:/workspace        # your project, read-write
+```
+
+then Add workspace → `/workspace`. Once one exists, every loop from then on is
+just: type a task, press **Start loop**, click **Allow once**.
+
+**2. The loop's model route is set by the profile, and the ladder must name
+models the provider actually lists.** Two rows, and both were wrong at some
+point with no error:
+
+`docker/profile.patch.yml` sets `agent-default-model` to `provider: onegw`.
+Without that row the loop runs on the harness's own default
 (`provider: deepseek-official`) and every model call in the container dies with
 
 ```
@@ -82,6 +94,19 @@ llm-deepseek: no API key for provider route "deepseek-official"
 ```
 
 — while the UI, the dashboard and the approval panel all look perfect.
+
+The same file's `ladder` must name model ids that appear in
+`docker/settings.template.yaml`'s `models:` list, because **llm-pi-ai resolves a
+rung against that list, not against the gateway**. A rung the gateway serves but
+the settings do not declare fails on step 1 with
+
+```
+pi-ai provider "onegw" has no configured model "execution"    (UNKNOWN_MODEL)
+```
+
+and `prices:` must key the same `provider/model` strings the ladder uses, or
+the cost ceiling has no price for the route the loop took (`unpricedSteps: 1`,
+against a ceiling that can then never stop anything).
 
 Open `http://127.0.0.1:3090/?token=...` — host port **3090** maps to the
 container's relay port **8099**, which forwards to the UI on `127.0.0.1:3099`

@@ -294,8 +294,11 @@ gets reached.
   The Docker path was verified on 2026-10-01 and had four silent breakages,
   all fixed: a missing `git` in the build stage, `assets/` not copied into the
   runtime image (so the plugin failed to import and the container booted clean,
-  served a UI, and gated nothing), no `standalone: true` on the dashboard, and
-  no model route. Evidence: [`docs/evidence/docker-20261001.md`](docs/evidence/docker-20261001.md).
+  served a UI, and gated nothing), no `standalone: true` on the dashboard, no
+  model route, and a ladder naming models the provider profile did not declare
+  (so every run died `UNKNOWN_MODEL` on step 1). All fixed, and the container is
+  now gated and answered by a clicked button in both directions. Evidence:
+  [`docs/evidence/docker-20261001.md`](docs/evidence/docker-20261001.md).
 
 ---
 
