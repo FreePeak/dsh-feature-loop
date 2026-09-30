@@ -15,6 +15,9 @@
 
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
+import { readFileSync, statSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { startDashboard } from '../src/dashboard.ts'
 
@@ -114,4 +117,61 @@ test('the page and the API still require the token; assets do not', async () => 
     assert.equal((await get('/assets/dashboard.js?token=wrong')).status, 200)
     assert.equal((await get('/?token=' + dash.token)).status, 200)
   })
+})
+
+/**
+ * The vendored bundle is CHECKED IN, and it is build output: `web/entry.tsx`
+ * and the three stylesheets are the sources, `assets/assistant-ui/` is the
+ * artefact. A change to a source that nobody rebuilds leaves the artefact
+ * serving yesterday's page — and nothing fails, because the artefact is
+ * self-consistent and every other assertion in this file passes.
+ *
+ * MANIFEST.txt records the sizes the build measured, so this compares them.
+ * The failure is the point: it names the file to rebuild (`make
+ * dashboard-bundle`) rather than asserting something vague about freshness.
+ *
+ * Deliberately a SIZE check and not a content hash: `kb()` in web/build.mjs
+ * rounds to whole kB, so a one-line edit inside a 480 kB bundle can round to
+ * the same number and this will not notice. That is the documented ceiling —
+ * it catches a stale artefact, which is the failure that actually happened —
+ * and not a rebuild that changed nothing but a timestamp.
+ *
+ * ponytail: a size comparison, not a hash. A hash would be strictly better and
+ * would need `web/build.mjs` to WRITE hashes into a manifest nobody edits by
+ * hand; the size is already there and already wrong when the artefact is.
+ * Upgrade path is two lines of the builder plus this assertion.
+ */
+test('the checked-in bundle matches the manifest that measured it', () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const assets = join(here, '..', 'assets', 'assistant-ui')
+  const manifest = readFileSync(join(assets, 'MANIFEST.txt'), 'utf8')
+
+  const recorded = (key: string): number => {
+    const line = manifest.split('\n').find(l => l.startsWith(`${key}:`))
+    assert.ok(line !== undefined, `MANIFEST.txt must record ${key}`)
+    const size = /(\d+)\s*KB/.exec(line)?.[1]
+    assert.ok(size !== undefined, `MANIFEST.txt's ${key} line must carry a KB size`)
+    return Number(size)
+  }
+  const onDisk = (path: string): number => Math.round(statSync(path).size / 1024)
+
+  for (const [key, file] of [
+    ['dashboard.js', join(assets, 'dashboard.js')],
+    ['dashboard.css', join(assets, 'dashboard.css')],
+  ] as const) {
+    assert.equal(
+      onDisk(file),
+      recorded(key),
+      `assets/assistant-ui/${file.split('/').pop()} does not match the size ` +
+      'MANIFEST.txt recorded — run `make dashboard-bundle` and commit the result',
+    )
+  }
+
+  // client.js is recorded too, from outside the assets dir.
+  const repoRoot = join(here, '..')
+  assert.equal(
+    onDisk(join(repoRoot, 'client.js')),
+    recorded('client.js'),
+    'client.js does not match MANIFEST.txt — run `make dashboard-bundle`',
+  )
 })

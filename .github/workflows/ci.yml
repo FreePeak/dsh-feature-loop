@@ -81,9 +81,13 @@ jobs:
       # same way the typecheck job lists its `src/` inputs — and a test that
       # gains a harness import (`test/plugin-approval.test.ts` already has one,
       # through `src/plugin.ts`) or a dependency import must leave this list,
-      # exactly as `src/plugin.ts` leaves the typecheck list. `test/dashboard.test.ts`,
-      # `test/assistant-ui.test.ts` and the CSS pair run locally via `make test` —
-      # they need the built bundle or import `src/plugin.ts`. Everything pure runs
+      # exactly as `src/plugin.ts` leaves the typecheck list. `test/dashboard.test.ts`
+      # and the CSS pair run locally via `make test` — they import
+      # `src/plugin.ts`, which the harness-free job cannot load.
+      # `test/assistant-ui.test.ts` IS in this list: the bundle it asserts against
+      # is CHECKED IN, not built here, so it runs with no install — verified on a
+      # bare clone before it was moved here (2026-10-01); its exclusion note
+      # claimed the opposite. Everything pure runs
       # here, including `test/approvals.test.ts` (the registry behind the gate),
       # added 2026-10-01 because `scripts/check-test-list.mjs` noticed it was in
       # neither this list nor any other: the most consequential test in the repo
@@ -111,7 +115,7 @@ jobs:
       - name: Run the test suite
         run: node --experimental-strip-types --test \
           test/agent-policy.test.ts test/approval-bridge.test.ts \
-          test/approvals.test.ts test/brief.test.ts \
+          test/approvals.test.ts test/assistant-ui.test.ts test/brief.test.ts \
           test/budget.test.ts test/envelope.test.ts test/explainer.test.ts \
           test/judge.test.ts \
           test/metrics.test.ts test/optimize.test.ts test/optimizer.test.ts \

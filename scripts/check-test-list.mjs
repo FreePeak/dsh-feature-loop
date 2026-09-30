@@ -27,7 +27,6 @@ const repo = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 /** Tests that cannot run without the harness packages, each with why. */
 const EXCLUDED = {
-  'test/assistant-ui.test.ts': 'asserts against the built client bundle, which is not in a bare checkout',
   'test/css-parity.test.ts': 'parses web/shell.css and the built bundle',
   'test/css-scope.test.ts': 'parses web/shell.css and the built bundle',
   'test/dashboard.test.ts': 'imports src/plugin.ts, which imports the harness',
