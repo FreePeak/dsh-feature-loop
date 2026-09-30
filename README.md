@@ -237,17 +237,30 @@ even though the judge's score was itself wrong.
 
 ### Verified runs
 
-All three terminal paths, against the real model through onegw:
+All four terminal paths, re-run 2026-10-01 against the real model through
+onegw (the transcript above and `demo/TRANSCRIPT.txt` are from an earlier
+session; the shape is the same and the steps vary with the model):
 
 | Command | Outcome | Steps | Cost | Reviews |
 |---|---|---|---|---|
-| `bash demo/run.sh` | `goal-met` | 12 of 15 | $0.0066 | 1 (8%) |
-| `bash demo/run.sh --max-steps 5` | `budget-stop` (step ceiling) | 5 of 5 | $0.0039 | 1 (20%) |
-| `bash demo/run.sh --budget 0.00001` | `budget-stop` (cost ceiling) | 2 of 10 | $0.0002 | 0 |
+| `bash demo/run.sh` | `goal-met` | 6 of 15 | $0.0039 | 0 |
+| `bash demo/run.sh --max-steps 6` | `budget-stop` (step ceiling) | 6 of 6 | $0.0031 | 0 |
+| `bash demo/run.sh --budget 0.000001` | `budget-stop` (cost ceiling) | 2 of 15 | $0.0004 | 0 |
+| `bash demo/run.sh --judge none` | `goal-met` | 4 of 15 | $0.0024 | 0 |
 
-The step-ceiling run stops at 5 without spending a sixth call — the ceiling is a
-limit, not an invoice. The cost-ceiling run stops after 2 steps because the
-budget was $0.00001 and it had already spent $0.000232.
+The step-ceiling run stops at 6 without spending a seventh call — the ceiling is
+a limit, not an invoice. The cost-ceiling run stops after 2 steps because the
+budget was a millionth of a dollar and one call cost more than that.
+
+**These four commands did not run at all until 2026-10-01.** `demo/run.sh`
+pointed at `src/cli.ts`, which commit `633c1e2` deleted as a side effect of a
+change to something else entirely; every demo script — `npm run demo`,
+`demo:steps`, `demo:cost`, `demo:nojudge` — failed with
+`ERR_MODULE_NOT_FOUND` for six days' worth of commits, while this section
+described the loop reaching `goal-met` in one command. The entry point is back,
+in `demo/cli.ts` where it belongs (it is the demo's, not the published
+package's), and `scripts/check-typecheck-list.mjs` now fails if it goes missing
+again or if `run.sh` stops pointing at it.
 
 Repeat runs land between 9 and 12 steps and **8–20% review rate**, depending on
 whether an error cascade happens to trip. The book's target is <10%; critical
@@ -449,7 +462,7 @@ threshold with no provenance is a number someone liked.
 
 The policies are shared. Only transport and session state differ.
 
-| | Standalone runner (`src/runner.ts`, `src/cli.ts`) | DSH plugin (`src/plugin.ts`) |
+| | Standalone runner (`src/runner.ts`, `demo/cli.ts`) | DSH plugin (`src/plugin.ts`) |
 |---|---|---|
 | Transport | `src/llm.ts` → onegw | harness `llm` service |
 | Budget ceilings | ✅ wired | ✅ wired (`agent/pre-step`, `reject`) |
@@ -664,8 +677,8 @@ src/
   runner.ts      spec → budget → route → judge → review → model → tools
   llm.ts         OpenAI-compatible client + scripted client for tests
   tools.ts       sandboxed read/write/edit/list/run_tests, path-confined
-  cli.ts         the demo entry point
 demo/
+  cli.ts         the demo entry point (not in src/: not part of the package)
   src/latency-window.ts   the planted bug (nearest-rank off-by-one)
   test/                  14 tests, 3 of which fail on the bug
   README.md              the bug report the loop is given

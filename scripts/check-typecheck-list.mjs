@@ -32,7 +32,7 @@
  * a worse trade than the 20 lines above. It exits non-zero, so a wrong answer
  * cannot pass.
  */
-import { readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -89,3 +89,20 @@ if (failed) process.exit(1)
 console.log(`typecheck coverage: ${String(onDisk.length - Object.keys(EXCLUDED).length)}/` +
   `${String(onDisk.length)} modules checked in CI, ` +
   `${String(Object.keys(EXCLUDED).length)} excluded by name.`)
+
+// The demo's entry point is referenced by four npm scripts and by demo/run.sh,
+// and it is NOT in src/ — so nothing above would notice it going missing, which
+// is exactly what happened in 633c1e2 (the file was deleted by an unrelated
+// change and every demo script pointed at nothing until 2026-10-01).
+const demo = join(repo, 'demo/cli.ts')
+if (!existsSync(demo)) {
+  console.error('demo/cli.ts is missing — `npm run demo` and demo/run.sh both exec it.')
+  failed = true
+} else {
+  const runner = readFileSync(join(repo, 'demo/run.sh'), 'utf8')
+  if (!/demo\/cli\.ts/.test(runner)) {
+    console.error('demo/run.sh does not reference demo/cli.ts — it points somewhere else.')
+    failed = true
+  }
+}
+if (failed) process.exit(1)
