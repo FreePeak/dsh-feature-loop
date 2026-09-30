@@ -147,6 +147,46 @@ store key for a `_@deepseek-ai+…` suffix.
 
 ---
 
+## Fixed (2026-10-01) — the environment set, plus the six it was hiding
+
+### 12. An ask nobody answered disappeared instead of saying so
+
+**Observed:** with `dashboard.answerTimeoutMs: 20000` and a human who walked
+away, the card went blank after 20 seconds. No outcome, no explanation, and no
+buttons. The page's feed said `expired: write — no answer within 20000ms`; the
+card said nothing at all. Screenshot at
+[`evidence/expiry-20261001.png`](evidence/expiry-20261001.png).
+
+**Why:** the thread is built from `pending`, and an expired ask has left it.
+`ApprovalGate.resolution` and the card's own "Expired — no answer in time."
+text already existed — but the field was only ever set from the response the
+page itself sent, so the one path where nobody responded could not reach it.
+The code for the right answer was in the file and unreachable.
+
+**Why the feed could not carry it either:** `expired: write` names a TOOL. A
+run with two writes in flight cannot say which card just went blank, and
+attributing the expiry to the first live ask would put "Expired" on a card the
+operator is still holding — worse than saying nothing.
+
+**Fix, in three parts:**
+
+1. `approvals.ts` puts the ask's **id** in every settle line, on both paths.
+   The first attempt put it in the default text and the expiry timer kept
+   passing its own — so every expiry still arrived id-less, and the change was
+   invisible. A default and an explicit argument are two paths; only one of them
+   was getting the edit.
+2. `expiredOutcomeOf` (`src/approval-bridge.ts`) reads those lines back into
+   ask-id → outcome. A line without an id is **ignored, not guessed at**, and
+   that is asserted.
+3. `web/app.tsx` re-materialises a settled ask from its feed line, with the
+   outcome attached, so the card stays on screen saying *Expired* instead of
+   vanishing. Bounded by the feed's retention (200 lines) and the last 12 asks.
+
+Verified end to end at 20s: the card appears, nobody clicks, at 20s the thread
+shows `Expired — no answer in time.`, the pending count returns to 0, and the
+file the run wanted to write does not exist. The expiry path is the fail-closed
+direction, so it is worth being explicit: **an unanswered ask writes nothing.**
+
 ## Fixed (2026-10-01) — the environment set, plus the five it was hiding
 
 ### 11. A stale checked-in bundle passed every test that claimed to check it

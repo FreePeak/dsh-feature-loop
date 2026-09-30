@@ -28,9 +28,14 @@ import {
   useExternalStoreRuntime,
 } from '@assistant-ui/react'
 import type { ThreadMessageLike, ToolCallMessagePartProps } from '@assistant-ui/react'
-import { outcomeForResponse, toApprovalGate } from '../src/approval-bridge.ts'
-import type { BridgeOutcome } from '../src/approval-bridge.ts'
-import type { BriefNode, DashboardSnapshot, PendingApproval } from '../src/dashboard.ts'
+import {
+  expiredOutcomeOf,
+  outcomeForResponse,
+  resolutionForOutcome,
+  toApprovalGate,
+} from '../src/approval-bridge.ts'
+import type { BridgeAsk, BridgeOutcome } from '../src/approval-bridge.ts'
+import type { BriefNode, DashboardSnapshot, FeedEntry, PendingApproval } from '../src/dashboard.ts'
 import { PHASE_ORDER, phaseFraction, phaseRail } from '../src/phases.ts'
 import { WATCHER_TTL_MS } from '../src/watcher-ttl.ts'
 
@@ -57,8 +62,22 @@ declare global {
   }
 }
 
-/** One pending ask as an assistant-ui message with an approval gate. */
-function askToMessage(ask: PendingApproval): ThreadMessageLike {
+/**
+ * One pending ask as an assistant-ui message with an approval gate.
+ *
+ * `decided` carries an ask that left `pending` WITHOUT this page answering it —
+ * an expiry, or an abort. Without it the card simply vanishes and the operator
+ * sees a decision disappear with nothing named; the only record is a feed line
+ * that reads `expired: write — no answer within 20000ms`, naming the TOOL but
+ * not the ask, so a run with two writes in flight cannot say which card just
+ * went blank.
+ *
+ * `ApprovalGate.resolution` and the card's own "Expired — no answer in time."
+ * text already existed and were unreachable on this path: the field was only
+ * ever set from the response the page itself sent. `approvals.ts` now puts the
+ * ask's id in the feed line, and `expiredOutcomeOf` reads it back out.
+ */
+function askToMessage(ask: PendingApproval, decided?: BridgeOutcome): ThreadMessageLike {
   const gate = toApprovalGate({
     id: ask.id,
     toolName: ask.toolName,
@@ -67,6 +86,11 @@ function askToMessage(ask: PendingApproval): ThreadMessageLike {
     ...ask.runId === undefined ? {} : { runId: ask.runId },
     askedAt: ask.askedAt,
   })
+  if (decided !== undefined) {
+    const resolution = resolutionForOutcome(decided)
+    if (resolution !== undefined) gate.resolution = resolution
+    else gate.approved = decided === 'allowed-once'
+  }
   return {
     id: `ask-${ask.id}`,
     role: 'assistant',
@@ -369,12 +393,47 @@ function AssistantBubble(): React.ReactElement {
   )
 }
 
-function ApprovalThread({ pending, source }: {
+function ApprovalThread({ pending, feed, source }: {
   pending: PendingApproval[]
+  feed: FeedEntry[]
   source: DashboardSource
 }): React.ReactElement {
   ASK_BY_ID.clear()
   for (const ask of pending) ASK_BY_ID.set(ask.id, ask)
+  const live = new Set(pending.map(a => a.id))
+
+  // The thread is built from `pending`, so an ask that has LEFT that list has
+  // no message to render and no card to carry its outcome — which is the whole
+  // bug: `ApprovalGate.resolution` and the card's "Expired — no answer in
+  // time." text already existed and were unreachable, because the field was
+  // only ever set from the response this page itself sent. An ask that nobody
+  // answered left no trace in the thread at all.
+  //
+  // So a settled ask is re-materialised from the one record that survives it:
+  // the feed line `approvals.ts` writes, which now carries the ask's id. The
+  // tool name and reason come back out of `ASK_BY_ID` for as long as the page
+  // has seen them; a card whose ask was never seen live falls back to the tool
+  // name in the feed line itself. Bounded by the feed's own retention.
+  const settledAsks = useMemo(() => {
+    const out: BridgeAsk[] = []
+    for (const entry of feed) {
+      if (entry.kind !== 'approval') continue
+      const m = /^(allowed once|rejected|cancelled|expired): ([\w./-]+)(?: — (.*?))? \[([0-9a-f-]{36})\]$/
+        .exec(entry.text)
+      if (m === null) continue
+      const [, , tool, reason, id] = m
+      if (live.has(id)) continue
+      const seen = ASK_BY_ID.get(id)
+      out.push({
+        id,
+        toolName: seen?.toolName ?? tool,
+        ...reason === undefined ? {} : { reason: `${tool}: ${reason}` },
+        ...seen?.runId === undefined ? {} : { runId: seen.runId },
+        askedAt: entry.t,
+      })
+    }
+    return out.slice(-12)
+  }, [feed, live])
 
   const [localMessages, setLocalMessages] = useState<ThreadMessageLike[]>([])
   const [draft, setDraft] = useState('')
@@ -383,11 +442,42 @@ function ApprovalThread({ pending, source }: {
   const draftRef = useRef(draft)
   draftRef.current = draft
 
+  /**
+   * The outcome of every ask the feed has settled, by ask id.
+   *
+   * Keyed on the id `approvals.ts` puts in its feed lines, so this is a lookup
+   * and not a guess. Bounded and self-clearing: an id is dropped as soon as the
+   * feed stops carrying it, so a long session cannot grow this without limit,
+   * and a settled ask the page answered itself never reaches the map (its own
+   * response removes it from `pending` first).
+   */
+  const [expired, setExpired] = useState<ReadonlyMap<string, BridgeOutcome>>(
+    () => new Map<string, BridgeOutcome>(),
+  )
+  useEffect(() => {
+    const seen = expiredOutcomeOf(feed)
+    if (seen.size === 0) return
+    setExpired(prev => {
+      // Drop ids the feed has rolled past, so the map tracks the feed's own
+      // retention rather than growing for the life of the page.
+      const next = new Map<string, BridgeOutcome>()
+      for (const [id, outcome] of seen) next.set(id, outcome)
+      return next.size === prev.size && [...next].every(([k, v]) => prev.get(k) === v)
+        ? prev
+        : next
+    })
+  }, [feed])
+
   const messages = useMemo(() => {
-    const asks = pending.map(askToMessage)
+    const asks = [
+      ...pending.map(ask => askToMessage(ask, expired.get(ask.id))),
+      // Settled asks that left the pending list: shown so their outcome is
+      // visible, newest last, and settled so they carry no buttons.
+      ...settledAsks.map(ask => askToMessage(ask, expired.get(ask.id))),
+    ]
     // User feedback bubbles after the live asks keep the thread chat-shaped.
     return [...asks, ...localMessages].slice(-48)
-  }, [pending, localMessages])
+  }, [pending, settledAsks, localMessages, expired])
 
   const commitLocal = useCallback(() => {
     const note = draftRef.current.trim()
@@ -940,7 +1030,7 @@ export function DashboardApp({ source }: { source: DashboardSource }): React.Rea
             {snapshot.pending.length}
           </span>
         </div>
-        <ApprovalThread pending={snapshot.pending} source={source} />
+        <ApprovalThread pending={snapshot.pending} feed={snapshot.feed} source={source} />
       </section>
       <aside className="rail" aria-label="Grouped runs">
         <GroupedRunPanels snapshot={snapshot} filter={sessionFilter} />
