@@ -147,7 +147,45 @@ store key for a `_@deepseek-ai+…` suffix.
 
 ---
 
-## Fixed (2026-10-01) — the environment set, plus the six it was hiding
+## Fixed (2026-10-01) — the environment set, plus the seven it was hiding
+
+### 13. A settled card lost the reason it was raised for
+
+**Observed:** with **two loops in flight at once**, the page rendered two
+approval cards; clicking Allow on the first settled it and left the second
+showing:
+
+```
+APPROVAL REQUIRED | asked 5:44:47 AM | write | RUN | session-43d540b8-…
+```
+
+and nothing else — where the live card beside it read the full
+`REVIEW REQUESTED (policy): write: irreversible is always approved by a
+human.` The run/call/tool were all still there. The **gate's reason** was the
+thing that vanished, and with it the only text that said what the human was
+actually being asked to agree to.
+
+**Why:** a card re-materialised from its feed line has no `PendingApproval`
+behind it — the ask left `pending` when it settled — so
+`toApprovalGate`'s fallback prompt took over. Worse, `ASK_BY_ID.clear()` ran on
+every render and only repopulated from `pending`, so after one more poll even
+the tool name and run id were gone and the card read `write needs approval`.
+
+The single-ask proofs could not see this: with one ask there is nothing to
+confuse it with, and the card under test was always the live one.
+
+**Fix:** `ASK_BY_ID` is now additive for the asks the thread is showing and
+evicted by the same slice that bounds the settled list — so a re-materialised
+ask keeps the tool, call, run and reason it had, and the gate text is the
+plugin's own again. Both were verified with two concurrent loops through the
+generated profile: one card live with buttons, the other settled with no
+buttons and its full reason intact, and `d1.txt` written while `d2.txt` was
+not — the click settled one ask, not whichever card happened to be first in
+the DOM.
+
+`test/assistant-ui.test.ts` pins the shape: a re-materialised ask keeps the
+reason verbatim, every outcome settles the card through the right field, and
+`expired` never renders as a refusal.
 
 ### 12. An ask nobody answered disappeared instead of saying so
 
