@@ -89,7 +89,7 @@ image: ## Build the container image
 .PHONY: up
 up: ## Start the container detached, then print the URL and token
 	@$(export_key); \
-	  DSH_HOST_PORT=$(HOST_PORT) $(COMPOSE) up -d --build; \
+	  DSH_HOST_PORT=$(HOST_PORT) DSH_DASHBOARD_PORT=$(DASHBOARD_PORT) $(COMPOSE) up -d --build; \
 	  echo; \
 	  echo "waiting for the UI to answer on :$(HOST_PORT) ..."; \
 	  for i in $$(seq 1 45); do \
