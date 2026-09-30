@@ -297,6 +297,12 @@ CI_FILES := src/agent-policy.ts src/budget.ts src/dashboard.ts \
 integration: ## Run the real-DSH integration spec (needs the harness checkout)
 	@bash test/integration/run.sh "$(DSH_HARNESS)"
 
+
+.PHONY: profile
+profile: ## Create a DSH profile that actually runs the loop (NAME=… PORT=… DASH=… APP=headless)
+	@bash scripts/make-profile.sh $(or $(NAME),feature-loop) \
+	  $(if $(PORT),--port $(PORT)) $(if $(DASH),--dashboard-port $(DASH)) \
+	  $(if $(filter headless,$(APP)),--headless)
 .PHONY: dashboard-bundle
 dashboard-bundle: ## Rebuild the vendored assistant-ui bundle into assets/ (commit the result)
 	@node web/build.mjs

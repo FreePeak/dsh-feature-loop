@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+#
+# Create a ready-made DSH profile that actually runs the feature loop.
+#
+#   scripts/make-profile.sh [name] [--port N] [--dashboard-port N] [--web|--headless]
+#
+# Defaults: name=feature-loop, web app, port 4188, dashboard 8100.
+#
+# Every step here is one this guide has gotten wrong by hand, so the script
+# exists rather than the checklist:
+#
+#   * the plugin must be in `dsh.profile.bundles` — a dependency alone composes
+#     nothing, which is why the `web` profile has looked like an ordinary agent
+#     loop with the plugin installed;
+#   * the profile must also depend on a harness bundle, or the plugin's optional
+#     peerDependencies never resolve: it appears in the boot graph, its row
+#     composes, and it imports nothing at runtime. The tell is pnpm's virtual
+#     store key — a `_@deepseek-ai+…` suffix means resolved;
+#   * the lockfile is a v9 one and pnpm 11 silently re-resolves it, dropping the
+#     peer wiring, so this uses pnpm 9 explicitly;
+#   * a patch entry for `id: feature-loop` REPLACES the whole config, so the
+#     generated patch spells out every key — a partial override deletes `spec`,
+#     and a spec-less policy builds no gate at all;
+#   * each process owns its own approval registry AND its own dashboard port, so
+#     the headless twin gets a different port from the web one.
+#
+# ponytail: writes four files and shells out to pnpm once. The upgrade path is
+# `dsh plugin --profile X add`, which does the install but not the peers, the
+# bundle row, or the patch — which is why this exists.
+set -euo pipefail
+
+NAME=feature-loop
+APP=web
+PORT=4188
+DASH=8100
+WEB_PORT_ALT=4188
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --web) APP=web; shift ;;
+    --headless) APP=headless; shift ;;
+    --port) PORT="$2"; shift 2 ;;
+    --dashboard-port) DASH="$2"; shift 2 ;;
+    -h|--help) sed -n '2,25p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    *) NAME="$1"; shift ;;
+  esac
+done
+
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+DSH="${DSH_HARNESS:-$HOME/work/harvey/freepeak/deepseek-harness}"
+CLI="$DSH/apps/cli/lib/bin.js"
+HOME_DIR="${DSH_HOME:-$HOME/.dsh}"
+PROFILE_DIR="$HOME_DIR/profiles/$NAME"
+PNPM="npx -y pnpm@9.15.9"
+
+[ -f "$CLI" ] || { echo "error: harness checkout not found at $DSH" >&2; exit 1; }
+[ -d "$REPO/lib" ] || { echo "error: $REPO/lib is missing — run 'pnpm build' first" >&2; exit 1; }
+
+APP_BUNDLE=$([ "$APP" = web ] && echo "@deepseek-ai/dsh-web-app" || echo "@deepseek-ai/dsh-headless")
+
+echo "==> profile $NAME ($APP app, web :$PORT, dashboard :$DASH)"
+mkdir -p "$PROFILE_DIR"
+
+# The harness packages are pinned to the version the harness itself runs, and
+# pinned in `pnpm.overrides` rather than as dependencies: they are peers of the
+# plugin, and adding them as direct deps installs a SECOND copy of each under
+# the profile root, which is how a peer ever resolves against a mismatched
+# build. Without these the resolve fails outright, with the least readable
+# error pnpm has:
+#   ERR_PNPM_NO_MATCHING_VERSION  No matching version found for @deepseek-ai/dsh-llm@>=0.1.5 <0.2.0
+#   The latest release of @deepseek-ai/dsh-llm is "0.0.1-rc.1".
+#
+# The plugin's own peerDependencies pin the RANGE the harness must satisfy; the
+# harness checkout's version is the answer, read rather than hardcoded so a
+# harness upgrade needs no script edit.
+HARNESS_VERSION=$(node -p "require('$DSH/apps/cli/package.json').version" 2>/dev/null || echo 0.1.5-rc.3)
+# cordis is VENDORED in the harness checkout, not published from its packages/,
+# so the CLI version says nothing about it. Read the vendored manifest.
+CORDIS_VERSION=$(node -p "require('$DSH/vendor/cordis/package.json').version" 2>/dev/null || echo 4.0.2)
+cat > "$PROFILE_DIR/package.json" <<JSON
+{
+  "name": "dsh-profile-$NAME",
+  "private": true,
+  "dependencies": {
+    "@deepseek-ai/dsh-experimental-agent-team-profile": "0.1.5-rc.3",
+    "@freepeak/dsh-feature-loop": "file:$REPO"
+  },
+  "pnpm": {
+    "overrides": {
+      "@deepseek-ai/dsh-llm": "$HARNESS_VERSION",
+      "@deepseek-ai/dsh-agent": "$HARNESS_VERSION",
+      "@deepseek-ai/dsh-tools": "$HARNESS_VERSION",
+      "@deepseek-ai/dsh-typert-protocol": "$HARNESS_VERSION",
+      "@deepseek-ai/cordis": "$CORDIS_VERSION"
+    }
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "$APP_BUNDLE",
+        "@deepseek-ai/dsh-experimental-agent-team-profile",
+        "@freepeak/dsh-feature-loop"
+      ],
+      "patchReload": "live"
+    }
+  }
+}
+JSON
+
+# One layer, three settings: hoisted like every other profile, and peers ON
+# (off is what makes the plugin inert on a profile that supplies nothing else).
+cat > "$PROFILE_DIR/pnpm-workspace.yaml" <<'YAML'
+packages:
+  - .
+
+nodeLinker: hoisted
+autoInstallPeers: true
+YAML
+
+# No credential is written here. `apiKeyEnv` names a REFERENCE; the value lives
+# in ~/.dsh/.credentials.yaml and never reaches this file.
+cat > "$PROFILE_DIR/cordis.patch.yml" <<YAML
+# Generated by scripts/make-profile.sh — a REPLACE, not a merge, so every key
+# the row keeps is spelled out below.
+- id: llm-pi-ai
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config:
+    providers:
+      onegw:
+        apiKeyEnv: ONEGW_API_KEY
+        api: openai-completions
+        baseURL: http://127.0.0.1:8080/v1
+        displayName: OneGW
+        models:
+          - id: execution
+            name: execution
+            contextWindow: 200000
+            maxTokens: 32000
+- id: agent-default-model
+  name: '@deepseek-ai/dsh-agent-default-model'
+  config:
+    provider: onegw
+    model: execution
+
+- id: feature-loop
+  name: '@freepeak/dsh-feature-loop'
+  config:
+    reviewBudget: 0.1
+    judgeThreshold: 1
+    judge: laya
+    judgeBaseURL: http://127.0.0.1:8092
+    systemOneModel: laya
+    judgeTimeoutMs: 5000
+    gatePolicies:
+      read: auto
+      glob: auto
+      grep: auto
+      edit: auto-if-confident
+      write: always-approve
+    gateMode: ask
+    dashboard:
+      enabled: true
+      standalone: true
+      host: 127.0.0.1
+      port: $DASH
+      answers: true
+      answerTimeoutMs: 600000
+    spec:
+      goal: the verification command exits 0 and no previously-passing test breaks
+      sensor:
+        - repository files
+        - test output
+      controller:
+        ladder:
+          - provider: onegw
+            model: execution
+          - provider: onegw
+            model: planning
+        stepsPerRung: 5
+        escalateAfterFailures: 2
+      actuator:
+        read: read
+        glob: read
+        grep: read
+        bash: irreversible
+        edit: reversible-write
+        write: irreversible
+        task: read
+      feedback: the verification command exits 0, and the diff is the smallest that achieves it
+      termination:
+        successCommand: bash verify.sh
+        guards:
+          - error-cascade
+          - tool-cycle
+      maxSteps: 15
+      costBudgetUSD: 1
+      prices:
+        onegw/execution:
+          inputPerMTok: 0.3
+          outputPerMTok: 1.2
+          cacheReadPerMTok: 0.03
+        onegw/planning:
+          inputPerMTok: 2.5
+          outputPerMTok: 10
+      unpricedFallback:
+        inputPerMTok: 0.3
+        outputPerMTok: 1.2
+        cacheReadPerMTok: 0.03
+YAML
+
+echo "==> install (pnpm 9 — a v11 re-resolve drops the peer wiring)"
+(cd "$PROFILE_DIR" && $PNPM install --no-frozen-lockfile >/dev/null)
+
+# The one-second check, and the only one that answers the question that
+# matters: did the plugin's peers RESOLVE? The lockfile's importer entry spells
+# out the peer suffixes on the plugin's own version string, which is exactly
+# what the runtime resolves against — and it is readable even when the virtual
+# store key has been hashed down to a bare suffix.
+#
+#   …dsh-feature-loop(@deepseek-ai/cordis@4.0.4)(@deepseek-ai/dsh-agent@…)   # wired
+#   …dsh-feature-loop                                                        # inert
+#
+# Unresolved is the silent failure this whole script exists to prevent: the row
+# composes, the client bundle is in the boot graph, and nothing is gated —
+# because the module import throws and the fiber never constructs.
+# The resolved `version:` line for the plugin, not the whole importer block.
+PLUGIN_LINE=$(awk '/^  \.:$/,/^packages:$/' "$PROFILE_DIR/pnpm-lock.yaml" | grep -A2 "dsh-feature-loop':" | tail -1)
+case "$PLUGIN_LINE" in
+  *'@deepseek-ai/dsh-llm@'*)
+    echo "==> peers resolved ($(grep -o '@deepseek-ai/[a-z-]*@' <<<"$PLUGIN_LINE" | sort -u | wc -l | tr -d ' ') harness packages on the plugin's entry)" ;;
+  *)  echo "WARNING: the plugin's entry carries no peer versions." >&2
+      echo "         It is installed but INERT: the row composes, the client" >&2
+      echo "         bundle is in the boot graph, and nothing is gated — the" >&2
+      echo "         import throws and the fiber never constructs." >&2
+      echo "         fix: add pnpm.overrides pinning the harness packages (see" >&2
+      echo "         scripts/make-profile.sh) and reinstall with pnpm 9." >&2 ;;
+esac
+
+echo "==> compose check"
+node "$CLI" --profile "$NAME" --dump-config | grep -q "id: feature-loop" \
+  || { echo "error: the feature-loop row did not compose" >&2; exit 1; }
+node "$CLI" --profile "$NAME" --dump-config | grep -A 12 -m1 "id: feature-loop"
+
+cat <<EOF
+
+Next:
+  node "$CLI" --profile $NAME --port $PORT --no-open
+
+Then read the two token lines in the log:
+  dsh web: http://127.0.0.1:$PORT/?token=...
+  feature-loop dashboard: http://127.0.0.1:$DASH/?token=...
+EOF

@@ -326,16 +326,27 @@ include this package by name: see [`docs/SETUP.md`](docs/SETUP.md).
 <details>
 <summary>Install by hand</summary>
 
-To run the plugin inside a local harness profile — including alongside Agent
-Teams — follow **[`docs/SETUP.md`](docs/SETUP.md)**. It covers the build, a
-scratch profile, the cordis patch, and a small task that makes the ceilings and
-the review gate visibly fire, plus the failure modes people actually hit.
+One command builds the profile, installs it, and proves it composed:
 
 ```bash
-pnpm build                                       # the harness loads built JS, not .ts
-dsh plugin --profile <name> add -w file:$PWD     # `-w` is required for a profile
-dsh --profile <name> --dump-config | grep -A8 feature-loop   # verify composition
+pnpm build                              # the harness loads built JS, not .ts
+bash scripts/make-profile.sh feature-loop
 ```
+
+It writes `~/.dsh/profiles/feature-loop/`, runs the install, checks that the
+plugin's **peers resolved**, and prints the resolved `feature-loop` row. Then:
+
+```bash
+node ~/work/harvey/freepeak/deepseek-harness/apps/cli/lib/bin.js \
+  --profile feature-loop --port 4188 --no-open
+```
+
+Two token lines come out of that boot: `dsh web:` (the harness UI — the plugin's
+page is the **Feature Loop** entry in its sidebar) and `feature-loop dashboard:`
+(the standalone approval surface, opt-in via `dashboard.standalone: true`).
+
+The full walkthrough, including doing it by hand and every failure mode, is
+**[`docs/SETUP.md`](docs/SETUP.md)**.
 
 **The profile must supply the plugin's runtime peers.** The built plugin imports
 `@deepseek-ai/dsh-llm` and `@deepseek-ai/dsh-typert-protocol`, both are
@@ -343,9 +354,10 @@ optional `peerDependencies`, and this repo's `.npmrc` sets
 `auto-install-peers: false` — so a profile that pulls in nothing else from the
 harness installs the plugin, composes it, shows it in the boot graph, and then
 does nothing at all: no gate, no review, no approval. Depend on a harness
-bundle (Agent Teams' profile bundle is the usual one) and the peers resolve.
-The one-second check is pnpm's virtual-store key — a `_@deepseek-ai+c_…`
-suffix means resolved, no suffix means the plugin is inert:
+bundle (Agent Teams' profile bundle is the usual one) and the peers resolve —
+`scripts/make-profile.sh` does all of this and prints the check, because the
+failure is the quietest one this plugin has: the row composes, the client bundle
+is in the boot graph, and nothing is gated.
 [`docs/KNOWN-ISSUES.md` §4](docs/KNOWN-ISSUES.md), and
 [`docs/SETUP.md`](docs/SETUP.md) §Step 2. `make install` performs this check for
 you and refuses to finish on an inert install.
