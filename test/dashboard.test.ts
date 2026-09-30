@@ -448,6 +448,84 @@ test('an abort (the ask was withdrawn) cancels the pending approval', async (t) 
   assert.deepEqual((await getState(dash)).pending, [])
 })
 
+test('every settle names the ask it settled, so a page can say WHICH one ended', async (t) => {
+  // The page's card is built from `pending`, so a settled ask has left it — and
+  // the only record that survives is the feed line. `expired: write_file` names
+  // a TOOL, which is not enough: a run with two writes in flight cannot say
+  // which card went blank. The id is what makes the line addressable, and this
+  // asserts it on ALL FOUR settle paths, because the fix that came first touched
+  // only the default text and the timeout kept passing its own.
+  // 5s, not 30ms: cases 2-4 create their own asks and a 30ms ceiling would
+  // expire the one under test before the test reached it. The expiry path is
+  // case 1 and wants a tight ceiling — so this uses two dashboards.
+  const { dash } = await started(t, { answerTimeoutMs: 5000 })
+  const close = await connectSse(dash)
+  t.after(close)
+
+  // Every id in a feed, in order — and `idIn` is the Nth of them. An earlier
+  // draft read only the FIRST match, so cases 2-4 were all silently comparing
+  // case 1's id and the distinctness assertion could never fail. The nth form is
+  // what makes each case check its own settle.
+  const idsIn = (feed: readonly { text: string }[]): string[] =>
+    [...feed.map(l => l.text).join('\n').matchAll(/\[([0-9a-f-]{36})\]/g)].map(m => m[1])
+  const idIn = (feed: readonly { text: string }[], n: number): string | undefined =>
+    idsIn(feed)[n]
+
+  // 1. expiry (the timer passes its own text) — its own dashboard, because
+  //    this one's ceiling is 5s and waiting for it four times is not a test.
+  const { dash: quick } = await started(t, { answerTimeoutMs: 30 })
+  const quickClose = await connectSse(quick)
+  t.after(quickClose)
+  await quick.answer(QUESTION, delegatingNext().next)
+  const expiredId = idIn((await getState(quick)).feed, 0)
+  assert.ok(expiredId !== undefined, 'an expiry must name the ask it expired')
+
+  // 2. abort. Its own signal, aborted while the ask is live.
+  const controller = new AbortController()
+  const abortNext = delegatingNext()
+  const aborted = dash.answer({ ...QUESTION, signal: controller.signal }, abortNext.next)
+  await delay(20)
+  controller.abort()
+  assert.equal(await aborted, 'cancelled')
+  assert.equal(abortNext.delegated(), false, 'the ask was claimed, so nothing delegated')
+  const cancelledId = idIn((await getState(dash)).feed, 0)
+  assert.ok(cancelledId !== undefined, 'an abort must name the ask it cancelled')
+
+  // 3. an explicit decision from the page, WITH operator feedback — the path
+  //    that builds its own text and so bypasses the default entirely.
+  const decideNext = delegatingNext()
+  const decided = dash.answer(QUESTION, decideNext.next)
+  const live = (await getState(dash)).pending
+  assert.equal(live.length, 1, 'exactly one ask is in flight')
+  const pending = live[0] as { id: string }
+  const res = await post(dash, pending.id, 'allowed-once', {
+    token: dash.token,
+    body: JSON.stringify({ outcome: 'allowed-once', feedback: 'looks right' }),
+  })
+  assert.equal(res.status, 200, await res.text())
+  assert.equal(await decided, 'allowed-once')
+  assert.equal(decideNext.delegated(), false)
+  const allowedId = idIn((await getState(dash)).feed, 1)
+  assert.ok(allowedId !== undefined, 'a decision must name the ask it settled')
+
+  // 4. the last tab disconnecting
+  const orphan = dash.answer(QUESTION, delegatingNext().next)
+  await delay(5)
+  close()
+  assert.equal(await orphan, 'unavailable')
+  const disconnectedId = idIn((await getState(dash)).feed, 2)
+  assert.ok(disconnectedId !== undefined, 'a disconnect must name the ask it closed')
+
+  // The ids are DISTINCT, which is the whole point: three settles of the same
+  // tool are three different asks. `expiredId` came from the OTHER dashboard,
+  // so only the three from this one are comparable.
+  assert.equal(new Set([cancelledId, allowedId, disconnectedId]).size, 3)
+  assert.ok(
+    expiredId !== undefined && !new Set([cancelledId, allowedId, disconnectedId]).has(expiredId),
+    'the expiry happened on its own dashboard, so its id must not collide either',
+  )
+})
+
 test('answerTimeoutMs expires the ask to unavailable, never a hang', async (t) => {
   const { dash } = await started(t, { answerTimeoutMs: 30 })
   const close = await connectSse(dash)

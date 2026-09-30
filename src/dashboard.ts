@@ -968,9 +968,14 @@ export function startDashboard(
       return sendJson(res, 200, { ok: true, outcome, ...feedback === '' ? {} : { feedback } })
     }
     if (entry === undefined) return sendJson(res, 409, { error: 'no such pending approval (settled, expired, or cancelled)' })
-    const feedText = feedback === ''
-      ? undefined
-      : `${OUTCOME_LABEL[outcome]}: ${entry.toolName} — ${feedback}`
+    // Always explicit, id and all: passing `undefined` here would fall through
+    // to the default in `settle`, and this path previously built its own text
+    // only when the operator typed a note — so a decision with no note and a
+    // decision with one took different paths and only one of them could carry
+    // the id.
+    const feedText = `${OUTCOME_LABEL[outcome]}: ${entry.toolName}`
+      + (feedback === '' ? '' : ` — ${feedback}`)
+      + ` [${id}]`
     entry.settle(outcome, feedText)
     sendJson(res, 200, { ok: true, outcome, ...feedback === '' ? {} : { feedback } })
   }
@@ -1116,10 +1121,29 @@ export function startDashboard(
         if (timer !== undefined) clearTimeout(timer)
         question.signal?.removeEventListener('abort', onAbort)
         // `note` broadcasts; a second frame here would be the same snapshot.
-        state.note('approval', feedText ?? `${OUTCOME_LABEL[outcome]}: ${toolName}`, runId)
+        //
+        // The ask's ID is on this line for the same reason as in
+        // `approvals.ts`: the page builds its cards from the PENDING list, so a
+        // settled ask has left it and this feed line is the only record that
+        // says WHICH ask ended. `expired: write` names a tool; a run with two
+        // writes in flight cannot attribute that to a card.
+        //
+        // This module has its own copy of the registry — the one that owns its
+        // asks, used when `startDashboard` is called with no shared registry —
+        // and it drifted exactly as the shared one did when only the default
+        // text was edited. Every path here that passes `feedText` therefore
+        // carries the id itself.
+        state.note(
+          'approval',
+          feedText ?? `${OUTCOME_LABEL[outcome]}: ${toolName} [${id}]`,
+          runId,
+        )
         resolve(outcome)
       }
-      const onAbort = (): void => settle('cancelled', `cancelled: ${toolName} (the ask was withdrawn)`)
+      const onAbort = (): void => settle(
+        'cancelled',
+        `cancelled: ${toolName} (the ask was withdrawn) [${id}]`,
+      )
 
       pending.set(id, {
         id,
@@ -1133,7 +1157,10 @@ export function startDashboard(
         settle: (outcome, feedText) => settle(outcome, feedText),
       })
       timer = setTimeout(
-        () => settle('unavailable', `expired: ${toolName} — no answer within ${cfg.answerTimeoutMs}ms`),
+        () => settle(
+          'unavailable',
+          `expired: ${toolName} — no answer within ${cfg.answerTimeoutMs}ms [${id}]`,
+        ),
         cfg.answerTimeoutMs,
       )
       timer.unref?.()

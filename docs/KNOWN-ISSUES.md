@@ -170,11 +170,19 @@ operator is still holding — worse than saying nothing.
 
 **Fix, in three parts:**
 
-1. `approvals.ts` puts the ask's **id** in every settle line, on both paths.
-   The first attempt put it in the default text and the expiry timer kept
-   passing its own — so every expiry still arrived id-less, and the change was
-   invisible. A default and an explicit argument are two paths; only one of them
-   was getting the edit.
+1. `approvals.ts` **and `dashboard.ts`** put the ask's **id** in every settle
+   line, on every path. The first attempt edited only the *default* text in one
+   module, and every other path — the timeout, the abort, the POST with
+   operator feedback, and the dashboard's own private registry — kept passing
+   its own text. `dashboard.ts` has a second copy of the registry (the one that
+   owns its asks, used when `startDashboard` is called with no shared registry)
+   and it drifted exactly the same way.
+
+   The shape of the mistake is the part worth keeping: **a default text and an
+   explicit argument are two paths, and only the one you read gets the fix.**
+   The test now asserts the id on all four settle paths, and it is in
+   `test/dashboard.test.ts` because `startDashboard`'s private registry is not
+   reachable through `createApprovalRegistry` at all.
 2. `expiredOutcomeOf` (`src/approval-bridge.ts`) reads those lines back into
    ask-id → outcome. A line without an id is **ignored, not guessed at**, and
    that is asserted.
