@@ -2,7 +2,10 @@
 
 **Status:** Phase 1 complete (de-fork executed). Phase 2 not started.
 **Owner:** Linh Doan
-**Last updated:** 2026-09-22
+**Last updated:** 2026-09-29 (plugin page brought onto the harness's own design
+metrics; browser click path driven end to end on an isolated instance — see
+[`KNOWN-ISSUES.md`](KNOWN-ISSUES.md) § "The browser click path, and the page's
+own geometry" and `test/css-parity.test.ts`)
 
 ---
 
