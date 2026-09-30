@@ -159,7 +159,16 @@ export function createApprovalRegistry(options: ApprovalRegistryOptions): Approv
         pending.delete(id)
         if (timer !== undefined) clearTimeout(timer)
         question.signal?.removeEventListener('abort', onAbort)
-        state.note('approval', feedText ?? `${OUTCOME_LABEL[outcome]}: ${toolName}`, runId)
+        // The ask's ID goes in the feed line. It is the only way a front end
+        // can tell WHICH ask ended: `expired: write` names a tool, and a run
+        // with two writes in flight cannot tell which card just went blank. The
+        // page renders it (`gate.resolution`), so without it an expiry is an
+        // empty space where a decision used to be.
+        state.note(
+          'approval',
+          feedText ?? `${OUTCOME_LABEL[outcome]}: ${toolName} [${id}]`,
+          runId,
+        )
         resolve(outcome)
       }
       const onAbort = (): void => settle('cancelled', `cancelled: ${toolName} (the ask was withdrawn)`)
@@ -175,7 +184,16 @@ export function createApprovalRegistry(options: ApprovalRegistryOptions): Approv
         settle,
       })
       timer = setTimeout(
-        () => settle('unavailable', `expired: ${toolName} — no answer within ${String(answerTimeoutMs)}ms`),
+        // The default text is built WITHOUT the id and the id-carrying form is
+        // the default path, so exactly one of them is written. An earlier draft
+        // put the id in the DEFAULT and this timeout kept passing its own text
+        // — so every expiry arrived id-less, and the page's card had no way to
+        // name it. The lesson is the boring one: a default and an explicit
+        // argument are two paths, and only one of them was getting the change.
+        () => settle(
+          'unavailable',
+          `expired: ${toolName} — no answer within ${String(answerTimeoutMs)}ms [${id}]`,
+        ),
         answerTimeoutMs,
       )
       timer.unref?.()
