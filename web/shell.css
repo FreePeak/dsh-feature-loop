@@ -85,7 +85,7 @@
    exactly the rules that restyled the host when they were unscoped. */
 html.fl-standalone { scroll-padding-top: calc(var(--header-h) + 12px); }
 
-body.fl-standalone {
+html.fl-standalone body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
@@ -274,6 +274,60 @@ body.fl-standalone {
 .fl-page {
   container-type: size;
   container-name: fl-dashboard;
+}
+
+/* The STANDALONE page is the other front end onto this sheet, and it needed the
+   same treatment for the same reason. Its thread is a direct child of `#root`,
+   not of `.fl-page`, so nothing above it was a query container at all — and an
+   uncontained `cqh` resolves against the SMALLEST container, which is the
+   viewport. So the standalone thread's floor was still measuring the WINDOW on
+   the second front end, long after the host page had stopped: at a 1280x300
+   window it came out 180px, exactly 60% of the window, and the composer — the
+   reason anybody opens this page — sat 115px below the fold.
+   Two things make it real, and both are load-bearing:
+
+   - the height has to be on the CONTAINER element, not on `<html>`. `size`
+     containment means the box's size cannot come from its content, and the root
+     has no content to take a size from: measured, `html` came out **0px** tall
+     and every `cqh` on the page resolved to 0, which silently deleted the
+     thread's floor entirely rather than merely mis-sizing it.
+   - `html.fl-standalone body`, not `body.fl-standalone`. The class is on `<html>`
+     (src/dashboard-page.ts), so the short selector matches nothing and every rule
+     written that way is dead with no diagnostic at all — measured
+     `body containerType=normal` against a stylesheet that plainly declared it.
+
+   `100dvh` rather than `vh`: this page is a browser tab a person can resize
+   mid-read. */
+html.fl-standalone body {
+  container-type: size;
+  container-name: fl-dashboard;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* `main` is the scroller, and that is the honest answer for this page: three
+   panes of real content do not fit in a 300px window, and squeezing the thread to
+   fit would hide the composer rather than move it. Measured at a 1280x300 window
+   after this: `main` scrolls 130px and scrolling it puts the composer at
+   bottom=285 in a 300px window.
+   …and the page scrolls rather than each pane trying to scroll itself, because
+   the panes have no height to scroll within: the shell is `display: grid` with
+   auto rows, so it is 358px of content inside a 112px page. The content boxes are
+   left as they are; what this fixes is that the SCROLLER is one, reachable, and
+   not the document's. */
+html.fl-standalone main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+html.fl-standalone #root {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .dashboard-shell {

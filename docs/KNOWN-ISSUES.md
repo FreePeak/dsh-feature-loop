@@ -368,6 +368,43 @@ scroll inside their cards — a list that scrolls in its card is what the wider
 layouts already do. Measured with 6 entries at 1024x700: page scroll 1652px
 instead of 2227px, feed 481px in a 568px cap.
 
+### The standalone page was still measuring the window
+
+**Observed:** at a 1280x300 window the standalone dashboard's thread was sized by
+60% of the *window* — 180px — with the composer 115px below the fold.
+
+**Why:** the standalone page is the second front end onto this stylesheet, and the
+whole of this branch's work was under `.fl-page`. Its thread is a direct child of
+`#root`, so nothing above it was a query container, and a `cqh` with no ancestor
+container resolves against the smallest container there is: the viewport. Every
+other fix in this file was therefore correct on one front end and absent on the
+other, which is exactly the failure mode of testing one page and calling the sheet
+fixed.
+
+**Two more traps on the way, both silent:**
+
+- `body.fl-standalone { … }` matches **nothing**. The marker is on `<html>`
+  (`src/dashboard-page.ts`), so the body is its descendant — measured
+  `containerType=normal` on the live element against a stylesheet that plainly
+  declared it. There is no diagnostic for a rule that does not match.
+- `container-type: size` on that rule, with the `height` on `<html>` instead, put
+  `html` at **0px** tall: size containment means the box cannot take its size from
+  its content, and the root has no content. Every `cqh` on the page resolved to 0
+  and `min(420px, 60cqh)` collapsed to 0 — the thread lost its floor entirely,
+  which reads as "no floor at all" rather than as a CSS bug.
+
+**Fix:** `html.fl-standalone body` carries the container, the `container-name`, and
+`height: 100dvh` together, and `main` is the scroller. Verified at 1280x800,
+1024x700, 760x700, 600x600, 440x800 and 380x760: no horizontal overflow, no element
+outside its container, the composer in the viewport. At 1280x300 and 440x400 the
+page scrolls and the composer is reachable (285px and 385px after scrolling) —
+three panes of real content do not fit in a 300px window, and squeezing the thread
+to pretend otherwise hides the composer rather than moving it.
+
+`test/css-scope.test.ts` now fails any selector whose rightmost compound is a
+document element without reaching it through `html.fl-standalone`, and pins the
+container and the height on the same box.
+
 ### Still unverified
 
 - Nothing in the two sections above. The last open item from §"Still

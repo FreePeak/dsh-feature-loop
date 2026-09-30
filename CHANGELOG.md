@@ -46,6 +46,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   takes the card's inset rather than adding one. The field is 303px at 440px and
   243px at 380px, against 23px and 8px before. The harness's own composer stacks
   two layers (54px) in the same column; this one now stacks one (24px).
+- **The standalone dashboard page stops measuring itself in viewport units too.**
+  It is the second front end onto this stylesheet — it owns `<html>`/`<body>` — and
+  it had none of the above: its thread sat outside `.fl-page`, so no query container
+  was above it and every `cqh` resolved against the *smallest* container, the
+  viewport. At a 1280x300 window the thread's floor came out 180px, exactly 60% of
+  the window, with the composer 115px below the fold. The page is now a size
+  container with a real height (`100dvh`, `dvh` because a tab can be resized
+  mid-read) and `main` is its scroller: scrolling it puts the composer at 285px in a
+  300px window. The height has to be on the container box itself — size containment
+  means the box's size cannot come from its content, and measured against `<html>`
+  it came out 0px tall with every `cqh` on the page resolving to 0, which deleted
+  the floor outright rather than mis-sizing it.
 - **No card is drawn outside the thread any more.** With the viewport's padding
   gone the messages had to carry the edge inset themselves, and both obvious ways
   to do it are wrong: `padding: 0 16px` took 32px out of the message's content box

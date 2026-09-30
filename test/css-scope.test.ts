@@ -151,6 +151,58 @@ test('the standalone page marks its own document, or it loses its page furniture
   assert.match(DASHBOARD_PAGE, /<body>|<header>|<main>/)
 })
 
+/**
+ * Every declaration block whose selector list contains `selector`, joined.
+ *
+ * A JOIN, not the first match: `html.fl-standalone body` appears twice in this
+ * sheet — the page furniture and the page geometry — and the first-match version
+ * silently tested the wrong one and passed while asserting nothing.
+ */
+function rule(css: string, selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const re = new RegExp(`(?:^|[},])\\s*${escaped}\\b[^{]*\\{([^}]*)\\}`, 'g')
+  const blocks: string[] = []
+  for (const m of css.matchAll(re)) blocks.push(m[1]!)
+  assert.ok(blocks.length > 0, `no rule for \`${selector}\` in shell.css`)
+  return blocks.join('; ')
+}
+
+/** `prop: value` from a block, whitespace-normalised. */
+function decl(block: string, prop: string): string | undefined {
+  const match = new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+)`).exec(block)
+  return match?.[1].trim().replace(/\s+/g, ' ')
+}
+
+test('every selector that reaches a document element carries the marker', () => {
+  // The trap this catches: `body.fl-standalone` is the natural way to write a
+  // rule for the standalone page's body, and it matches NOTHING, because the
+  // marker is on `<html>` and the body is its descendant. There is no diagnostic
+  // for a rule that does not match — it just silently does nothing, and the page
+  // renders as though the rule were never written. Measured: a stylesheet that
+  // plainly declared `body.fl-standalone { container-type: size }` computed
+  // `containerType=normal` on the live element.
+  //
+  // So: a selector whose rightmost compound IS a document element must reach it
+  // through `html.<marker>`, and every such rule is listed here. `html.fl-standalone`
+  // on its own is the correct shape.
+  const dead = selectors(stripComments(shellCss)).filter((sel) =>
+    // `.fl-standalone header` and friends are fine — they descend from the marker.
+    /^\s*(body|html|head)\b/.test(sel) && !new RegExp(`^\s*html\\.${STANDALONE}\\b`).test(sel),
+  )
+  assert.deepEqual(
+    dead,
+    [],
+    `these selectors target a document element without reaching it through \`html.${STANDALONE}\`, so they match nothing: ${dead.join(' | ')}`,
+  )
+  // And the rule the standalone page's geometry depends on is really present,
+  // with a definite height on the SAME box as the container — `size` containment
+  // sizes a box against nothing else, and the root has no content to size from
+  // (measured: `html` at 0px tall, every `cqh` on the page resolving to 0).
+  const body = rule(stripComments(shellCss), `html.${STANDALONE} body`)
+  assert.equal(decl(body, 'container-type'), 'size')
+  assert.equal(decl(body, 'height'), '100dvh')
+})
+
 test('the theme tokens are declared on the scope roots, not on the host body', () => {
   // The 15 alias custom properties (--bg, --text, --muted, …) are generic
   // enough to shadow a host token of the same name. They belong to the plugin
