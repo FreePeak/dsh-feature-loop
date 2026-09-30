@@ -108,6 +108,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   string surviving a sanitiser is an invitation to re-introduce the traversal
   later; dot-runs are now collapsed before the character pass.
 
+- **Dashboard settle accepts `?token=`.** `POST /api/approvals/:id` used a
+  placeholder URL with `allowQuery: false`, so scripted clients that only had
+  the printed dashboard URL got a 401 that looked like a wrong secret. The
+  settle route now receives the real request URL and accepts the query token
+  the same way the GET routes do; the header still works, and `sameOrigin`
+  still blocks cross-origin browsers. Closes KNOWN-ISSUES §5.
+
 
 ### Changed
 

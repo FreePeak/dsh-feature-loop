@@ -75,16 +75,31 @@ async function post(
   dash: DashboardHandle,
   id: string,
   outcome: string,
-  opts: { token?: string, origin?: string, body?: string } = {},
+  opts: {
+    token?: string
+    origin?: string
+    body?: string
+    /**
+     * Put the token in `?token=` only. When set, the header is omitted unless
+     * `token` is also set — that combination is how we prove query auth alone.
+     */
+    queryToken?: string
+  } = {},
 ): Promise<Response> {
   const origin = opts.origin ?? new URL(dash.url).origin
-  return fetch(`${dash.url}api/approvals/${encodeURIComponent(id)}`, {
+  const q = opts.queryToken === undefined
+    ? ''
+    : `?token=${encodeURIComponent(opts.queryToken)}`
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+    origin,
+  }
+  // Header when the caller asked for one. Query-only settles pass queryToken
+  // and leave token undefined so the request has no x-dashboard-token.
+  if (opts.token !== undefined) headers['x-dashboard-token'] = opts.token
+  return fetch(`${dash.url}api/approvals/${encodeURIComponent(id)}${q}`, {
     method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      ...opts.token === undefined ? {} : { 'x-dashboard-token': opts.token },
-      origin,
-    },
+    headers,
     body: opts.body ?? JSON.stringify({ outcome }),
   })
 }
@@ -386,6 +401,33 @@ test('POST validation: no token 401, cross-origin 403, bad outcome 400, bad body
   const res = await post(dash, id, 'allowed-once', { token: dash.token })
   assert.equal(res.status, 200)
   assert.equal(await pending, 'allowed-once')
+})
+
+test('POST settle accepts ?token= without the header (KNOWN-ISSUES §5)', async (t) => {
+  const { dash } = await started(t)
+  const close = await connectSse(dash)
+  t.after(close)
+
+  const pending = dash.answer(QUESTION, delegatingNext().next)
+  const { id } = (await getState(dash)).pending[0] as { id: string }
+
+  // Scripted client path: query only, no x-dashboard-token.
+  const res = await post(dash, id, 'allowed-once', { queryToken: dash.token })
+  assert.equal(res.status, 200, 'a valid query token must settle, not 401')
+  assert.deepEqual(await res.json(), { ok: true, outcome: 'allowed-once' })
+  assert.equal(await pending, 'allowed-once')
+
+  // Invalid query token still 401s (and must not look like a missing mechanism).
+  const pending2 = dash.answer(QUESTION, delegatingNext().next)
+  const { id: id2 } = (await getState(dash)).pending[0] as { id: string }
+  assert.equal(
+    (await post(dash, id2, 'allowed-once', { queryToken: 'not-the-token' })).status,
+    401,
+  )
+  // Header still works when both are present.
+  const ok = await post(dash, id2, 'rejected', { token: dash.token, queryToken: 'ignored-bad-query' })
+  assert.equal(ok.status, 200, 'header wins over a bad query token')
+  assert.equal(await pending2, 'rejected')
 })
 
 test('an abort (the ask was withdrawn) cancels the pending approval', async (t) => {
