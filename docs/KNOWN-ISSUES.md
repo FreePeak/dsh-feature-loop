@@ -136,14 +136,33 @@ local profile is a directory someone copies and never touches again — and the
 two profiles this developer booted by hand still carried `execution`/`planning`
 long after the shipped configs were fixed.
 
-It reports them, with the severity they deserve:
+**And the severity was wrong when I first wrote it.** I reasoned that an
+undeclared *upper* rung is latent — step 1 always uses the first rung — so it
+warned and exited 0. That reasoning was wrong in the only way that matters, and
+it was wrong because nobody made the loop climb. `stepsPerRung: 1` on that very
+profile, one task, and the run died:
+
+```
+pi-ai provider "onegw" has no configured model "planning"     (UNKNOWN_MODEL)
+```
+
+**once a human had already approved a write.** `planning` is not a corner case;
+it is the ladder doing the one thing a ladder is for, on a run that had
+genuinely stalled. Two short tasks had reached step 1 and nothing else, which is
+exactly why the bug survived as long as it did. Both profiles are fixed, and an
+undeclared rung is now an **error** in a local profile as well as in the shipped
+configs — proven by deleting `planning` from a copy and watching the check exit
+1.
+
+Reported as:
+
 
 ```
 profile feature-loop: ladder rung onegw/planning names a model this profile
   does not declare.
   declared in its llm-pi-ai row: execution
-  latent: step 1 uses onegw/execution, so this only bites once the loop climbs
-  — then the run dies UNKNOWN_MODEL mid-run, after a human has already
+  the first rung is what step 1 uses, so this hides until the loop climbs —
+  and then the run dies UNKNOWN_MODEL mid-run, after a human has already
   approved work. Declare it or remove the rung.
 ```
 

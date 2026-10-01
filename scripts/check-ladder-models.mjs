@@ -214,29 +214,31 @@ for (const dir of profiles) {
       '(the provider row lives in its settings, which this check does not read)')
     continue
   }
-  // A rung whose model is undeclared is a LATENT failure, not a live one. The
-  // ladder's first rung is what every run takes; `planning` is climbed to only
-  // on evidence (steps spent, consecutive failures), and it was climbed to in
-  // this very profile's live runs — never on the two short tasks that proved
-  // the rest of the gate works. So an undeclared upper rung is a real defect
-  // (the loop would die UNKNOWN_MODEL mid-run, after a human has already
-  // approved work) and it is NOT a reason to fail a check that has no
-  // evidence it was reached.
+  // Severity measured, not assumed. This started as a warning on the reasoning
+  // that an undeclared UPPER rung is latent — step 1 always uses the first
+  // rung. That reasoning was wrong in the only way that matters, and it was
+  // wrong because nobody made the loop climb: `stepsPerRung: 1` on this very
+  // profile, one task, and the run died
   //
-  // The honest severity, then: warn, name it, and exit 0. `make check` keeps
-  // passing so this stays in CI, and the warning is visible every run — which
-  // is what finally makes a drifting profile visible. Flip `failed = true` here
-  // once you want it to be an error; the ladder is only half-declared in half
-  // the profiles in the wild.
+  //   pi-ai provider "onegw" has no configured model "planning"   (UNKNOWN_MODEL)
+  //
+  // ONCE A HUMAN HAD ALREADY APPROVED A WRITE. `planning` is not a corner
+  // case; it is the ladder doing the one thing a ladder is for, on a run that
+  // had genuinely stalled. Two short tasks had reached step 1 and nothing
+  // else, which is why the bug was invisible for as long as it was.
+  //
+  // So an undeclared rung is an ERROR here, in the shipped configs AND in a
+  // local profile, and the fix is two lines in the profile's own `models:` list.
   for (const r of routes) {
     if (!ids.has(r.model)) {
-      console.warn(
+      console.error(
         `${label}: ladder rung ${r.key} names a model this profile does not declare.\n` +
         `  declared in its llm-pi-ai row: ${[...ids].join(', ')}\n` +
-        `  latent: step 1 uses ${routes[0].key}, so this only bites once the loop\n` +
-        `  climbs — then the run dies UNKNOWN_MODEL mid-run, after a human has\n` +
-        `  already approved work. Declare it or remove the rung.`,
+        `  the first rung is what step 1 uses, so this hides until the loop\n` +
+        `  climbs — and then the run dies UNKNOWN_MODEL mid-run, after a human\n` +
+        `  has already approved work. Declare it or remove the rung.`,
       )
+      failed = true
     }
     // Only when the profile HAS a price table: one with no `prices:` at all has
     // no cost ceiling to honour, and `unpricedSteps` is the honest reading of
