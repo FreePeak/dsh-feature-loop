@@ -14,7 +14,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { apply as applyFeatureLoop, resolveJudge } from './plugin.ts'
-import type { CreatePolicyOptions, FeatureLoopPolicy } from './plugin.ts'
+import type { CreatePolicyOptions, FeatureLoopPolicy, GateMode, JudgeConfig } from './plugin.ts'
+import type { GatePolicy } from './review.ts'
 import type { DashboardConfig } from './dashboard.ts'
 import { parseOptimizeConfig } from './spec.ts'
 import type { OptimizeConfig } from './spec.ts'
@@ -170,12 +171,20 @@ export function apply(ctx: Context, config: Config = {}): (() => void) | void {
   const optimize = config.optimize === undefined ? undefined : parseOptimizeConfig(config.optimize)
   // Same rule for the judge: a `chat` judge with no key is a loud load-time
   // error, not a judge that quietly never runs. `laya` and `none` never throw.
+  //
+  // Resolved from the MERGED config, not the row: the settings page offers the
+  // judge kind, so a value saved there has to decide which Judge is built.
+  // Reading `config.judge` here instead is what produced, live, a boot that
+  // died with `dsh: UNKNOWN: policy.judge.score is not a function` — the merge
+  // overwrote the constructed Judge with the STRING 'laya' the file holds, and
+  // the first step called `.score` on it.
+  const merged = mergeRowAndSettings(config as unknown as Record<string, unknown>)
   const { judge } = resolveJudge({
-    judge: config.judge,
-    judgeBaseURL: config.judgeBaseURL,
-    systemOneModel: config.systemOneModel,
-    judgeModel: config.judgeModel,
-    judgeTimeoutMs: config.judgeTimeoutMs,
+    judge: merged.judge as JudgeConfig['judge'],
+    judgeBaseURL: merged.judgeBaseURL as string | undefined,
+    systemOneModel: merged.systemOneModel as string | undefined,
+    judgeModel: merged.judgeModel as string | undefined,
+    judgeTimeoutMs: merged.judgeTimeoutMs as number | undefined,
   })
   return applyFeatureLoop(ctx, {
     spec: config.spec,
@@ -196,11 +205,14 @@ export function apply(ctx: Context, config: Config = {}): (() => void) | void {
     rowConfig: { ...config },
     dashboard: config.dashboard,
     optimize,
-    // The row's own values first, then the user's file OVER them. One merge
-    // point, so there is exactly one answer to "which of these two is in
-    // effect" and it is written down here rather than spread over three call
-    // sites. See `mergeRowAndSettings` in ./remote.ts.
-    ...mergeRowAndSettings(config as unknown as Record<string, unknown>),
+    // The same merged object the judge was resolved from, minus the three keys
+    // that must stay as they are: `judge` is the constructed Judge (the merge
+    // carries the STRING, which is not a Judge), and `dashboard`/`optimize` are
+    // blocks the settings file may not touch.
+    confidenceThreshold: merged.confidenceThreshold as number | undefined,
+    gatePolicies: merged.gatePolicies as Record<string, GatePolicy> | undefined,
+    gateMode: merged.gateMode as GateMode | undefined,
+    router: merged.router as { reviewBudget?: number, judgeThreshold?: number, checkpointAtStep?: number } | undefined,
   })
 }
 
