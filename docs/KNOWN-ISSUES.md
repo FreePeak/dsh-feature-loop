@@ -514,9 +514,26 @@ reporting nonsense on the first run:
 
 A check that cannot fail is worse than no check, and this one did.
 
-## OPEN — CI runs about half the suite its own command names
+## CLOSED 2026-10-02 — CI was running 138 of 277, and said so once asked
 
-**Found 2026-10-01, unresolved, and it is the largest known gap.**
+**Found 2026-10-01. Cause never identified. Closed by measuring instead.**
+
+The `test` job now runs **one file per process in a shell loop** and sums the
+per-file `# pass` counts:
+
+```
+== 277 tests passed across 19 files          ← run 36971963637, SHA 144be86
+```
+
+277 in CI, 277 locally, 19 files either way. The batched form WAS the cause,
+whatever the mechanism — and CI no longer depends on knowing it.
+
+The loop earns its place for a reason unrelated to this puzzle: with 19 paths in
+one `node --test`, a file that fails to *load* takes the other eighteen with it.
+One file, one process, one line of output. Verified locally both ways: the loop
+totals 277, and a deliberately failing file stops it there with `# fail 1`.
+
+**The original report, kept because the measurement is the useful part:**
 
 `ci.yml`'s `test` job names 19 files and its own summary reports:
 
@@ -552,30 +569,27 @@ The exact split, re-measured on run `36971045027` (SHA `a406b90`):
 |---|---|
 | approval-bridge, assistant-ui, brief, envelope, explainer, optimize, optimizer, refine, runlog, start-target, tools | agent-policy, approvals, budget, judge, metrics, policy, questioner, runner |
 
-**Resolved by not resolving it.** The step now runs **one file per process,
-in a shell loop**, and sums the per-file `# pass` counts:
+The seven hypotheses eliminated, and how, are the durable part of this
+entry. Seven is a lot of wrong guesses, and each one is a shape the next
+person would otherwise try again:
 
-```
-== 277 tests passed across 19 files
-```
+| hypothesis | how it was eliminated |
+|---|---|
+| CI is on an older node | CI logs `node: v22.23.3`; downloaded and ran it — 277 |
+| the job ran a stale SHA | the run's `headSha` is this branch's HEAD |
+| the tree differs | `git diff <sha> -- test/` is empty |
+| the multi-line continuations break | pasted verbatim into a shell; 277 |
+| a missing `node_modules` skips files | a `/tmp` copy with none; 277 |
+| CI is failing and hiding it | `# fail 0`, `# cancelled 0` |
+| the checker's count is the wrong one | it counts list MEMBERS; the list has 19 |
 
-Run locally it reports 277 — the number the single `node --test` invocation has
-always given here. Run in CI it will report 277 **if** the batched form was the
-cause, and it will name the offending file if it was not, because each file's
-output is its own `::group::`. Either way the count is arithmetic the step
-performed itself, not a summary a batching bug produced.
+And what made it visible at all: **reading the CI log instead of its exit
+code.** Every check in this repo reports through its exit status, so a job that
+runs half its list is a job that reports SUCCESS — and nothing else in the
+tree could ever have said so.
 
-The batching is also gone for a reason that is not this puzzle: with 19 paths in
-one invocation, a file that fails to *load* takes the other eighteen with it.
-One file, one process, one line of output.
-
-Both properties verified locally: the loop totals 277 across the 19 files, and a
-deliberately failing file stops the loop at that file with `# fail 1` and exits
-non-zero.
-
-Until CI answers, the honest statement stands: **the batched step reported 138
-and nothing failed**, and the file list was not the problem — the list is correct,
-and 19 of 19 files exist in the checked-out SHA.
+The file list was never the problem: it is correct, and 19 of 19 files exist
+in the checked-out SHA.
 
 ## Re-checked 2026-10-01 — the permission-preset trap, and what actually triggers it
 
