@@ -586,6 +586,46 @@ Verified live on a generated profile, row `write: always-approve`:
 | `{write: auto}` | allowed (the operator asked for it, in the file the page writes) |
 | `{bogus_tool: auto}` | **denied** — a file the gate cannot act on does not widen it |
 
+### 1l. Two shapes of a bad number in the same setting file behaved differently
+
+Measured 2026-10-03 on a generated profile, `reviewBudget` out of its band vs. not
+a number at all:
+
+| settings file | what happened |
+|---|---|
+| `reviewBudget: 0` | the plugin **throws** — `dsh-feature-loop: reviewBudget must be in (0, 1], received 0` — exit **1** |
+| `reviewBudget: "x"` | the value is **silently dropped**, the row's own `0.1` stands, the run answers, exit **0** |
+
+Both directions are the right one for the wrong reasons. The first is
+`AttentionRouter`'s own constructor guard, and it is excellent. The second was
+`userSettings`'s `typeof value !== 'number'` → `continue`: fail-closed, invisible,
+and on a file a human is invited to edit by hand (§1d made it authoritative).
+
+So the router keys are now validated in `userSettings`, with the same band
+`AttentionRouter` uses and a sentence that names the key and the value:
+
+```
+settings: reviewBudget must be a finite number, received "x". The Feature Loop
+settings page writes one; a hand-edited file must match.
+```
+
+**And it is still not fatal**, which is §1j's finding again rather than a new
+one: the harness prints the plugin's error as a warning, the plugin never
+constructs, and the turn answers anyway — `Hi! 👋` came back, exit 0. The
+sentence reaches the operator through the same channel as every other plugin
+error, which is the most this plugin can do about a load-time throw.
+
+**The deliberate asymmetry**, because two behaviours in one place read as an
+oversight until they are stated:
+
+| bad value | behaviour | why |
+|---|---|---|
+| `gatePolicies: {write: not-a-policy}` | **dropped** | it cannot widen the gate — the row's own policy stands — so silence is safe |
+| `reviewBudget: "x"` | **thrown** | it silently changes how often a human is asked, and nothing else would say so |
+
+A test asserts each half, and the `gatePolicies` one is the earlier case
+restated with its reasoning attached rather than quietly rewritten.
+
 ### 1. The stylesheet restyled the whole host UI
 
 **Observed:** after the dashboard was folded into the DSH UI, the host's `<body>`
