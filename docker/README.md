@@ -40,6 +40,7 @@ docker compose -f docker/docker-compose.yml logs -f   # the URL + token
 | `make clean-all` | **Fully destructive**: container, history, sessions, settings, profile |
 | `make rmi` | Remove the image |
 | `make ports` | Which of 3081/3097/3099/3090 are in use — read-only, never disturbs them |
+| `make e2e-container` | Probe the container's OWN gate, on the disk: refused with no answerer, allowed with one, and the approval pair on the durable session log |
 
 Checks that need no container: `make check` (tests + typecheck), `make test`,
 `make typecheck`, `make integration`, `make compose-check`, and `make verify`
@@ -317,19 +318,61 @@ docker exec <container> sh -c 'DSH_HOME=/data dsh --profile dsh-fl --dump-config
   | grep -A6 -m1 "id: feature-loop"'
 ```
 
+### A behavioural probe, and what it found about itself
+
+`make e2e-container` runs a real model through the real gate **inside the running
+container**, asserting the disk rather than the dashboard — a dashboard that
+reports "allowed" while nothing was written is the failure this exists to catch.
+It was NOT possible before: `../docker/README.md` said so, because the image
+ships the web bundles only and has no headless runner. That was true of the
+IMAGE and not of the CONTAINER — `@deepseek-ai/dsh-headless` is published, so
+the probe composes a second profile inside the running container. Nothing is
+baked and nothing is mounted; the shipped image is unchanged.
+
+```
+==> 1/3  fail-closed: no watcher, so the irreversible write must be refused
+   the plugin imports inside the probe profile ✓
+   refused, no file  ✓
+==> 2/3  allow: the same gate, settled through the dashboard API
+   settle {"tool":"write","status":200,"body":"{\"ok\":true,\"outcome\":\"allowed-once\"}"}
+   written: "hello"  ✓
+==> 3/3  audit trail: approval/asked + approval/decided must be in the session log
+   1 approval/asked, 1 approval/decided=allowed-once ✓
+
+probe passed: refused without an answerer, allowed with one, audited on disk
+```
+
+Three runs, back to back, on DSH 0.2.0-rc.2 — which is what the stale-port
+trap in the script's header needs; the second run otherwise dies with
+EADDRINUSE before it can print a token.
+
+**The probe is narrower than it looks, and it found that out itself.** Step 1 is
+meant to catch a misconfigured gate, so `gateMode: auto` was set in the profile —
+a value `Config` rejects outright (`expected "ask" | "deny" but got "auto"`) —
+and the probe passed anyway. Two correct behaviours, neither visible from
+outside:
+
+- `--dump-config` does not validate, so the profile still composes;
+- `createPolicy` does `gateMode: options.gateMode ?? 'ask'`, so an unrecognised
+  value falls through to the **safe** default. `ask` with no answerer refuses, so
+  the gate held.
+
+That is the right direction for a safety setting and the wrong lesson: step 1
+cannot distinguish *"the gate is right"* from *"the gate is misconfigured in a
+way that happens to default to asking"*. It stays, and the claim it makes is the
+narrow one the transcript shows.
+
 ### What is NOT verified in-container
 
 - **The rendered approval panel.** Same reason as everywhere else in this repo:
   it needs a human click. The preset that makes it appear is pinned, and the
   composition is asserted — see the acceptance checklist in
   `../docs/RUNBOOK-SERVER.md` §0.
-- **A behavioural probe inside this image.** The image ships the web bundles
-  only, so there is no headless runner to drive a task; the `ask` → approval-seam
-  behaviour was verified outside the container (`../docs/VERIFY-INTEGRATION.md`,
-  `../docs/VERIFY-SDK-RUN.md`, `../docs/VERIFY-HEADLESS-RUN.md`). If you want the
-  probe in-container, add `@deepseek-ai/dsh-headless` to the profile.
-- **`costBudgetUSD`** measures zero — `LoopBudget.spend()` is never called with
-  real usage. Only `maxSteps` is a trustworthy ceiling. See `../docs/PRD.md` §9.
+- **`costBudgetUSD` inside the container.** The probe reads a non-zero
+  `spentUSD` from `/api/state` on a live run, so this is now exercised — but it
+  is the one number here that comes from metered usage, and a gateway that
+  reports none makes it read `0.00`. `maxSteps` is the ceiling to trust.
+  See `../docs/PRD.md` §9.
 
 ## Things that failed on the way, and what fixed them
 
