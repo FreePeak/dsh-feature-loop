@@ -57,7 +57,11 @@ export interface LlmResult {
 /** The transport contract the runner depends on. */
 export interface LlmClient {
   complete(request: {
-    /** The full model id, e.g. `xiaomi/mimo-v2.5`. */
+    /**
+     * The route the caller chose — a `provider/model` key such as
+     * `onegw/execution`, or a bare id for a gateway that uses bare ids.
+     * `createOnegwClient` is what turns it into a wire id.
+     */
     model: string
     messages: LlmMessage[]
     tools?: LlmToolSpec[]
@@ -128,6 +132,30 @@ export function createOnegwClient(config: OnegwClientConfig): LlmClient {
   const timeoutMs = config.timeoutMs ?? 120_000
   const url = `${config.baseURL.replace(/\/$/, '')}/chat/completions`
 
+  /**
+   * A route key is not a gateway id.
+   *
+   * `onegw` is the name of the ROUTE — the provider entry in a DSH profile's
+   * `llm-pi-ai` row, which is what a ladder rung and the price table key on.
+   * onegw's own id space does not contain that prefix, and its role aliases
+   * (`execution`, `dev`, `planning`) sit at the TOP level beside the concrete
+   * ids. Verified against the live gateway 2026-10-02:
+   *
+   *   {"model":"execution"}          → 200
+   *   {"model":"onegw/execution"}    → 404 unknown provider onegw
+   *
+   * So the demo's default route — `onegw/execution`, which resolves to the
+   * bare id the gateway serves — 404s on every model call unless the prefix
+   * is dropped here, at the transport. The plugin path never needs it:
+   * `llm-pi-ai` resolves a rung through its own catalog and puts `entry.id`
+   * on the wire, so a DSH deployment already sends the bare id.
+   *
+   * ponytail: one string replace, in the one function that knows about the
+   * wire. Everything upstream keeps speaking route keys, so the price table,
+   * the ladder and the banner are unaffected.
+   */
+  const wireId = (model: string): string => model.replace(/^onegw\//, '')
+
   return {
     async complete(request) {
       const controller = new AbortController()
@@ -140,7 +168,7 @@ export function createOnegwClient(config: OnegwClientConfig): LlmClient {
             Authorization: `Bearer ${config.apiKey}`,
           },
           body: JSON.stringify({
-            model: request.model,
+            model: wireId(request.model),
             messages: request.messages,
             ...request.tools === undefined || request.tools.length === 0 ? {} : { tools: request.tools },
             ...request.maxTokens === undefined ? {} : { max_tokens: request.maxTokens },

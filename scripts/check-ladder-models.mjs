@@ -131,6 +131,32 @@ const cases = [
   },
 ]
 
+/**
+ * The route every shipped deployment in this repo must run on.
+ *
+ * `execution` is onegw's EXECUTION role alias — the gateway's own name for the
+ * model configured to do the work. It is pinned HERE, once, so the rule is a
+ * single constant rather than a claim repeated in four files.
+ *
+ * Why a constant at all, when the case list above already checks that each rung
+ * is DECLARED: because that question and this one are different. "Can this
+ * resolve?" is answered by the declared-id check. "Is this the route we run?"
+ * is not answered by anything else, and it is the one that was wrong for six
+ * months — every deployment here shipped concrete model ids
+ * (`opencode/deepseek-v4.1-flash` → `xai/grok-4.7`) that resolved perfectly
+ * and that nobody had ever asked to run. When `execution` itself was undeclared
+ * the ladder died UNKNOWN_MODEL on step 1, and the fix chosen then replaced the
+ * alias with those concrete ids rather than declaring the alias. A rung that
+ * resolves is not a rung that is tested; this is the assertion for the second
+ * question, so the two can never be confused again.
+ *
+ * ponytail: one constant and one equality test inside the loop already
+ * iterating the rungs. Asserting merely that the alias EXISTS in each
+ * deployment would pass for a ladder whose FIRST rung is something else, which
+ * is exactly the shape this check exists to reject.
+ */
+const TESTED_ROUTE = 'onegw/execution'
+
 let failed = false
 for (const c of cases) {
   const text = readFileSync(join(repo, c.file), 'utf8')
@@ -156,6 +182,16 @@ for (const c of cases) {
         `${c.file}: ladder rung ${r.key} has no price.\n` +
         `  every run records unpricedSteps: 1 against a cost ceiling that can\n` +
         `  therefore never stop anything. Key prices: by the same "provider/model".`,
+      )
+      failed = true
+    }
+    if (r.key !== TESTED_ROUTE) {
+      console.error(
+        `${c.file}: ladder rung ${r.key} is not the tested route ${TESTED_ROUTE}.\n` +
+        `  This repo runs on onegw's EXECUTION role alias, verified against the live\n` +
+        `  gateway. Any other rung is a route nobody here has actually run, however\n` +
+        `  well it resolves. Put it back — or run it for real first, then update\n` +
+        `  TESTED_ROUTE in this script deliberately.`,
       )
       failed = true
     }

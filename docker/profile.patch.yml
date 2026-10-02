@@ -33,7 +33,10 @@
   name: "@deepseek-ai/dsh-agent-default-model"
   config:
     provider: onegw
-    model: opencode/deepseek-v4.1-flash
+    # `execution` — onegw's EXECUTION role alias. Bare on the wire: a live
+    # `POST /v1/chat/completions {"model":"execution"}` returns 200, while
+    # `{"model":"onegw/execution"}` returns 404. Verified 2026-10-02.
+    model: execution
 
 - id: feature-loop
   config:
@@ -73,29 +76,22 @@
       goal: "the failing test passes and no other test breaks"
       sensor: ["repo files", "test output"]
       controller:
-        # Two rungs, not one: the executor does the work, and the planner takes
-        # over when the cheap tier stalls. `stepsPerRung: 5` means the executor
-        # gets 5 steps before the ladder even considers climbing.
-        #
-        # These must be ids the GATEWAY actually serves, because llm-pi-ai
-        # resolves the ladder's model against the provider profile's own model
-        # list — not against the gateway. The container's settings list four
-        # models, and `execution` was not among them, so every run died with:
-        #
-        #   pi-ai provider "onegw" has no configured model "execution"
-        #
-        # — one step after the gate had already recorded the run on the
-        # dashboard. `execution` IS a gateway alias (verified against
-        # /v1/models: 153 ids, of which the slash-free ones are `execution` and
-        # `dev`); it just is not in the list below, so it was unreachable.
-        #
         # Both rungs now name models declared in settings.template.yaml, which
         # is the list llm-pi-ai actually routes from. Keep the three in step:
         # a rung whose model is not in that list is not a cheap-first ladder,
         # it is an UNKNOWN_MODEL on step 1.
+        # `execution` — onegw's EXECUTION role alias, declared in
+        # settings.template.yaml, which is the list llm-pi-ai actually routes
+        # from. It was not there once, and the run died
+        # `pi-ai provider "onegw" has no configured model "execution"` one step
+        # after the gate had already recorded the run on the dashboard.
+        #
+        # ONE rung. Two concrete ids shipped here so the ladder could escalate
+        # and neither could resolve; see cordis.patch.yml for the same note.
+        # Add a rung in the same edit that declares it in settings.template.yaml
+        # and prices it here, and `make check` names the one you missed.
         ladder:
-          - { provider: onegw, model: opencode/deepseek-v4.1-flash }
-          - { provider: onegw, model: xai/grok-4.7 }
+          - { provider: onegw, model: execution }
         stepsPerRung: 5
         escalateAfterFailures: 2
       actuator:
@@ -122,13 +118,10 @@
       # a published price. They exist so the cost ceiling has something to
       # measure against; replace them with your account's rates.
       prices:
-        onegw/opencode/deepseek-v4.1-flash:
+        onegw/execution:
           inputPerMTok: 0.14
           outputPerMTok: 0.28
           cacheReadPerMTok: 0.014
-        onegw/xai/grok-4.7:
-          inputPerMTok: 1.00
-          outputPerMTok: 3.00
       # The fallback prices a route the table above does not name. Without it
       # an unpriced route is a hard error by design — the cost ceiling refuses
       # to read $0.00 forever — so a ladder rung added without a price stops

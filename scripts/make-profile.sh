@@ -132,12 +132,24 @@ cat > "$PROFILE_DIR/cordis.patch.yml" <<YAML
         api: openai-completions
         baseURL: http://127.0.0.1:8080/v1
         displayName: OneGW
-        # Concrete model ids, NOT the gateway's role aliases. llm-pi-ai resolves
-        # a ladder rung (and this default) against THIS list, not against the
-        # gateway — so `execution` here but absent from a deployment that routes
-        # the aliases is a run that dies UNKNOWN_MODEL on step 1. The alias is a
-        # gateway concept; this list is a deployment concept.
+        # `execution` is onegw's EXECUTION role alias and it is the route this
+        # profile runs on. It is declared here — and not merely referenced by the
+        # ladder below — because llm-pi-ai resolves a ladder rung (and the
+        # default model) against THIS list, not against the gateway: a rung
+        # naming an id this list omits dies UNKNOWN_MODEL on step 1, after the
+        # dashboard has already recorded the route, the step and the spend.
+        # Verified against the live gateway 2026-10-02: /v1/models lists
+        # `execution`, and a live chat completion on it returned 200.
+        #
+        # The two concrete ids below stay declared on purpose: each is a real
+        # route the gateway serves, and each is a working alternative for
+        # someone who wants to pin a specific model instead of following the
+        # account's EXECUTION role.
         models:
+          - id: execution
+            name: execution
+            contextWindow: 200000
+            maxTokens: 32000
           - id: opencode/deepseek-v4.1-flash
             name: opencode/deepseek-v4.1-flash
             contextWindow: 200000
@@ -150,7 +162,7 @@ cat > "$PROFILE_DIR/cordis.patch.yml" <<YAML
   name: '@deepseek-ai/dsh-agent-default-model'
   config:
     provider: onegw
-    model: opencode/deepseek-v4.1-flash
+    model: execution
 
 - id: feature-loop
   name: '@freepeak/dsh-feature-loop'
@@ -181,11 +193,14 @@ cat > "$PROFILE_DIR/cordis.patch.yml" <<YAML
         - repository files
         - test output
       controller:
+        # One rung on `execution`, declared in this profile's own `models:` list
+        # above. So there is no escalation path that can resolve to an undeclared
+        # id — which is the failure that shipped in all three of these files at
+        # once. Add a second rung in the same edit that declares and prices it,
+        # and `make check` confirms the three agree.
         ladder:
           - provider: onegw
-            model: opencode/deepseek-v4.1-flash
-          - provider: onegw
-            model: xai/grok-4.7
+            model: execution
         stepsPerRung: 5
         escalateAfterFailures: 2
       actuator:
@@ -205,13 +220,10 @@ cat > "$PROFILE_DIR/cordis.patch.yml" <<YAML
       maxSteps: 15
       costBudgetUSD: 1
       prices:
-        onegw/opencode/deepseek-v4.1-flash:
+        onegw/execution:
           inputPerMTok: 0.3
           outputPerMTok: 1.2
           cacheReadPerMTok: 0.03
-        onegw/xai/grok-4.7:
-          inputPerMTok: 2.5
-          outputPerMTok: 10
       unpricedFallback:
         inputPerMTok: 0.3
         outputPerMTok: 1.2
