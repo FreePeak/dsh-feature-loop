@@ -233,25 +233,18 @@ $ bash demo/run.sh
 [check] GOAL MET
 [run-end] goal-met · 4 steps · $0.0030 · 1 review(s) (25% of steps)
 
-[run-end] goal-met · 12 steps · $0.0066 · 1 review(s) (8% of steps)
 ```
 
-The loop read the bug report, found the root cause in the source, was stopped for
-review twice (once by a critical signal, once by the write gate), made a one-line
-fix, and proved it with the test suite. Full transcript in `demo/TRANSCRIPT.txt`.
-
-Two details worth noticing. The loop **diagnosed the bug precisely** — it read
-the module's doc comment, compared the stated formula against the code, and
-identified the exact condition under which they diverge. And the gate held it at
-the write: the judge scored the step `0/3`, which is below the confidence bar, so
-the gate asked instead of assuming. That is the fail-closed direction working,
-even though the judge's score was itself wrong.
+The transcript is a **capture**, not current output: taken 2026-10-02 from a
+live run on this branch's route (`onegw/execution`). The steps and the cost vary
+with the model; the shape — a signal, a review, a one-line fix, `goal-met` — does
+not. [`demo/TRANSCRIPT.txt`](demo/TRANSCRIPT.txt) is the same run in full.
 
 ### Verified runs
 
 All four terminal paths, re-run 2026-10-01 against the real model through
-onegw (the transcript above and `demo/TRANSCRIPT.txt` are from an earlier
-session; the shape is the same and the steps vary with the model):
+onegw. The excerpt above and `demo/TRANSCRIPT.txt` are that run's capture; the
+table is a re-run, and the steps vary with the model:
 
 | Command | Outcome | Steps | Cost | Reviews |
 |---|---|---|---|---|
