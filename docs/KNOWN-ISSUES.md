@@ -533,6 +533,47 @@ reporting nonsense on the first run:
 
 A check that cannot fail is worse than no check, and this one did.
 
+### 14. The staleness check had a documented ceiling that a commit walked straight through
+
+**Found 2026-10-02.** `test/assistant-ui.test.ts` compared the bundle's
+recorded **size** against the file, and its comment said plainly that a one-line
+edit inside a 462 kB bundle could round to the same kB and slip through. That
+was documented, believed, and wrong.
+
+It was walked through in `c57f2d8` — a commit on this branch, three weeks after
+the check landed:
+
+```
++  if (ask.briefState === 'none' || ask.briefState === 'failed') return null
+```
+
+A brief that is off by default was rendering `unavailable` as a red line on
+**every approval card**, on every deployment that never enabled it. The fix
+shipped without a rebuild. `client.js` changed by two lines inside 462 kB, the
+size check passed, and the committed artefact did not contain the fix.
+
+**Fixed with the thing the ceiling said was needed.** `web/build.mjs` now
+records `sources-sha256:` — a hash over the five source inputs, in a fixed
+order — and the test recomputes it. Eight lines of `node:crypto`, no dependency,
+and it fails on the first character of any source change:
+
+```
+the bundle is stale: web/ has changed since it was built. Run
+`make dashboard-bundle` and commit the result — otherwise the page serves the
+old code while every other check passes.
+```
+
+The size check stays, as the other direction: an artefact edited or truncated
+without a rebuild. It fails differently ("does not match the size"), and both
+were proven to fire by doing exactly that.
+
+**The lesson, and it is the sharpest one in this file.** A ceiling you have
+written down is not a decision — it is a bet that the code around you will not
+change while it holds. This repository changed that line in the same week, in a
+commit whose subject line is about config keys lying to people. The comment was
+honest; the honest comment was still a gap, and the gap was the size of the
+thing the check exists to catch.
+
 ### 13. A "skipped" profile is not a checked profile
 
 **Found 2026-10-02.** `scripts/check-ladder-models.mjs` reported four of the

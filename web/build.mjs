@@ -17,6 +17,7 @@
  * plugin payload rather than a bundler target. A committed artifact keeps
  * that property auditable — you can read exactly what the page runs.
  */
+import { createHash } from 'node:crypto'
 import { buildSync } from 'esbuild'
 import { copyFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -89,6 +90,29 @@ copyFileSync(join(root, 'web/shell.css'), join(outDir, 'shell.css'))
 
 const js = readFileSync(join(root, 'client.js'), 'utf8')
 const kb = (path) => `${String(Math.round(statSync(path).size / 1024))} KB`
+/**
+ * A content hash, for the staleness check in `test/assistant-ui.test.ts`.
+ *
+ * Added because the size it replaced could not see the failure it was added
+ * for: commit `c57f2d8` changed `web/app.tsx`'s rendering (a brief that was
+ * never enabled was showing a red "unavailable" line on every card) and
+ * shipped WITHOUT a rebuild, and `client.js` changed by two lines inside a
+ * 462 kB bundle — which rounds to the same kB, so the size check passed and
+ * the committed artefact did not contain the fix.
+ *
+ * It is a hash of the SOURCE the bundle is built from, not of the artefact:
+ * the question is "does this bundle correspond to these sources", and hashing
+ * the artefact could only tell you it is not self-inconsistent. Eight lines of
+ * git, no dependency, and it fails on the first character of any change.
+ */
+const SOURCE_INPUTS = [
+  'web/entry.tsx', 'web/app.tsx', 'web/plugin.css', 'web/shell.css', 'web/start-target.ts',
+]
+/** One hash over every source input, in a fixed order. */
+const sha256OfInputs = () => createHash('sha256')
+  .update(SOURCE_INPUTS.map((f) => readFileSync(join(root, f))).join('\u0000'))
+  .digest('hex')
+  .slice(0, 16)
 
 /**
  * The load-bearing assertion of this build.
@@ -124,6 +148,9 @@ writeFileSync(
     `built: ${new Date().toISOString()}`,
     'entry: web/entry.tsx (dashboard + settings, mounted as a DSH UI page)',
     `client.js: ${kb(join(root, 'client.js'))}`,
+    // The sources this bundle is built FROM, hashed. A staleness check reads
+    // this line; see `sha256` above for why it is a hash and not a size.
+    `sources-sha256: ${sha256OfInputs()}`,
     `react: ${pkg('react')}`,
     `react-dom: ${pkg('react-dom')}`,
     `assistant-ui/react: ${pkg('@assistant-ui/react')}`,
