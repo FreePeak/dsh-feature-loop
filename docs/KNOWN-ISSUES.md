@@ -366,12 +366,65 @@ branch targets a *different* compose project — so it never touched it.
 `docker inspect` on the container names its `working_dir`. **A container found
 by `make up` is not necessarily the one you built.**
 
-**Blocked, and honestly so:** this branch's image cannot be rebuilt on this host
-right now — the build's `pnpm install` needs the npm registry, and the registry's
-TLS handshake is dead here (three `ERR_PNPM_META_FETCH_FAIL`, `Socket timeout`,
-while `github.com` returns 200). Same outage as §1c. So the container path on
-this branch is verified by `make check`'s ladder check and by inspection, **not**
-by a live gated run in a rebuilt container.
+**Blocked, and then not.** The rebuild failed first — three
+`ERR_PNPM_META_FETCH_FAIL … Socket timeout` — and the cause was diagnosed rather
+than worked around. Bisected with `openssl s_client` against Cloudflare's edge:
+
+| SNI on 104.16.0.34:443 | result |
+|---|---|
+| `example.com` | `CONNECTION ESTABLISHED` |
+| `registry.yarnpkg.com` | `CONNECTION ESTABLISHED` |
+| `registry.npmjs.org` | **stalls** |
+| `npmjs.com` | **stalls** |
+
+TCP connects, DNS resolves, `github.com` answers — so it is **SNI filtering on
+this network path**, and `nc -z 443` succeeding is exactly why it presents as a
+hang rather than a failure. `registry.npmmirror.com` answers the same API and was
+verified to carry what this repo installs (`yaml` latest; `@deepseek-ai/dsh`,
+29 versions, including `0.2.0-rc.2`).
+
+`NPM_REGISTRY` is now a build **argument** in both Dockerfile stages and a
+compose `args:` entry — empty by default, so the ordinary build is unchanged, and
+set only by whoever is behind a filtered network. Not a committed `.npmrc` line:
+a mirror in a checked-in file silently changes where every package on a
+developer's machine comes from, which is a supply-chain decision nobody asked
+for. With it set, `docker compose build --build-arg NPM_REGISTRY=…` completes and
+`#21 … feature-loop imports`.
+
+**Two more defects the rebuild then exposed**, both of which had made the
+container path unverifiable rather than wrong:
+
+1. **`FORCE_REINIT=1` re-seeded the patch but NOT the settings.** The harness
+   renames a legacy `settings.yaml` to `settings.yaml.imported` on first import,
+   so a volume seeded by an older image keeps that file forever and the entry
+   point's "already present" guard skips the re-render. Measured: after
+   `FORCE_REINIT=1` the patch row carried this branch's ladder
+   (`model: execution`) while `settings.yaml.imported` still declared four
+   concrete ids and no `execution` — the patch right, the resolver wrong, and
+   the run dies `UNKNOWN_MODEL` on step 1. Exactly the 2026-10-01 bug with a
+   fresh coat of paint. `FORCE_REINIT` now removes the marker too.
+
+2. **`test/probe-container.mjs` declared the dead concrete ids itself.** It is the
+   *third* place to carry them, and it is why the container probe still failed
+   `UNKNOWN_MODEL` even with the patch row and the settings both correct: the
+   probe builds its own profile, and the settings import is one-shot so that
+   profile gets no settings of its own and resolves rungs against the list in
+   the probe's own patch. It now declares `execution` first, like every other
+   shipped deployment.
+
+**Now verified for real:** with the mirror, a rebuilt image, and the patch and
+settings in agreement, `make e2e-container` passes all three directions inside
+the container:
+
+```
+==> 1/3  fail-closed: refused, no file ✓
+==> 2/3  allow:       settle {"outcome":"allowed-once"}, written: "hello" ✓
+==> 3/3  audit trail: 1 approval/asked, 1 approval/decided=allowed-once ✓
+probe passed
+```
+
+and the probe profile's composed ladder is `{ provider: onegw, model: execution }`
+— this branch's route, in a container, on a real gated run.
 
 ### 1. The stylesheet restyled the whole host UI
 
