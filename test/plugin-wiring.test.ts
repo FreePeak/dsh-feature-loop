@@ -475,3 +475,85 @@ test('session/event records cost against the agent resolved from ctx.agents', as
   assert.ok((record!.costUSD as number) > 0, `expected non-zero cost, got ${String(record!.costUSD)}`)
   assert.equal(record!.runId, 'sess-live')
 })
+
+// ── the settings file ──────────────────────────────────────────────────────
+//
+// The last hop. test/remote.test.ts unit-tests the merge (it imports no harness
+// package, so CI runs it); what only this file can see is that `index.ts` CALLS
+// it on the way into `apply`, so a value saved in the settings file changes what
+// the tool boundary does. Remove that call and these two fail while every other
+// test in the suite still passes — which is the exact shape of the bug this
+// replaces: a page that showed a value the gate never consulted.
+
+/** A temp XDG config home holding one settings file, for one test. */
+async function withSettingsFile(body: string, run: () => Promise<void>): Promise<void> {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const home = mkdtempSync(join(tmpdir(), 'dshloop-settings-'))
+  const saved = process.env.XDG_CONFIG_HOME
+  process.env.XDG_CONFIG_HOME = home
+  try {
+    mkdirSync(join(home, 'dshloop'), { recursive: true })
+    writeFileSync(join(home, 'dshloop', 'config.yaml'), body)
+    await run()
+  } finally {
+    if (saved === undefined) delete process.env.XDG_CONFIG_HOME
+    else process.env.XDG_CONFIG_HOME = saved
+    rmSync(home, { recursive: true, force: true })
+  }
+}
+
+test('the settings file widens the gate the plugin actually enforces', async () => {
+  await withSettingsFile('gatePolicies:\n  write: auto\n', async () => {
+    const { mergeRowAndSettings } = await import('../src/remote.ts')
+    // The row says `write_file` is always-approve; the file says auto and the
+    // FILE WINS — that is the whole contract, exercised through the merge the
+    // plugin row is given.
+    const merged = mergeRowAndSettings({ gatePolicies: { write_file: 'always-approve' } })
+    assert.deepEqual(merged.gatePolicies, { write: 'auto' })
+
+    const { ctx, handler, dispose } = mount({ ...SPEC_OPTS, gatePolicies: merged.gatePolicies as never })
+    try {
+      const { decision, delegated } = await tool(handler, 'write')
+      assert.equal(delegated, true, 'an auto policy must pass the call to the harness')
+      assert.equal(decision.kind, 'allow')
+    } finally {
+      dispose()
+      void ctx
+    }
+  })
+})
+
+test('the settings file tightens it too: deny wins over the row asking', async () => {
+  await withSettingsFile('gateMode: deny\n', async () => {
+    const { mergeRowAndSettings } = await import('../src/remote.ts')
+    // The row asks; the file denies. Both stop the call, and `deny` stops it
+    // WITHOUT prompting — which is the only difference, and the reason `deny`
+    // is the right value for an unattended run.
+    const merged = mergeRowAndSettings({ gateMode: 'ask', gatePolicies: { write: 'always-approve' } })
+    assert.equal(merged.gateMode, 'deny')
+
+    const { ctx, handler, dispose } = mount({
+      ...SPEC_OPTS,
+      gateMode: merged.gateMode as never,
+      gatePolicies: merged.gatePolicies as never,
+    })
+    try {
+      const { decision, delegated } = await tool(handler, 'write')
+      assert.equal(delegated, false, 'deny refuses here rather than passing the call on')
+      assert.equal(decision.kind, 'deny')
+      assert.match(decision.reason ?? '', /REVIEW REQUESTED/)
+    } finally {
+      dispose()
+      void ctx
+    }
+  })
+})
+
+// Shared by the two settings tests above so each asserts the merge and not a
+// second copy of the same spec.
+const SPEC_OPTS: CreatePolicyOptions = {
+  spec: SPEC,
+  gatePolicies: { write: 'always-approve' },
+}

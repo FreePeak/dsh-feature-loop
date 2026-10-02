@@ -187,16 +187,19 @@ function SettingsPanel({ host }: { host: Host }): React.ReactElement {
       if (svc === undefined) return
       const answer = await svc.save(draft)
       if (!answer.ok) { setNotice({ kind: 'error', text: `save: ${answer.error.message}` }); return }
-      // What is true, verified 2026-10-01: this file is read back by the
-      // STATUS page, and by nothing that decides. `apply()` builds the policy
-      // from the profile patch row alone, so a value saved here does not
-      // change the gate — and saying "applies at the next reload" sent the
-      // next person looking for a reload that would never do it.
+      // Verified 2026-10-02: these values now reach the gate. The saved file is
+      // applied OVER the profile patch row on the keys this page owns, so the
+      // RUNNING gate changes at the next plugin load — which is a restart of the
+      // harness, not a page reload, and the difference is worth naming: until
+      // then the previous row is still what decides.
+      //
+      // The earlier notice said the file was display-only. It was true when
+      // written, which is exactly why it was dangerous: it taught the operator
+      // that saving here is a no-op, so nobody saved here.
       setNotice({
         kind: 'ok',
-        text: 'Saved to config.yaml. The running gate is built from the profile '
-          + 'patch row, so this takes effect only after the plugin is wired to '
-          + 'read it — the Status tab shows what is stored.',
+        text: 'Saved to config.yaml and applied over the profile patch row — this '
+          + 'takes effect at the next plugin load (restart the harness to apply it).',
       })
       await load()
     } catch (error) {

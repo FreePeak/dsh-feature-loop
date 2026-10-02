@@ -13,8 +13,12 @@
  * `cordis.patch.yml`. That is a deliberate boundary: the patch layer is shared,
  * hand-authored deployment configuration whose comments explain why each value
  * is what it is, and a settings page that rewrote it would silently delete that
- * reasoning. The file this service writes is the same one the `dshloop` CLI
- * reads, so a value set here takes effect on both surfaces at the next load.
+ * reasoning. It is not a boundary against the settings taking EFFECT, though:
+ * `mergeRowAndSettings` below applies the file OVER the row on the nine keys the
+ * page owns, so a value set here changes the running gate at the next plugin
+ * load. For its first three weeks it did not, and both this header and the
+ * page's notice said so — accurately, which is worse: a correct warning about a
+ * feature that does not exist still ships the feature's UI.
  *
  * **Shape.** Every decision lives in an exported pure function; the cordis
  * class at the bottom only delegates. That is not decoration — the base class's
@@ -52,6 +56,101 @@ export interface JudgeStatus {
   reachable: boolean
   /** The endpoint's own health payload, or the reason it did not answer. */
   detail: string
+}
+
+/**
+ * The policy keys the settings page owns, and nothing else.
+ *
+ * The page can change the GATE — the policies per tool, the mode, the review
+ * budget, the judge and the checkpoint step. It cannot change `spec`,
+ * `dashboard` or `optimize`: those are blocks the page offers no control for,
+ * and a half-applied `spec` (a ceilings block with no prices, say) is a worse
+ * state than a clear boundary between "yours" and "the deployment's".
+ *
+ * An allowlist, not a denylist. A denylist silently starts applying any key a
+ * future version of the page adds, which is how a status page becomes policy
+ * without anybody deciding it should be.
+ */
+const USER_KEYS = [
+  'gatePolicies',
+  'gateMode',
+  'confidenceThreshold',
+  'reviewBudget',
+  'judgeThreshold',
+  'checkpointAtStep',
+  'judge',
+  'judgeBaseURL',
+  'systemOneModel',
+] as const
+
+/**
+ * The user's settings, shaped so they can be spread over the row's config.
+ *
+ * The settings file WINS over the patch row on every key in {@link USER_KEYS}.
+ * That is the whole point of the file — it exists so someone can widen or
+ * tighten their own gate without editing a shared patch layer other profiles
+ * inherit — and the file header, the settings notice and this function all say
+ * so. A row that wins would make the page a display surface again, which is the
+ * bug this replaces.
+ *
+ * `reviewBudget` and `judgeThreshold` need reshaping rather than passing
+ * through: the row takes them under `router`, the file stores them flat because
+ * that is the form a form has.
+ *
+ * @param rowConfig - the plugin patch row's `config:` block.
+ * @returns the partial policy the settings file overrides, empty when it holds
+ *   nothing applicable.
+ */
+export function userSettings(rowConfig: Record<string, unknown> = {}): Record<string, unknown> {
+  const settings = readSettings()
+  const out: Record<string, unknown> = {}
+  for (const key of USER_KEYS) {
+    const value = settings[key]
+    if (value === undefined) continue
+    if (key === 'reviewBudget' || key === 'judgeThreshold') {
+      if (typeof value !== 'number' || !Number.isFinite(value)) continue
+      out.router = { ...(out.router as Record<string, unknown> | undefined ?? {}), [key]: value }
+      continue
+    }
+    out[key] = value
+  }
+  return out
+}
+
+/**
+ * The row's policy values with the user's settings file applied OVER them.
+ *
+ * The row is the base and the FILE WINS, on the nine keys the settings page
+ * offers ({@link userSettings}, above). The page exists so someone can
+ * widen or tighten their own gate without editing a shared patch layer other
+ * profiles inherit; a row that won would leave the page a display surface, which
+ * is the bug this replaces.
+ *
+ * `router` is the one nested key, so it is merged rather than replaced — a
+ * settings file that sets only `reviewBudget` must not erase the row's
+ * `judgeThreshold`. Everything else here is a scalar or an opaque block
+ * (`gatePolicies`, `dashboard`, `optimize`, `spec`) that the file is not allowed
+ * to touch at all.
+ *
+ * @param config - the row's validated config.
+ * @returns the keys `apply` should be given.
+ */
+export function mergeRowAndSettings(config: Record<string, unknown>): Record<string, unknown> {
+  const user = userSettings()
+  const rowRouter: Record<string, unknown> = {
+    ...(config.reviewBudget === undefined ? {} : { reviewBudget: config.reviewBudget }),
+    ...(config.judgeThreshold === undefined ? {} : { judgeThreshold: config.judgeThreshold }),
+    ...(config.checkpointAtStep === undefined ? {} : { checkpointAtStep: config.checkpointAtStep }),
+  }
+  const userRouter = (user.router ?? {}) as Record<string, unknown>
+  const router = { ...rowRouter, ...userRouter }
+  return {
+    confidenceThreshold: config.confidenceThreshold,
+    gatePolicies: config.gatePolicies,
+    gateMode: config.gateMode,
+    ...user,
+    router,
+  }
 }
 
 /** Everything the panel shows at a glance. */
@@ -318,15 +417,20 @@ export function saveSettings(
     //     `read: always-approve`, then building the policy the way `apply()`
     //     does, yields `gateMode: ask` and no gate on `read`.
     //
-    // So the file is a record of what the settings PAGE was showing, and
-    // `buildStatus` is what reads it back — which is how the page can display a
-    // value it has not applied. Writing a header that says otherwise is how the
-    // next person spends a day on it.
+    // So the file is now the SECOND HALF of the policy: `mergeRowAndSettings`
+    // applies it OVER the patch row on the nine keys the page owns, and the
+    // header below says exactly that. It used to be a record of what the page
+    // was showing and nothing else, and the header said so — accurately, which
+    // is worse: a correct warning about a feature that does not exist still
+    // ships the feature's UI.
     '# Written by the Feature Loop settings page.\n'
-    + '# READ BY: the settings page only (buildStatus merges it over the patch row).\n'
-    + '# NOT READ BY: apply() — the running gate is built from the profile patch\n'
-    + "#   row alone, so nothing here changes policy until that is wired.\n"
-    + '# The patch row is the only place a setting takes effect today.\n'
+    + '# READ BY: the running gate. The values below are applied OVER the profile\n'
+    + "#   patch row (mergeRowAndSettings), so this file wins on the keys it sets.\n"
+    + '# SCOPE: the gate keys only — gatePolicies, gateMode, confidenceThreshold,\n'
+    + '#   reviewBudget, judgeThreshold, checkpointAtStep and the judge triple.\n'
+    + '#   spec, dashboard and optimize stay in the patch row: the page offers no\n'
+    + '#   control for them, and a half-applied block is worse than a boundary.\n'
+    + '# Takes effect at the next plugin load; the Status tab shows what is stored.\n'
     + stringifyYaml(merged),
   )
   return merged
