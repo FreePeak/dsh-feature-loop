@@ -128,7 +128,7 @@
         #   history: .feature-loop/runs.jsonl   # run-history file: appended per closed turn, read for Metrics
         #   loops: 3              # refinement passes, integer 3–10 (CLI only; validated at load)
         #   derive: true          # accepted, READ BY NOTHING — see the note in OptimizePolicyOptions
-        #   judge: chat           # none | chat | laya — who scores across passes (CLI only)
+        #   judge: chat           # none | chat | laya — cross-pass judge, read by nothing; the CLI's `runRefined` takes it
         #   totalBudgetUSD: 3.00  # refinement budget; default is derived × loops × 0.6 (CLI only)
         # ────────────────────────────────────────────────────────────────────
 

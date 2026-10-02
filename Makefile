@@ -199,6 +199,7 @@ check: test typecheck ## Run the test suite, the typecheck, and the config drift
 	@node scripts/check-test-list.mjs
 	@node scripts/check-ladder-models.mjs
 	@node scripts/check-dead-exports.mjs
+	@node scripts/check-noop-config-keys.mjs
 	@echo "  check passed"
 
 .PHONY: test
