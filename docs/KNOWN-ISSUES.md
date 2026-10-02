@@ -223,7 +223,50 @@ The values are still stored and still validated. That is deliberate: they are a
 correct record of what the page showed, and wiring `apply()` to them is a small,
 well-scoped piece of work that this note now describes honestly.
 
-### It is now a check, and the check found a fourth on its first run
+### It is now a check, and writing it took five wrong rules
+
+`scripts/check-noop-config-keys.mjs` walks `src/index.ts`, `README.md` and the
+two shipped YAML patches, takes the keys `parseOptimizeConfig` accepts and the
+ones `src/plugin.ts` consults, and fails when a key that is consulted by no hook
+is documented as doing something.
+
+It took five attempts, and every wrong one was a *false result*, which is the
+only kind worth recording because a false negative is invisible:
+
+| attempt | what it got wrong | how it showed |
+|---|---|---|
+| 1 | every `\b` written as a literal backslash-b inside a template | no word boundary matched, so **nothing** could fire |
+| 2 | `READ` matched only `reads\b` | `read for Metrics` — the phrase a real doc comment uses — missed |
+| 3 | `READ` tested before `NOOP` | `READ BY NOTHING` counted as a promise, so it passed the exact claim it was written to catch |
+| 4 | judged only *uncommented* setting lines | `# judge: chat   # who scores across passes` is commented out and still a claim, so the false claim passed again |
+| 5 | judged prose and vocabulary lines | `--judge laya` in a shell command read as a promise — a false *positive* |
+
+Attempt 5 is the one that decided the rule, and it is a judgement rather than a
+pattern, so it is worth stating as one: **a setting line is any line matching
+`key:`, commented or not.** A commented `# judge: chat` is documentation claiming
+the key does something; if the key does nothing, the claim is wrong whether or
+not it is a line someone would copy.
+
+Verified by re-introducing both shipped false claims, in the exact files and
+wording they shipped in:
+
+```
+README.md: a comment block sets 'judge' and says it does something,
+  but no hook reads it (src/plugin.ts has no optimize?.judge). the optimize example
+  promises behaviour that does not exist. Wire it, or say "read by nothing".
+```
+
+The seven matching cases are asserted inside the script, including both shipped
+false claims and both corrected labels — the defect class now has a test rather
+than a note.
+
+### And it is wired, because a check nothing runs is a comment
+
+It is a step in the `test` job and a line in `make check`, which is the same
+argument as the CI-list checks: four scripts in this repo are only worth having
+because something fails when they stop being true.
+
+### The check that found a fourth on its first run
 
 `scripts/check-dead-exports.mjs` walks `src/`, `test/`, `web/` and `demo/cli.ts`
 and fails when an exported symbol is referenced by nothing outside its own file.

@@ -1,41 +1,47 @@
 #!/usr/bin/env node
 /**
- * Fail when a config key is validated and then never consulted.
+ * Fail when a config key is documented as doing something no hook reads.
  *
  * This is the fourth face of one defect class, and the one no reference search
  * can see. The other three were a function nothing calls, a rung naming an
- * undeclared model, a key documented as read when it was not. This one is
- * quieter still:
+ * undeclared model, and a key whose documentation claimed it was read when it
+ * was not. That last one has already happened here: a note claimed `derive`
+ * and `history` "drive the run-history recording", and
+ * `grep -n 'optimize?.derive' src/plugin.ts` returns nothing.
  *
- *   `parseOptimizeConfig` VALIDATES all five keys of the `optimize:` block, so
- *   every one of them looks live to `check-dead-exports.mjs`, to a reader, and
- *   to `grep`. Only `history` is consulted by a hook. `loops`, `derive`,
- *   `judge` and `totalBudgetUSD` are read by the validator and by nothing else.
+ * `parseOptimizeConfig` VALIDATES every key of the `optimize:` block, so each
+ * one looks live to `check-dead-exports.mjs`, to `grep`, and to a reader. Only
+ * `history` is consulted by a hook. A validated-then-ignored key is a
+ * documented no-op and is not itself a bug — the keys are kept so a deployment
+ * that sets one does not start failing validation the day it is honoured. What
+ * IS a bug, and what this catches, is the DOCUMENT promising otherwise.
  *
- * That is not a bug in itself — a validated-then-ignored key is a documented
- * no-op, and the keys are kept so a deployment that sets one does not start
- * failing validation the day it is honoured. What IS a bug, and has already
- * happened once, is the documentation saying otherwise: a note claimed
- * `derive` and `history` "drive the run-history recording", and `grep
- * -n 'optimize?.derive' src/plugin.ts` returns nothing.
+ * The rules, each learned from a wrong result rather than designed up front:
  *
- * So this check is about the DOCUMENT, not the code: a key the validator
- * accepts and no hook reads must be labelled as a no-op at every place a
- * deployment is told what it does — its own doc comment, and the example
- * configs. A key that IS read must not carry that label, because the day the
- * behaviour lands, a comment saying "read by nothing" is its own kind of lie.
+ *   - **a SETTING line is any line matching `key:`, commented or not.** This is
+ *     the judgement the earlier drafts got wrong in both directions, and it is
+ *     worth stating as a judgement instead of hiding in a pattern: `# judge:
+ *     chat   # who scores across passes` is commented out, and it is still
+ *     documentation claiming the key does something. If the key does nothing,
+ *     that claim is wrong whether or not the line is one a deployment would
+ *     copy. Judging only uncommented lines passed the exact false claim this
+ *     file exists to catch.
+ *   - **the CLAIM is the TAIL** — everything after the second `#`, which is
+ *     where a YAML example puts the sentence about the key.
+ *   - **a no-op label is not a promise.** "READ BY NOTHING" matches a read
+ *     marker AND a no-op marker, so `isNoop` runs first and short-circuits. The
+ *     first version did not, and passed the false claim above.
+ *   - **a line that only NAMES the key is prose.** `--judge laya` inside a
+ *     shell command mentions `judge` and promises nothing, so a key is judged
+ *     only where it is actually SET.
+ *   - **a run of consecutive comment lines is ONE block.** Judging line by line
+ *     is what let one key's label suppress another's claim two lines below it.
  *
- * It reads `src/spec.ts` for the accepted keys, `src/plugin.ts` for the
- * consulted ones, and the shipped YAML for the labels. Everything is parsed
- * with a regex; the tree is small and the shapes are fixed by the files that
- * define them.
- *
- * ponytail: a small allowlist of which files must carry the label, rather than
- * a scan for every mention of every key. A mention is not a promise — README
- * talks about `history` in prose that is not a claim about whether a hook reads
- * it — so the check asserts on the two places that ARE promises: the key's own
- * JSDoc and the example configs. It exits non-zero and names the file, so
- * fixing it is adding a clause, not a judgement call.
+ * ponytail: a small allowlist of which files must carry the label, rather than a
+ * scan for every mention of every key. No dependencies, and every regexp below
+ * is a plain literal — an earlier draft escaped its `\b` inside a template,
+ * which made every word boundary a literal backslash-b and the check unable to
+ * fire at all.
  *
  * Run: `node scripts/check-noop-config-keys.mjs` (CI, and `make check`).
  */
@@ -48,117 +54,159 @@ const read = (p) => readFileSync(join(repo, p), 'utf8')
 
 const spec = read('src/spec.ts')
 const plugin = read('src/plugin.ts')
-const index = read('src/index.ts')
 
-/** The keys `parseOptimizeConfig` accepts. */
+/** The keys `parseOptimizeConfig` accepts, from the interface it validates. */
 const block = /export interface OptimizeConfig \{([\s\S]*?)\n\}/.exec(spec)
 if (block === null) {
   console.error('OptimizeConfig not found in src/spec.ts — has it been renamed?')
   process.exit(1)
 }
-const accepted = [...block[1].matchAll(/^\s{2}(\w+)\??:/gm)].map(m => m[1])
-
-/** A key a HOOK consults: `optimize?.key` or `optimize.key` in the plugin. */
-const consulted = new Set(
-  [...plugin.matchAll(/optimize\??\.(\w+)/g)].map(m => m[1]),
-)
-
-const ignored = accepted.filter(k => !consulted.has(k))
-const wired = accepted.filter(k => consulted.has(k))
+const accepted = [...block[1].matchAll(/^ {2}(\w+)\??:/gm)].map((m) => m[1])
 
 /**
- * Where a key's behaviour is PROMISED to a deployment. Each of these must
- * either name the key as read, or name it as a no-op — and the two must not
- * both be true for the same key.
+ * A key a HOOK consults: `optimize?.key` or `optimize.key` in the plugin.
+ *
+ * The lookahead keeps the FILENAME `optimize.ts` in a comment from reading as
+ * a key named `ts`, and the filter drops anything that is not one of this
+ * block's keys. Both were found by the summary line, which is why it prints the
+ * consulted set.
  */
+const consulted = new Set(
+  [...plugin.matchAll(/optimize\??\.(\w+)(?![.\w])/g)]
+    .map((m) => m[1])
+    .filter((k) => accepted.includes(k)),
+)
+
+const ignored = accepted.filter((k) => !consulted.has(k))
+const wired = accepted.filter((k) => consulted.has(k))
+
+/** Where a key's behaviour is PROMISED to a deployment. */
 const PROMISES = [
-  { file: 'src/index.ts', about: 'Config.optimize', keys: accepted },
-  { file: 'README.md', about: 'the optimize example', keys: accepted },
-  { file: 'cordis.patch.yml', about: 'the optimize example', keys: accepted },
-  { file: 'docker/profile.patch.yml', about: 'the optimize example', keys: accepted },
+  { file: 'src/index.ts', about: 'Config.optimize' },
+  { file: 'README.md', about: 'the optimize example' },
+  { file: 'cordis.patch.yml', about: 'the optimize example' },
+  { file: 'docker/profile.patch.yml', about: 'the optimize example' },
 ]
 
-const READ = /read by|reads\\b|drives?\\b|consulted|feeds\\b/i
-const NOOP = /read by nothing|no-?op\\b|accepted\\b[^.]*not|not (?:yet )?(?:acted|consumed)|intentionally not|does nothing/i
+/** Markers of a claim that the key does something. */
+const READ = /\bread(?:s| by)?\b|\bdrives?\b|\bconsulted\b|\bfeeds?\b|\brecords?\b|\bderives?\b|\bscores?\b/i
+
+/**
+ * Markers of a no-op label, checked BEFORE `READ` — see the header.
+ */
+const NOOP = [
+  /read by nothing/i,
+  /accepted\b[^.]*(?:not|never)\b/i,
+  /no-?op\b/i,
+  /not (?:yet )?(?:acted|consumed|read)/i,
+  /intentionally not/i,
+  /does nothing/i,
+  /never (?:read|consulted|used)/i,
+  /\bCLI only\b/i,
+  /\bCLI's? [`']?runRefined\b/i,
+]
+const isNoop = (t) => NOOP.some((re) => re.test(t))
+
+/** Does this text promise behaviour? A no-op label is not a promise. */
+const doesSomething = (t) => !isNoop(t) && READ.test(t)
+
+/** A run of consecutive comment lines is ONE explanation, taken as a whole. */
+function commentBlocks(text) {
+  const blocks = []
+  let current = []
+  for (const line of text.split('\n')) {
+    if (/^\s*(\/\/|#)/.test(line)) current.push(line)
+    else {
+      if (current.length > 0) blocks.push(current.join('\n'))
+      current = []
+    }
+  }
+  if (current.length > 0) blocks.push(current.join('\n'))
+  return blocks
+}
+
+/** Everything after the second `#` on a setting line — that is its claim. */
+const tailOf = (l) => {
+  const parts = l.split('#')
+  return parts.length > 2 ? parts.slice(2).join('#') : l
+}
 
 let failed = false
 for (const p of PROMISES) {
   const path = join(repo, p.file)
   if (!existsSync(path)) continue
-  // One unit per promise: a run of consecutive comment lines is a single
-  // explanation, and a reader takes it as a whole. Judging line by line is what
-  // made the first two attempts misread "history alone does that" as a claim
-  // ABOUT history.
-  const blocks = []
-  let current = []
-  for (const line of readFileSync(path, 'utf8').split('\n')) {
-    const isComment = /^\\s*(\/\/|#)/.test(line)
-    if (isComment) current.push(line)
-    else { if (current.length > 0) blocks.push(current.join('\n')); current = [] }
-  }
-  if (current.length > 0) blocks.push(current.join('\n'))
 
-  for (const key of p.keys) {
-    const word = new RegExp(`\\b${key}\\b`)
-    const mentioning = blocks.filter(b => word.test(b))
-    if (mentioning.length === 0) continue
-    // The opening list of the block — "(loops, derive, history, judge, …)" —
-    // names every key and promises nothing.
-    const claims = mentioning.filter(b => !new RegExp(`\\((?:[^)]*\\b${key}\\b[^)]*)\\)`).test(b))
-    if (claims.length === 0) continue
-    // A line that names the key AND its own value (`judge: chat`) is the
-    // example config offering the key — a claim about what it does, whatever
-    // follows the second `#`. Prose elsewhere in the file does not count; only
-    // the line that sets the key.
-    // A line that SETS the key (`judge: chat`) is the example offering it, and
-    // its tail — whatever follows the second `#` — is the claim. The key's own
-    // JSDoc counts too. A line that only mentions the word is neither: it is
-    // prose, and judging it is what made the first three attempts of this
-    // check misfire.
-    const setting = new RegExp(`\\b${key}\\s*:`)
-    // "who scores across passes" is a promise without the word "reads", and it
-    // is exactly the phrasing the README used. So the claim is judged on the
-    // TAIL of an offering line — everything after the second `#` — against
-    // BOTH the read markers and a plain description of doing something. The
-    // markers exist to catch the blatant claims; the tail test catches the
-    // ordinary ones, which is the whole point of looking here at all.
-    const tail = (l) => { const parts = l.split('#'); return parts.length > 2 ? parts.slice(2).join('#') : l }
-    const offers = (b) => b.split('\n').filter(l => setting.test(l))
-    const doesSomething = (t) => READ.test(t) || /\b(?:who|what|how|when|where)\b|\b(?:scores|records|drives|feeds|derives|optimis|optimiz|weights|selects|chooses)\w*\b/i.test(t)
-    const saysRead = claims.some(b => offers(b).some(l => doesSomething(tail(l))))
-      || claims.some(b => offers(b).length === 0 && doesSomething(tail(b)))
-    const saysNoop = claims.some(b => offers(b).some(l => NOOP.test(l)))
-      || claims.some(b => offers(b).length === 0 && NOOP.test(b))
-    // A no-op label for ONE key is not a no-op label for the BLOCK. The README's
-    // optimize example is four comment lines naming four different keys, and
-    // the `derive` line's "READ BY NOTHING" used to suppress the `judge` line's
-    // promise two lines below it. The label has to be on the line that makes
-    // the claim.
-    if (failed && process.env.FL_CHECK_VERBOSE === '1') {
-      console.error(`  ${p.file} ${key}: read=${saysRead} noop=${saysNoop} consulted=${consulted.has(key)}`)
+  for (const b of commentBlocks(readFileSync(path, 'utf8'))) {
+    for (const key of accepted) {
+      // An opening list — "(loops, derive, history, judge, …)" — names every
+      // key and promises nothing.
+      if (new RegExp(`\\((?:[^)]*\\b${key}\\b[^)]*)\\)`).test(b)) continue
+
+      // The key must be SET here, not merely mentioned: `key: value` with an
+      // OPTIONAL comment marker. A shell flag or a markdown heading does not
+      // match, which is what keeps `--judge laya` out of the judgement.
+      const setting = new RegExp(`^\\s*#?\\s*${key}\\s*:`)
+      const settingLines = b.split('\n').filter((l) => setting.test(l))
+      if (settingLines.length === 0) continue
+
+      const saysRead = settingLines.some((l) => doesSomething(tailOf(l)))
+      const saysNoop = settingLines.some((l) => isNoop(tailOf(l)))
+
+      if (process.env.FL_CHECK_VERBOSE === '1') {
+        console.error(`  ${p.file} ${key}: read=${saysRead} noop=${saysNoop} consulted=${consulted.has(key)}`)
+      }
+
+      const shouldBeNoop = !consulted.has(key)
+      if (shouldBeNoop && saysRead && !saysNoop) {
+        console.error(
+          `${p.file}: a comment block sets '${key}' and says it does something,\n` +
+          `  but no hook reads it (src/plugin.ts has no optimize?.${key}). ${p.about}\n` +
+          '  promises behaviour that does not exist. Wire it, or say "read by nothing".',
+        )
+        failed = true
+      }
+      if (!shouldBeNoop && saysNoop && !saysRead) {
+        console.error(
+          `${p.file}: a comment block labels '${key}' read-by-nothing, but\n` +
+          `  src/plugin.ts consults it (optimize?.${key}). That label is now the wrong one.`,
+        )
+        failed = true
+      }
     }
-    const shouldBeNoop = !consulted.has(key)
-    if (shouldBeNoop && saysRead && !saysNoop) {
-      console.error(
-        `${p.file}: a comment block names '${key}' and says it does something,\n` +
-        `  but no hook reads it (src/plugin.ts has no optimize?.${key}). ${p.about}\\n` +
-        `  promises behaviour that does not exist. Wire it, or say "read by nothing".`,
-      )
-      failed = true
-    }
-    if (!shouldBeNoop && saysNoop && !saysRead) {
-      console.error(
-        `${p.file}: a comment block labels '${key}' read-by-nothing, but\n` +
-        `  src/plugin.ts consults it (optimize?.${key}). That label is now the wrong one.`,
-      )
-      failed = true
-    }
+  }
+}
+
+/*
+ * The matching, asserted. This check shipped once with two defects that made it
+ * unable to fire: every `\b` written as a literal backslash-b inside a
+ * template, and `READ` matching only `reads\b`, so the `read for Metrics` a real
+ * doc comment uses missed. These cases are the regression test for both, for the
+ * READ-vs-NOOP precedence, and for the shape that motivated the file: a
+ * COMMENTED-OUT line is still a promise when it claims something.
+ */
+for (const [text, expectPromise, why] of [
+  [' accepted, READ BY NOTHING — see OptimizePolicyOptions', false, 'a no-op label is not a promise'],
+  [' run-history file: appended per closed turn, read for Metrics', true, 'a bare "read" is a promise'],
+  [' refinement passes, integer 3–10 (CLI only; validated at load)', false, 'CLI-only is a no-op label'],
+  [' who scores across passes', true, 'a promise without the word reads'],
+  [' refinement budget; default is derived × loops × 0.6 (CLI only)', false, 'no-op wins over "derived"'],
+  [" the CLI's --derive derives envelopes, the plugin records the history they come from", true,
+    'the exact false claim that shipped: verbs the code never runs'],
+  [' cross-pass judge, read by nothing (CLI runRefined takes it)', false,
+    'and the label that replaced it'],
+]) {
+  const got = doesSomething(text)
+  if (got !== expectPromise) {
+    console.error(`self-test failed: ${why}`)
+    console.error(`  ${JSON.stringify(text)}`)
+    console.error(`  expected a promise: ${expectPromise}, got ${got}`)
+    failed = true
   }
 }
 
 if (failed) process.exit(1)
 console.log(
-  `config keys: ${accepted.length} accepted, ${wired.length} consulted by a hook ` +
-  `(${wired.join(', ') || 'none'}), ${ignored.length} documented no-ops ` +
+  `config keys: ${String(accepted.length)} accepted, ${String(wired.length)} consulted by a hook ` +
+  `(${wired.join(', ') || 'none'}), ${String(ignored.length)} documented no-ops ` +
   `(${ignored.join(', ') || 'none'}) — every label matches.`,
 )

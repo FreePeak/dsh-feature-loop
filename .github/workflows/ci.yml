@@ -124,6 +124,13 @@ jobs:
       - name: No exported symbol in src/ is dead
         run: node scripts/check-dead-exports.mjs
 
+      # A config key the validator accepts and no hook consults looks live to
+      # every reference-based check — this is the one shape they cannot see.
+      # It has shipped a false note once already (`derive` was documented as
+      # driving the run-history recording; it is read by nothing).
+      - name: Every accepted-but-unconsulted config key is labelled a no-op
+        run: node scripts/check-noop-config-keys.mjs
+
       - name: Run the test suite
         run: node --experimental-strip-types --test \
           test/agent-policy.test.ts test/approval-bridge.test.ts test/approvals.test.ts test/brief.test.ts \
