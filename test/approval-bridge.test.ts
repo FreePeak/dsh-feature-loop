@@ -223,6 +223,31 @@ test('a partial map is marked mixed, because the unset classes DEFAULT — not b
   // it "mixed" is the safe direction: it sends the reader to the fields rather
   // than letting a posture name stand in for what they do not see.
   assert.equal(approvalModeLabel({ write: 'auto' }), ' — mixed with the fields below')
-  assert.equal(approvalModeLabel({}), ' — mixed with the fields below')
-  assert.equal(approvalModeLabel(undefined), ' — mixed with the fields below')
+  // `{}` and `undefined` are NOT marked: with nothing named, `ReviewGate`\'s
+  // default for every tool is `always-approve`, which is the strictest gate there
+  // is and exactly what `approve-every-step`'s own map asks for. Nothing is at
+  // risk from picking a posture, so nothing is warned about.
+  assert.equal(approvalModeLabel({}), '')
+  assert.equal(approvalModeLabel(undefined), '')
+})
+
+test('the SHIPPED row is NOT marked, because it asks about every write class', () => {
+  // Every generated profile writes exactly this, and `bash` is absent because
+  // the spec's `actuator` already classifies it `irreversible`:
+  //
+  //   { read: auto, glob: auto, grep: auto, edit: auto-if-confident,
+  //     write: always-approve }
+  //
+  // It is not `review-risky`'s map VERBATIM — its `write` differs — so the first
+  // version of the marker, which tested exact equality, marked the default row
+  // "mixed with the fields below" on a profile nobody had touched. A marker that
+  // fires on the shipped default is a marker nobody reads. It classifies as
+  // `review-risky` and every write class asks, so it is described.
+  const shipped: Record<string, string> = {
+    read: 'auto', glob: 'auto', grep: 'auto',
+    edit: 'auto-if-confident', write: 'always-approve',
+  }
+  assert.equal(approvalModeFor(shipped), 'review-risky')
+  assert.equal(approvalModeLabel(shipped), '',
+    'the default row must not be marked mixed')
 })

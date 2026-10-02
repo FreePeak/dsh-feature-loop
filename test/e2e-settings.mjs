@@ -31,10 +31,10 @@
  */
 import { strict as assert } from 'node:assert'
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 const require = createRequire(import.meta.url)
 
@@ -114,6 +114,31 @@ function readSettings(path) {
   return out
 }
 
+/**
+ * Write the settings file the way a person would edit it: by hand, in YAML.
+ *
+ * Deliberately NOT through the page's own save. The two mixed-map assertions
+ * below need a file the page did not write, because the page cannot write a
+ * mixed map — picking a posture replaces every class (§1n) — so the only way to
+ * put one in front of the page is to type it.
+ *
+ * @param {Record<string, unknown>} settings - the mapping to write.
+ * @returns {void}
+ */
+function writeSettingsFile(settings) {
+  mkdirSync(dirname(settingsFile()), { recursive: true })
+  const lines = ['# written by test/e2e-settings.mjs — a hand-edited file, on purpose', '']
+  for (const [key, value] of Object.entries(settings)) {
+    if (typeof value === 'object' && value !== null) {
+      lines.push(`${key}:`)
+      for (const [k, v] of Object.entries(value)) lines.push(`  ${k}: ${v}`)
+    } else {
+      lines.push(`${key}: ${String(value)}`)
+    }
+  }
+  writeFileSync(settingsFile(), `${lines.join('\n')}\n`)
+}
+
 const before = readSettings(settingsFile())
 const executablePath = resolveChrome()
 const browser = await chromium.launch(executablePath === undefined ? {} : { executablePath })
@@ -169,7 +194,70 @@ try {
   assert.ok(existsSync(settingsFile()), 'the settings file must exist after a save')
   saved = true
 
+  // What the page's own Save produced, captured BEFORE any hand-editing below.
+  // The first version read it AFTER `writeSettingsFile` had already put the
+  // mixed map in place, so the "restore" wrote the mixed map back, the marker
+  // stayed up, and the assertion was right while the fixture was wrong.
   const after = readSettings(settingsFile())
+
+  // 3. The MIXED-map marker and the sentence about what the select does. Both
+  //    are copy, and copy is exactly what a later refactor softens: §1n added both
+  //    in `web/entry.tsx` and nothing asserted either, so a wording pass could
+  //    have removed them without a single red test. They are asserted HERE because
+  //    this is the only place the rendered strings exist.
+  // The hint is a sibling `.fl-hint` inside the `Field` wrapper, so scope to that
+  // element rather than to `../..`: the parent subtree also contains the NEXT
+  // field's hint, and asserting on it once the marker is present picks up text
+  // this row never rendered. That is the same positional-assumption bug the rest
+  // of this file records, wearing a different hat.
+  const gateHintOf = async () => {
+    const field = page.locator('.fl-row').filter({ hasText: 'When to stop and ask' }).first()
+    return (await field.locator('xpath=../..').locator('.fl-hint').first().innerText())
+      .replace(/\s+/g, ' ')
+  }
+
+  // A file that is not one of the three postures must say so, and must say what
+  // touching the select will do to it. Measured 2026-10-03 with
+  // `{write: always-approve, edit: auto, bash: auto}` in the file.
+  await writeSettingsFile({ gatePolicies: { write: 'always-approve', edit: 'auto', bash: 'auto' } })
+  // **Reload**, not a tab switch: the draft is fetched once on mount, so the page
+  // still shows the previous file until something re-reads it. The first version
+  // of this block switched tabs and the assertion below therefore measured a
+  // STALE render — which is why the mixed map appeared to stay on screen after
+  // restoring it. `Reload` is the button the page ships for exactly this.
+  await page.getByRole('button', { name: 'Reload', exact: false }).first().click()
+  await page.waitForTimeout(2500)
+  const mixedHint = await gateHintOf()
+  console.log('mixed-file hint:', mixedHint.slice(0, 130))
+  assert.match(
+    mixedHint,
+    /Not one of the postures, and this page has no per-tool fields/,
+    'a hand-edited map that is not a posture must be marked, or the page shows one posture\'s copy for a file it does not describe. The marker also has to name the FILE, because the page has no per-tool fields: three selects and nothing that edits one class.',
+  )
+  assert.match(
+    mixedHint,
+    /REPLACES every class in that file/,
+    'picking an option overwrites every class in the file, and the page must say so BEFORE the operator does it',
+  )
+  // Now put the file back and confirm the sentence is GONE: the marker is about
+  // the file in front of the reader, so restoring the file must clear it. That
+  // also proves the assertion above is not passing on a stale render.
+  await writeSettingsFile(after)
+  await page.getByRole('button', { name: 'Reload', exact: false }).first().click()
+  await page.waitForTimeout(2500)
+  const restoredHint = await gateHintOf()
+  assert.ok(
+    !restoredHint.includes('REPLACES'),
+    `the REPLACES sentence belongs to a mixed file only; after restoring it the hint read: ${restoredHint.slice(0, 120)}`,
+  )
+
+  // Leave the file as the page's own save left it, so the restore below is the
+  // only thing that writes.
+  await writeSettingsFile(after)
+  await page.getByRole('tab', { name: 'Dashboard' }).click()
+  await page.waitForTimeout(600)
+  await page.getByRole('tab', { name: 'Settings' }).click()
+  await page.waitForTimeout(1500)
   assert.equal(after.gateMode, gateValue, 'the file must hold the value the page showed')
   assert.equal(after.gateMode, before.gateMode ?? after.gateMode,
     're-saving the loaded value must not silently change the mode')

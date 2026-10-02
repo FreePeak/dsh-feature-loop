@@ -321,24 +321,44 @@ export function approvalModeLabel(policies: GatePolicyMap | undefined): string {
   // truth is "one class set, the rest defaulted" is the safe direction: it tells
   // the reader to check the fields rather than to trust the posture.
   const mode = approvalModeFor(policies)
-  const exact = Object.entries(APPROVAL_MODES).some(([, m]) => mapsEqual(m.policies, policies))
-  return exact ? '' : ' — mixed with the fields below'
-}
-
-/**
- * Whether two policy maps assign the same value to every named class.
- *
- * `Object.keys` yields `string`, so the index needs the class type: this
- * compares maps a person can type, and an untyped index here is exactly how a
- * `noUncheckedIndexedAccess`-free build hides a wrong key.
- */
-function mapsEqual(a: GatePolicyMap, b: GatePolicyMap | undefined): boolean {
-  const keys = new Set<string>([...Object.keys(a), ...Object.keys(b ?? {})])
-  for (const k of keys) {
-    const cls = k as GatePolicyClass
-    if (a[cls] !== b?.[cls]) return false
-  }
-  return true
+  // Exact equality is the wrong test, and measuring it on the SHIPPED row is what
+  // showed why. Every generated profile writes:
+  //
+  //   { read: auto, glob: auto, grep: auto, edit: auto-if-confident,
+  //     write: always-approve }
+  //
+  // — no `bash`, because the actuator already classifies it `irreversible`. So it
+  // is NOT `review-risky`'s map verbatim (its `write` differs), and exact
+  // equality marked the DEFAULT row "mixed with the fields below" on a profile
+  // nobody had touched. A marker that fires on the shipped default is a marker
+  // nobody reads.
+  //
+  // The test is therefore the CLASSIFICATION, not the bytes: a map is described
+  // by the posture it lands on, and the one that lands on a different posture
+  // from the one on screen is the one a reader must check. `approvalModeFor`
+  // counts what each class DOES, so a map that omits `bash` and inherits the
+  // gate's `always-approve` default classifies exactly as it runs — which is the
+  // property the marker exists to state.
+  //
+  // The residual case is the MIXED map of §1n, where two of three write classes
+  // are `auto`: it classifies as `review-risky` (one class asks), which is the
+  // strict end, so it is still not distinguished by the classification alone.
+  // Hence the second test: a map that says `auto` for any write class is never
+  // described by an asking posture's copy, whatever it classifies as.
+  //
+  // That is ALSO why this can fire on a page with no per-tool fields at all — the
+  // Settings tab has three selects (judge, gate mode, posture) and NOTHING that
+  // edits one class, so a map a person hand-wrote is invisible in the UI and the
+  // hint has to point at the FILE rather than at fields that are not there.
+  const silentWrite = GATE_POLICY_CLASSES
+    .filter(c => c !== 'read' && c !== 'glob' && c !== 'grep')
+    .filter(c => policies?.[c] === 'auto').length
+  // `never-ask` is every class `auto` by definition, so the count alone marks it
+  // — and it is the one map the count describes EXACTLY. Its own detail line
+  // already says the gate is off; the marker exists for a map whose classes
+  // disagree with the posture on screen, and `never-ask`'s do not.
+  if (silentWrite === 0 || mode === 'never-ask') return ''
+  return ' — mixed with the fields below'
 }
 
 export function approvalModeFor(policies: GatePolicyMap | undefined): ApprovalModeName {

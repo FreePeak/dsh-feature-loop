@@ -767,6 +767,42 @@ an option here REPLACES every one of them."** That is the whole UI contract for 
 mixed file — the marker says what is running, this sentence says what the control
 does — and neither half is discoverable without a browser.
 
+**And the marker was wrong in a way only the browser could have told me.** The
+first version tested EXACT map equality, which marked the **shipped row** as
+mixed. Every generated profile writes
+
+```
+{ read: auto, glob: auto, grep: auto, edit: auto-if-confident, write: always-approve }
+```
+
+— no `bash`, because the spec's `actuator` already classifies it `irreversible`.
+That is not `review-risky`'s map verbatim (its `write` differs), so the
+default row on a profile nobody had touched carried "mixed with the fields
+below". A marker that fires on the shipped default is a marker nobody reads.
+
+It now keys off BEHAVIOUR: a map is marked when it says `auto` for a write
+class and classifies as something other than `never-ask`. So the shipped row is
+unmarked (every write class asks), each posture's own map is unmarked, the mixed
+map and a partial `{write: auto}` are marked, and `{}`/`undefined` are unmarked
+because nothing named means `ReviewGate`'s `always-approve` default — the
+strictest gate there is.
+
+**And the sentence pointed at fields that do not exist.** "The per-tool fields
+below are what runs" — the Settings tab has three selects (judge, gate mode,
+posture) and **nothing that edits one class**. A hand-written map is invisible in
+the UI, so the hint now names the FILE:
+
+> Not one of the postures, and this page has no per-tool fields: it lives in
+> `~/.config/dshloop/config.yaml`. Picking an option here REPLACES every class in
+> that file.
+
+All of this is asserted by `test/e2e-settings.mjs`, which is the only place the
+rendered strings exist. Its own first version was wrong three times — a tab
+switch instead of **Reload** (the draft is fetched once on mount, so it measured a
+stale render), a `../..` subtree that swept in the next field's hint, and a
+fixture that captured the "restored" file *after* hand-editing it. Each was found
+because the assertion failed, and each is recorded in the script.
+
 Frame: `docs/evidence/settings-mixed.png`.
 
 ### 1. The stylesheet restyled the whole host UI
