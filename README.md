@@ -775,8 +775,9 @@ make verify          # compose + tests + typecheck + the six drift checks + inte
 That is the whole of it. Spelled out, `make verify` is:
 
 ```bash
-node --experimental-strip-types --test test/*.test.ts   # 406 pass
-npx tsc --noEmit                                       # clean, all of src/ incl. plugin.ts
+make ci-tests    # exactly the 21 files CI runs: 298 pass, no harness needed
+make test        # every suite, incl. six needing the harness: 443 pass
+npx tsc --noEmit # clean, all of src/ incl. plugin.ts
 node scripts/check-ci-shape.mjs                        # CI runs every check
 node scripts/check-test-list.mjs                        # and every pure test
 node scripts/check-typecheck-list.mjs                   # and every harness-free module
@@ -786,6 +787,11 @@ node scripts/check-noop-config-keys.mjs                 # and no config key clai
 bash test/integration/run.sh                            # 11 pass, in the real harness
 bash demo/run.sh                                        # goal-met
 ```
+
+`make check` is the one that runs anywhere: it uses CI's list, so a fresh clone
+with only `npm install` gets the tests, the typecheck and all six drift checks
+without a harness checkout. `make test` needs one — six suites import
+`src/plugin.ts`. Both were true only from 2026-10-03; see KNOWN-ISSUES §1f.
 
 The six `check-*.mjs` scripts need no `node_modules`, no gateway and no
 harness — they read the tree. They exist because each of the failures they

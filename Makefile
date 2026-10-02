@@ -23,6 +23,19 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
+# A pipeline's exit status is its LAST command's, so `node --test … | tail -8`
+# reports 0 no matter how many suites failed — which is how `make test` printed
+# `# fail 6` and exited 0 on a bare clone (2026-10-03, six suites dying on
+# `Cannot find package '@deepseek-ai/dsh-llm'`). A green exit code over a red line
+# is worse than no target at all, because it is believed.
+#
+# `.SHELLFLAGS := -o pipefail -c` is the usual answer and it does NOT work here:
+# measured on this make, a `@false | tail -1` recipe exits 0 with it, and 2 with
+# either an inline `set -o pipefail` or an explicit `bash -o pipefail -c`. So
+# every recipe that pipes says so itself, which is the only form that survives
+# contact with this make. Recipes that do not pipe are unaffected.
+.DEFAULT_GOAL := help
+
 # ── configuration ──────────────────────────────────────────────────────────
 COMPOSE      ?= docker compose -f docker/docker-compose.yml
 SERVICE      ?= dsh-feature-loop
@@ -138,7 +151,7 @@ logs: ## Follow the container log (the 'dsh web:' line carries the token)
 
 .PHONY: url
 url: ## Print the UI URL including its token
-	@token=$$(docker logs $(SERVICE) 2>/dev/null | grep -oE 'token=[A-Za-z0-9_-]+' | tail -1 | cut -d= -f2); \
+	@set -o pipefail; token=$$(docker logs $(SERVICE) 2>/dev/null | grep -oE 'token=[A-Za-z0-9_-]+' | tail -1 | cut -d= -f2); \
 	  if [ -z "$$token" ]; then \
 	    echo "  no token yet — is the container running? try: make logs"; \
 	  else \
@@ -151,7 +164,7 @@ dashboard: ## Print the approval dashboard URL including its token
 	@# Mirrors `url`: the container logs ONE `feature-loop dashboard:` line on
 	@# bind, carrying the generated token. The line's URL is the CONTAINER's
 	@# view (127.0.0.1:8100); from the host it is the published loopback port.
-	@line=$$(docker logs $(SERVICE) 2>/dev/null | grep -oE 'feature-loop dashboard: http://[^ ]+' | tail -1); \
+	@set -o pipefail; line=$$(docker logs $(SERVICE) 2>/dev/null | grep -oE 'feature-loop dashboard: http://[^ ]+' | tail -1); \
 	  token=$$(printf '%s' "$$line" | grep -oE 'token=[A-Za-z0-9_-]+' | cut -d= -f2); \
 	  if [ -z "$$token" ]; then \
 	    echo "  no dashboard line yet — dashboard disabled, or the profile was seeded before"; \
@@ -194,8 +207,18 @@ rmi: ## Remove the container image
 	@docker rmi dsh-feature-loop:local 2>/dev/null && echo "  image removed" || echo "  no image to remove"
 
 # ── checks (no container required) ─────────────────────────────────────────
+# `check` runs CI's LIST, not `test/*.test.ts`. That is the difference between a
+# check you can run on a fresh clone and one you cannot: six suites import
+# src/plugin.ts and need @deepseek-ai/* packages, so `test` needs a harness
+# checkout and `check` does not. Before this, `make check` depended on `test`, so
+# on a bare clone it stopped at `make: *** [test] Error 1` and the four drift
+# checks below never ran — the checks that exist precisely to run without a
+# toolchain were behind a toolchain.
+CI_TESTS := $(shell sed -n '/- name: Run the test suite/,$$p' .github/workflows/ci.yml \
+             | grep -oE '(demo/)?test/[a-z0-9-]+\.test\.ts' | tr '\n' ' ')
+
 .PHONY: check
-check: test typecheck ## Run the test suite, the typecheck, and the config drift checks
+check: ci-tests typecheck ## CI's test list, the typecheck, and the config drift checks
 	@node scripts/check-ci-shape.mjs
 	@node scripts/check-test-list.mjs
 	@node scripts/check-ladder-models.mjs
@@ -203,9 +226,25 @@ check: test typecheck ## Run the test suite, the typecheck, and the config drift
 	@node scripts/check-noop-config-keys.mjs
 	@echo "  check passed"
 
+.PHONY: ci-tests
+ci-tests: ## Run exactly the test files CI runs (no harness checkout needed)
+	@set -o pipefail; for f in $(CI_TESTS); do \
+	  out=$$(node --experimental-strip-types --test "$$f" 2>&1) || { echo "$$out"; exit 1; }; \
+	  echo "$$out" | sed -n 's/^# pass /  ok /p' | head -1; \
+	done
+	@echo "  ci-tests passed ($$(for f in $(CI_TESTS); do echo x; done | wc -l | tr -d ' ') files)"
+
 .PHONY: test
-test: ## Run the unit test suite (no network)
-	@node --experimental-strip-types --test test/*.test.ts 2>&1 | tail -8
+test: ## Run EVERY unit suite, including the six that need a harness checkout
+# The demo suite is in this glob on purpose and NOT the planted-bug problem it
+# looks like: `make test` runs the demo suite against the FIXED source, which is
+# what is committed. `demo/reset.sh` plants the bug for a loop run, so if you
+# have just run one, re-apply the fix (or `git checkout demo/src`) first.
+#
+# Six of these suites import src/plugin.ts and need the harness packages; they
+# fail on a bare clone and that is what the .SHELLFLAGS note at the top is for —
+# this target used to print `# fail 6` and exit 0.
+	@set -o pipefail; node --experimental-strip-types --test test/*.test.ts demo/test/latency-window.test.ts 2>&1 | tail -8
 
 .PHONY: typecheck
 typecheck: ## Typecheck src/ (whole src/ when the harness packages resolve, else CI's list)

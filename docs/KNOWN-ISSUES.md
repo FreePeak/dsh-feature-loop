@@ -205,6 +205,50 @@ the wiring to it was broken. Counting call sites (8b211d1), reaching the last
 hop (1d), and driving the call site rather than the callee are three different
 checks, and this bug needed the third.
 
+### 1f. `make check` could not run where it was meant to, and `make test` lied
+
+**Observed**, on a bare clone with only `npm install` (2026-10-03):
+
+```
+$ make test
+# pass 345
+# fail 6
+$ echo $?
+0                      ← six suites died on `Cannot find package '@deepseek-ai/dsh-llm'`
+
+$ make check
+make: *** [test] Error 1     ← stopped before the typecheck and all six drift checks
+```
+
+**Two separate defects, and the second one hides the first.**
+
+1. **The exit code was thrown away.** The recipe ended in `| tail -8`, and a
+   pipeline's status is its LAST command's — always 0. A green `make test` over
+   six red suites is worse than no target, because it is believed.
+
+2. **`check` depended on `test`**, which needs the harness packages. So the
+   checks that exist *because* they need no toolchain — the four drift checks —
+   were behind a toolchain. `make check` on a fresh clone had never run them,
+   and a row in this very file claimed "`make check` on the bare clone | green".
+   It was green for the wrong reason: `make` printed the failing line and the
+   row never re-read the exit code.
+
+**Fix.** `make check` now depends on a new `ci-tests`, which runs exactly the
+files CI runs (the list read from the workflow, not copied — a copy is how it
+drifted before). `make test` still runs everything and now exits non-zero on
+failure.
+
+`.SHELLFLAGS := -o pipefail -c` is the obvious fix for (1) and it **does not
+work on this make**: measured here, a `@false | tail -1` recipe exits 0 with
+it and 2 with an inline `set -o pipefail` or an explicit `bash -o pipefail -c`.
+So every recipe that pipes says so itself. A general setting that measures as
+ineffective is worse than four explicit ones, because it reads as covered.
+
+**Verified on a bare clone:** `make check` exits 0, running all 21 CI files, the
+typecheck and all six drift checks with no harness on the path; `make test`
+exits 2 there and 0 in the full worktree. The `check-test-list.mjs` boundary was
+proven in both directions — dropping the demo suite from ci.yml fails it by name.
+
 ### 1. The stylesheet restyled the whole host UI
 
 **Observed:** after the dashboard was folded into the DSH UI, the host's `<body>`
@@ -506,7 +550,7 @@ was run on a **bare clone with only `npm install`** — no harness checkout, no
 | All three drift checks, `HOME=/tmp/empty-home` | pass, 0 local profiles |
 | CI's exact test list, 18 files | **277 pass, 0 fail** |
 | CI's exact typecheck command | exit 0 |
-| `make check` on the bare clone | green |
+| `make check` on the bare clone | green — **but it never ran the drift checks**: `check` depended on `test`, which needs the harness packages, and `test`'s exit code was swallowed by a pipe. Corrected in §1f; `make check` now runs CI's list and is green there for the right reason |
 | Does it write to a developer's machine? | **No** — scripts byte-identical after a run, and no `~/.dsh` created |
 | Summary line names its half? | now: `3 shipped specs + 18 local profile(s) under ~/.dsh/profiles` |
 
