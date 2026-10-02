@@ -198,3 +198,31 @@ test('the sizes the manifest recorded are still the sizes on disk', () => {
       + 'run `make dashboard-bundle`')
   }
 })
+
+test('a failed brief is rendered only on a deployment that asked for one', () => {
+  // The rule the live run established (§16), asserted here so it cannot be
+  // undone by the next person who reads `briefState === 'failed'` and decides
+  // it is noise. Both branches, because the bug was a change that silenced a
+  // false positive and created a false NEGATIVE, and only one of the two was
+  // visible at a time.
+  //
+  // This is the shape of `BriefView`'s decision, in a table, so the intent
+  // survives: the page does not infer "briefs are on" from the state — it asks
+  // `DashboardSource.status()`, and treats "cannot ask" as unknown.
+  const card = (briefState: 'none' | 'pending' | 'ready' | 'failed', briefsOn: boolean | undefined): string => {
+    if (briefState === 'none') return ''
+    if (briefsOn === false) return ''
+    if (briefState === 'failed') return 'Review brief unavailable — the approval itself is unaffected.'
+    if (briefState === 'pending') return 'Writing review brief…'
+    return '<the brief>'
+  }
+
+  assert.equal(card('failed', false), '',
+    'briefs OFF: a failure is bookkeeping, and printing it was the §14 bug')
+  assert.match(card('failed', true), /unavailable/,
+    'briefs ON: the operator must hear that the model call failed')
+  assert.equal(card('failed', undefined), card('failed', true),
+    'UNKNOWN (a transport with no status()): silence would be the worse default')
+  assert.equal(card('none', true), '', 'briefs ON but never asked for: still nothing')
+  assert.match(card('pending', true), /Writing/, 'a brief in flight still says so')
+})

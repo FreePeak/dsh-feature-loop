@@ -760,7 +760,7 @@ make verify          # compose + tests + typecheck + the six drift checks + inte
 That is the whole of it. Spelled out, `make verify` is:
 
 ```bash
-node --experimental-strip-types --test test/*.test.ts   # 405 pass
+node --experimental-strip-types --test test/*.test.ts   # 406 pass
 npx tsc --noEmit                                       # clean, all of src/ incl. plugin.ts
 node scripts/check-ci-shape.mjs                        # CI runs every check
 node scripts/check-test-list.mjs                        # and every pure test
