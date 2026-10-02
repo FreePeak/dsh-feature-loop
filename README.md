@@ -565,7 +565,7 @@ the field and the 3–10 band):
   config:
     optimize:
       loops: 3              # refinement passes, integer 3–10 (CLI `runRefined` only)
-      derive: true          # accepted; the CLI's `--derive` derives envelopes, the plugin records the history they come from
+      # derive: true         # accepted, READ BY NOTHING — see the note in src/plugin.ts
       history: .feature-loop/runs.jsonl   # run-history file: the plugin appends one line per closed turn and feeds Metrics from it
       # judge: chat         # none | chat | laya — who scores across passes (CLI only)
       # totalBudgetUSD: 3.00  # refinement budget; default derived × loops × 0.6 (CLI only)

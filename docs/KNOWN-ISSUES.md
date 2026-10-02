@@ -180,7 +180,31 @@ the plugin actually use. It had no caller. It is **deleted**, not wired: two
 wordings for one event is drift waiting to happen, and the one that reached a
 model was the one nobody had been reading.
 
-### The method, since it now has three instances
+### It is now a check, and the check found a fourth on its first run
+
+`scripts/check-dead-exports.mjs` walks `src/`, `test/`, `web/` and `demo/cli.ts`
+and fails when an exported symbol is referenced by nothing outside its own file.
+Its rules are stated in its header: the test suite counts (a test is a
+specification, and a symbol no test touches is a symbol nobody has checked),
+`src/index.ts` counts because it *is* the published entry point, and types are
+not checked because an unreferenced exported type is documentation, not dead
+code.
+
+Run on the tree as it stood it found a **fourth**: `answerLive` in
+`src/remote.ts`, which the committed version had been suppressing in a
+`BY_CONSTRUCTION` allowlist with a justification that read well and was not
+true — the remote class's `answer()` calls it one line away. The export was
+dropped rather than the suppression widened, because a helper with exactly one
+caller in its own file does not need to be part of anything's surface.
+
+That is the point of writing the check *after* the findings rather than
+instead of them: three rounds of noticing by hand, and the script that automates
+the noticing immediately found something I had already, wrongly, excused.
+
+The check is on a bare clone with no `node_modules` and passes, which matters
+because it is the only one of the four that needs no toolchain at all.
+
+### The method, since it now has four instances
 
 Counting call sites is mechanical and caught all three. A grep for a symbol
 finds its *definition*; it does not find the absence of a caller, and a
@@ -241,6 +265,38 @@ the recording removed.
 And this is the second time in two rounds that a documented-but-uncalled
 behaviour turned out to be dead code. `grep -rn` for the method finds the
 definition; it does not find the absence of a caller.
+
+## The same class, in the DOCS this time: a key documented as read
+
+`check-dead-exports.mjs` catches a symbol nothing calls. It cannot catch a key
+nothing reads, because the key IS read — by the validator. `parseOptimizeConfig`
+validates all five keys of the `optimize:` block, so every one of them looks
+live to a reference search, to a reader, and to the dead-export check.
+
+Then the claim, in three places at once:
+
+> "`derive` and `history` drive the run-history recording and the dashboard's
+> Metrics payload"
+
+`grep -n 'optimize?.derive' src/plugin.ts` returns **no match**. `history` alone
+does all of that, and did before `derive` was ever written. The other three
+(`loops`, `judge`, `totalBudgetUSD`) were honestly labelled "accepted,
+intentionally not consumed"; `derive` was not, because the sentence above
+claimed otherwise.
+
+That is the expensive shape again, in the place documentation usually is
+trusted: a person reads that line, sets `derive: true`, watches nothing happen,
+and concludes the optimizer is broken rather than that a flag does nothing.
+
+Corrected in the three places it was claimed — `Config.optimize`'s doc comment,
+`OptimizePolicyOptions.derive`, and the example in `README.md` and
+`cordis.patch.yml` — each now saying plainly that it is read by nothing and
+where to look. The keys are kept, not deleted: a deployment that sets one
+should not start failing validation when it is eventually honoured.
+
+**A key that is validated and then ignored is a documented no-op. A key that is
+validated, ignored, and documented as read is a lie in the one file people
+trust without checking.**
 
 ## Three rounds running: the same defect class, and a check for it
 
