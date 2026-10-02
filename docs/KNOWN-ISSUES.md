@@ -114,6 +114,54 @@ import, the ladder rung that resolved but was never tested, the profile that
 composed with nothing gated — none of them printed the thing that would have
 identified them. A hang is the same failure wearing a different mask.
 
+### 1d. The settings page wrote a file nothing decided with — and said so
+
+**Observed:** the Feature Loop settings page wrote
+`~/.config/dshloop/config.yaml`, displayed the saved value back, and the file's
+own header read:
+
+```
+# READ BY: the settings page only (buildStatus merges it over the patch row).
+# NOT READ BY: apply() — the running gate is built from the profile patch
+#   row alone, so nothing here changes policy until that is wired.
+```
+
+**Why it matters anyway:** the warning was **accurate**. That is the trap. A page
+that saves a setting, shows it, and admits it does nothing teaches the operator
+that the whole surface is a mock — so nobody uses it, and the correct fix (wire
+it) never gets prioritised over "remove the dead page". Honest documentation of
+an unimplemented feature is still shipping an unimplemented feature.
+
+**Fix:** `mergeRowAndSettings` in `remote.ts` applies the file OVER the patch row
+on the nine keys the page owns, and `index.ts` calls it on the way into `apply`.
+Three rules, each load-bearing:
+
+- **the file wins** — the page exists so someone can widen or tighten their own
+  gate without editing a shared patch layer other profiles inherit;
+- **an allowlist of keys**, not a denylist — a denylist silently starts applying
+  whatever the next version of the page adds, which is how a status page becomes
+  policy without anyone deciding it should be;
+- **`router` is merged, not replaced** — a file that sets only `reviewBudget`
+  must not erase the row's `judgeThreshold`.
+
+`spec`, `dashboard` and `optimize` stay row-only: the page offers no control for
+them, and a half-applied ceilings block with no price table is worse than a clear
+boundary.
+
+**Verified live on a generated profile, both directions, with the row disagreeing
+each time:**
+
+| settings file | row says | what happened |
+|---|---|---|
+| `gatePolicies: {write: auto}` | `write: always-approve` | the model wrote `proof.txt` with **no approval demanded** |
+| `gateMode: deny` | `write: always-approve` | **refused** — `denied pending review`, no file |
+
+And the nine new tests were proven to fail before being trusted: reversing the
+merge order in `remote.ts` breaks all three wiring cases, and turning the
+allowlist into a pass-everything breaks the boundary case. The merge lives in
+`remote.ts` rather than `index.ts` precisely so those tests import no harness
+package and CI actually runs them.
+
 ### 1. The stylesheet restyled the whole host UI
 
 **Observed:** after the dashboard was folded into the DSH UI, the host's `<body>`
