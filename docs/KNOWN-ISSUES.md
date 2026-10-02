@@ -514,6 +514,58 @@ reporting nonsense on the first run:
 
 A check that cannot fail is worse than no check, and this one did.
 
+## OPEN — CI runs about half the suite its own command names
+
+**Found 2026-10-01, unresolved, and it is the largest known gap.**
+
+`ci.yml`'s `test` job names 19 files and its own summary reports:
+
+```
+# tests 138   # pass 138   # fail 0   # suites 8
+```
+
+The same command, on the same tree (`79b07ef`), on the **same node version**
+(v22.23.3, downloaded and re-run to eliminate that), with no `node_modules`
+anywhere — reproduces exactly here at **277 tests, 0 fail**.
+
+What has been ruled out, one at a time:
+
+| hypothesis | how it was eliminated |
+|---|---|
+| CI is on an older node | CI logs `node: v22.23.3`; installed and ran locally — 277 |
+| the `test` job is on a stale SHA | the run's `headSha` is `79b07ef`, this branch's HEAD |
+| the tree differs | `git diff 79b07ef -- test/` is empty |
+| the step's multi-line continuations break | pasted verbatim into a shell; 277 |
+| a missing `node_modules` skips files | `/tmp` copy of the tree with no `node_modules`; 277 |
+| CI is failing and hiding it | `# fail 0`, `# cancelled 0` |
+| the checker's count is the wrong one | it counts list MEMBERS, and the list has 19 |
+
+The 139-test gap is exactly the tests of the eight files
+`agent-policy`, `approvals`, `budget`, `judge`, `metrics`, `policy`,
+`questioner`, `runner` — all present on ci.yml's run step, none of them
+appearing anywhere in the CI log. The other eleven files' tests are all
+there.
+
+**What this costs:** not correctness — nothing is failing — but
+confidence. A CI job that reports 138 tests is not visibly checking the
+half it skipped, and `scripts/check-test-list.mjs` can only see list
+MEMBERSHIP. It cannot see that a listed file ran nothing, which is the
+same class of blindness as every other check here before it, one level up.
+
+**What would settle it,** in the order I would try:
+1. `node --test --test-reporter=tap` in the step, and count `# Subtest:` lines
+   rather than the summary — the summary is what disagrees.
+2. `--test-concurrency=1`, in case parallel file runners on the hosted
+   runner are dropping files (it would show as a hang or a timeout, so this
+   is the weaker hypothesis, but it is one line).
+3. Run the list through a shell loop so each file's result is separately
+   visible. Three lines, and it turns "138" into "277 across 19 files"
+   even if the cause is never found.
+
+Until then: **treat the `test` job's count as a lower bound.** The full
+405-test suite runs locally via `make check`, and `make verify` is the
+gate this branch was built on.
+
 ## Re-checked 2026-10-01 — the permission-preset trap, and what actually triggers it
 
 `docs/SETUP.md` and `docs/RUNBOOK-SERVER.md` both lead with the same warning:
