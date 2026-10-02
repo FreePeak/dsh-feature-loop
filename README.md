@@ -13,7 +13,7 @@
   <a href="https://github.com/FreePeak/dsh-feature-loop/actions/workflows/ci.yml"><img src="https://github.com/FreePeak/dsh-feature-loop/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <a href=".nvmrc"><img src="https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg" alt="Node >= 22"></a>
-  <a href="#quick-start"><img src="https://img.shields.io/badge/tests-296%20passing-brightgreen.svg" alt="296 tests passing"></a>
+  <a href="#quick-start"><img src="https://img.shields.io/badge/tests-412%20passing-brightgreen.svg" alt="412 tests passing"></a>
   <a href="https://www.npmjs.com/package/@freepeak/dsh-feature-loop"><img src="https://img.shields.io/npm/v/@freepeak/dsh-feature-loop.svg?color=cb3837" alt="npm"></a>
   <a href="https://github.com/FreePeak/dsh-feature-loop/stargazers"><img src="https://img.shields.io/github/stars/FreePeak/dsh-feature-loop?style=social" alt="GitHub stars"></a>
 </p>
@@ -130,18 +130,17 @@ on `127.0.0.1` with its own token. Details:
 ```
 $ bash demo/run.sh
 ...
-── step 10 · xiaomi/mimo-v2.5 · spent $0.0044
-[signal:critical] error-cascade — 3 consecutive failing steps — the first failure is the one to read
-[review] ASK HUMAN via signal — 3 consecutive failing steps — the first failure is the one to read
+── step 3 · onegw/execution · spent $0.0008
+[signal:info] tool-dominance — read_file is 83% of all steps — it may be stuck on it
+[judge] review-worthiness 2/3
+[review] ASK HUMAN via judge — the local judge scored this step 2.0/3 — worth a look
 
-── step 12 · xiaomi/mimo-v2.5 · spent $0.0047
-[judge] review-worthiness 0/3
-[model] 3 failures, all in the `percentile` method. The doc comment says nearest-rank uses
-        `ceil(p/100*n) - 1`, but the code uses `Math.floor((p/100) * n)`. These differ when
-        `p/100*n` is an integer — `floor` gives that index, but `ceil(n)-1` gives one before.
-[review] ASK HUMAN via policy — edit_file: reversible-write below the confidence bar (0.00 < 0.70)
+── step 4 · onegw/execution · spent $0.0023
+[model] Three failures, one root cause: the rank formula uses `Math.floor((p/100)*n)` instead of the documented
+        `max(0, ceil(p/100*n) - 1)`. The existing tests already reproduce it, so the fix is that one line.
 [tool] edit_file (reversible-write) ok — Replaced 1 occurrence in src/latency-window.ts at line 88
 [check] GOAL MET
+[run-end] goal-met · 4 steps · $0.0030 · 1 review(s) (25% of steps)
 
 [run-end] goal-met · 12 steps · $0.0066 · 1 review(s) (8% of steps)
 ```
@@ -194,10 +193,10 @@ and that is the intended behaviour, not a miss.
 ## Quick start
 
 ```bash
-# 296 tests, no network, no model call — the policy layer is pure
+# 412 tests, no network, no model call — the policy layer is pure
 node --experimental-strip-types --test test/*.test.ts
 
-# the end-to-end demo (needs onegw on :8080 and xiaomi/mimo-v2.5)
+# the end-to-end demo (needs onegw on :8080; it runs on onegw/execution)
 bash demo/run.sh
 
 # watch the ceilings actually fire
@@ -297,7 +296,7 @@ gets reached.
   five outcomes executed in a **real** DSH context (5/5 pass), plus the exact
   string the approval panel renders.
 - **[`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md)** — the approval
-  dashboard: 405 unit + 11 integration green, a live HTTP transcript (page 200,
+  dashboard: 412 unit + 11 integration green, a live HTTP transcript (page 200,
   token 401, approve → `allowed-once`, 409, 403), the browser click verified
   via `make e2e-dashboard`, and the model-authored review brief.
 - **[`docs/VERIFY-E2E-APPROVAL.md`](docs/VERIFY-E2E-APPROVAL.md)** — a real
@@ -427,7 +426,7 @@ and style and nothing else.
       # answerTimeoutMs: 600000   # a pending ask fails closed after this
       # brief:                 # model-authored review brief, off by default
       #   enabled: false
-      #   model: xiaomi/mimo-v2.5   # required when enabled
+      #   model: execution          # required when enabled
       #   maxTokens: 1024
       #   timeoutMs: 15000
 ```
@@ -598,13 +597,14 @@ with `--judge-base-url` / `SYSTEMONE_BASE_URL`). The actor still talks to onegw;
 only the judge URL splits. Score criteria go as ordered arrays so Laya keeps
 the human labels; `noul` answers map onto `probability`.
 
-The demo uses `ChatJudge` with `xiaomi/mimo-v2.5` because no `systemone` provider
-is configured in `~/.onegw/onegw.toml`. Two measured facts argue for Laya beyond
+The demo uses `ChatJudge` on the same `onegw/execution` route the actor runs on,
+because no `systemone` provider is configured in `~/.onegw/onegw.toml`. Two measured facts argue for Laya beyond
 cost:
 
-1. **A reasoning model is a poor judge.** `mimo-v2.5` always thinks; at
+1. **A reasoning model is a poor judge.** the demo's model always thinks; at
    `max_tokens: 256` it returns `finish_reason: "length"` with empty content, and
-   it needs ~859 thinking tokens before emitting one digit. The default is now
+   it needs ~859 thinking tokens before emitting one digit (measured on
+   `mimo-v2.5`, the model this note was written against). The default is now
    2048, and the error message names the cause instead of saying "no digit".
 2. **It is miscalibrated.** Asked about a routine `read_file` with no detector
    fired, it answered `SCORE=3` — the top of the scale. A purpose-built decision
@@ -701,7 +701,7 @@ Two genuine bugs were found in the fork while it existed, both now moot:
   judge-driven reviews only.
 - **`run_tests` timeouts kill the direct child, not grandchildren** (marked
   `ponytail:` in `tools.ts`; upgrade path is detached spawn + `kill(-pid)`).
-- **The price table is an estimate.** `mimo-v2.5` runs on a subscription plan,
+- **The price table is an estimate.** the gateway runs on a subscription plan,
   so marginal cost is near zero; the rates in `cli.ts` are illustrative and
   exist so the ceiling has something to measure against.
 - **The dashboard's rendered page click is verified via `make e2e-dashboard`**
@@ -730,7 +730,7 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 - **Phase 1e — HITL approval dashboard** ✅ optional loopback web surface
   (`src/dashboard.ts` + `src/dashboard-page.ts`): pending cards, live run state
   over SSE, Allow/Reject over HTTP — guarded so a tab-less deployment behaves
-  byte-identically to the composer-only path. 405 unit + 11 integration tests;
+  byte-identically to the composer-only path. 412 unit + 11 integration tests;
   the browser click verified via `make e2e-dashboard`
   ([`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md)).
 - **Phase 1f — review briefs** ✅ model-authored brief per ask

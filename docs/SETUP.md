@@ -706,7 +706,7 @@ These are real and documented in [`docs/PRD.md`](PRD.md). Setup does not fix the
    signals are deliberately not rate-limited — safety is not subject to an
    attention budget — so a run with an error cascade exceeds the target by
    design.
-4. **The price table is illustrative.** `mimo-v2.5` runs on a subscription, so
+4. **The price table is illustrative.** the gateway runs on a subscription, so
    marginal cost is near zero; the rates exist so a ceiling has something to
    measure against.
 5. **`run_tests` timeouts kill the direct child, not grandchildren.**
