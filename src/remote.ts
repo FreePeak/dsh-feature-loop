@@ -306,10 +306,27 @@ export function saveSettings(
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(
     path,
+    // What this header claimed, and what it is. It said "the dshloop CLI reads
+    // this same file, so a change here applies to both surfaces at the next
+    // plugin load" — and neither half is true today:
+    //
+    //   * there is no `dshloop` CLI. The package has no `bin`, and the runner
+    //     entry point is `demo/cli.ts`.
+    //   * `apply()` builds its policy from the patch row ALONE. It never reads
+    //     this file, so nothing here changes the gate until a person wires the
+    //     settings in. Verified 2026-10-01: saving `gateMode: deny` and
+    //     `read: always-approve`, then building the policy the way `apply()`
+    //     does, yields `gateMode: ask` and no gate on `read`.
+    //
+    // So the file is a record of what the settings PAGE was showing, and
+    // `buildStatus` is what reads it back — which is how the page can display a
+    // value it has not applied. Writing a header that says otherwise is how the
+    // next person spends a day on it.
     '# Written by the Feature Loop settings page.\n'
-    + '# The dshloop CLI reads this same file, so a change here applies to both\n'
-    + '# surfaces at the next plugin load.\n'
-    + '# Project-level overrides live at <repo>/.feature-loop/config.yaml.\n'
+    + '# READ BY: the settings page only (buildStatus merges it over the patch row).\n'
+    + '# NOT READ BY: apply() — the running gate is built from the profile patch\n'
+    + "#   row alone, so nothing here changes policy until that is wired.\n"
+    + '# The patch row is the only place a setting takes effect today.\n'
     + stringifyYaml(merged),
   )
   return merged

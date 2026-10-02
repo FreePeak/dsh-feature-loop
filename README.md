@@ -567,7 +567,7 @@ the field and the 3–10 band):
       loops: 3              # refinement passes, integer 3–10 (CLI `runRefined` only)
       # derive: true         # accepted, READ BY NOTHING — see the note in src/plugin.ts
       history: .feature-loop/runs.jsonl   # run-history file: the plugin appends one line per closed turn and feeds Metrics from it
-      # judge: chat         # none | chat | laya — who scores across passes (CLI only)
+      # judge: chat         # none | chat | laya — who scores across passes across every run
       # totalBudgetUSD: 3.00  # refinement budget; default derived × loops × 0.6 (CLI only)
 ```
 

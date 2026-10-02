@@ -180,6 +180,49 @@ the plugin actually use. It had no caller. It is **deleted**, not wired: two
 wordings for one event is drift waiting to happen, and the one that reached a
 model was the one nobody had been reading.
 
+### 16. The settings page stored every value and applied none of them
+
+**Observed:** `~/.config/dshloop/config.yaml` was written with a header saying
+
+```
+# The dshloop CLI reads this same file, so a change here applies to both
+# surfaces at the next plugin load.
+```
+
+Neither half is true. There is no `dshloop` CLI — the package declares no
+`bin`, and the runner entry point is `demo/cli.ts`. And `apply()` builds its
+policy from the **patch row alone**: `grep -n 'readSettings\|config.yaml\|settingsPath' src/plugin.ts`
+returns nothing. The page's own confirmation read *"Saved. Values apply at the
+next reload of this plugin."*
+
+**Verified, not inferred.** Saving `gateMode: deny` and `read: always-approve`,
+then building the policy exactly the way `apply()` does:
+
+```
+settings file says        : {"confidenceThreshold":0.99,"gateMode":"deny","gatePolicies":{"read":"always-approve"}}
+policy.gateMode (from row): ask
+gate on `read`           : undefined     ← proceeds, no review
+```
+
+**Why it matters more than a stale comment:** a person sets
+`write: always-approve` on that page, sees it echoed back in the Status tab
+(`buildStatus` merges the file over the row, so the page faithfully displays a
+value nothing enforces), and watches a write sail through. The one file a
+person would think is the way to change this plugin's behaviour is a file that
+changes nothing about it.
+
+**Fixed by saying so, in the two places a person reads:**
+
+- the file's header now names what reads it (`buildStatus`) and what does not
+  (`apply()`), with the patch row as the only place a setting takes effect;
+- the page states it *before* the fields rather than in a dialog after a save —
+  the person who needs to know is the one about to type — and the save
+  confirmation says the same thing.
+
+The values are still stored and still validated. That is deliberate: they are a
+correct record of what the page showed, and wiring `apply()` to them is a small,
+well-scoped piece of work that this note now describes honestly.
+
 ### It is now a check, and the check found a fourth on its first run
 
 `scripts/check-dead-exports.mjs` walks `src/`, `test/`, `web/` and `demo/cli.ts`
