@@ -202,6 +202,33 @@ And this is the second time in two rounds that a documented-but-uncalled
 behaviour turned out to be dead code. `grep -rn` for the method finds the
 definition; it does not find the absence of a caller.
 
+## A config key that read as a feature and behaved as a comment
+
+**Observed:** `escalateAfterFailures: 2` is set in every shipped profile, and
+`ModelLadder.recordFailure()` is documented as *"driven by the loop's step
+outcome"*. `grep -rn recordFailure src/` returned the definition and **no
+caller** — not in `runner.ts`, not in `plugin.ts`, nowhere. `test/budget.test.ts`
+was the only thing that ever called it, and a test is not a loop.
+
+So the ladder could only climb on `stepsPerRung`. A run that failed **fast and
+early** — the exact case the failure signal exists for, and the cheapest one to
+fix when the model is too weak for the task — stayed on the cheap model for its
+entire life, and only moved up when it ran out of steps rather than when it ran
+out of capability. The key read as a feature and behaved as a comment.
+
+Fixed in both paths from the same reading of a failed step: a tool returning
+`ok: false`, unparseable arguments, an unknown tool, or an operator abort. **A
+step with no tool calls counts as a success** — the model spoke and asked
+nothing, which is a step that happened, not one that broke. In the plugin, the
+signal is a denied call, recorded where the previous step's observation is
+committed — the only place a DSH deployment knows the outcome of a step it did
+not run itself.
+
+Two tests drive the real loop with `stepsPerRung: 99`, so the failure signal is
+the only thing that can move it, and both assert the exact sequence: a ladder
+that climbed on the *first* failure would pass a weaker "the route changed"
+assertion.
+
 ## The ladder check now reads your profiles too — and two of them are drifting
 
 `scripts/check-ladder-models.mjs` used to read only the three files this repo
