@@ -162,7 +162,8 @@ jobs:
             test/optimize.test.ts \
             test/optimizer.test.ts test/questioner.test.ts test/policy.test.ts \
             test/refine.test.ts test/runlog.test.ts test/runner.test.ts \
-            test/start-target.test.ts test/tools.test.ts ; do
+            test/start-target.test.ts test/tools.test.ts \
+            demo/test/latency-window.test.ts ; do
             echo "::group::$f"
             out=$(node --experimental-strip-types --test "$f" 2>&1) || {
               echo "$out"
