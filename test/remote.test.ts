@@ -115,6 +115,59 @@ test('a REAL typo is still rejected — the blank case is not a hole', async () 
   })
 })
 
+// A hand-edited settings file is not `saveSettings`, so `gatePolicies` reaches
+// `apply` without ever passing the validator that rejects
+// `gatePolicies: unknown tool class "wrong_tool_name"`. Measured 2026-10-03: a
+// row saying `write: auto` plus a file saying `write: definitely-yes` still
+// denied the write — because `ReviewGate.check` compares against three known
+// strings, misses every time, and falls through to its final `review: true`.
+// That is the right answer by luck, and it stays right only while that chain has
+// three links. So the entries are filtered where the file is read.
+
+test('an unrecognised policy VALUE is dropped, not forwarded', async () => {
+  await withConfigHome((_home, path) => {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, 'gatePolicies:\n  write: definitely-yes\n  read: auto\n')
+    const user = userSettings()
+    assert.deepEqual(user.gatePolicies, { read: 'auto' },
+      'the good entry survives and the bad one cannot reach the gate')
+  })
+})
+
+test('an unrecognised tool CLASS is dropped, and a file of only those drops entirely', async () => {
+  await withConfigHome((_home, path) => {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, 'gatePolicies:\n  read_file: auto\n  definitely_a_tool: auto\n')
+    assert.equal(userSettings().gatePolicies, undefined,
+      "a file the gate cannot act on must not overwrite the row's own policies")
+  })
+})
+
+test('a valid file passes through byte-for-byte: this is a guard, not a second policy layer', async () => {
+  await withConfigHome((_home, path) => {
+    saveSettings({
+      gatePolicies: {
+        read: 'auto', glob: 'auto', grep: 'auto',
+        edit: 'auto-if-confident', write: 'always-approve', bash: 'always-approve',
+      },
+    }, path)
+    assert.deepEqual(userSettings().gatePolicies, {
+      read: 'auto', glob: 'auto', grep: 'auto',
+      edit: 'auto-if-confident', write: 'always-approve', bash: 'always-approve',
+    })
+  })
+})
+
+test('the merged gate is the FILTERED one, so the row cannot be widened by a typo', async () => {
+  await withConfigHome((_home, path) => {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, 'gatePolicies:\n  write: definitely-yes\n')
+    const merged = mergeRowAndSettings({ gatePolicies: { write: 'always-approve' } })
+    assert.deepEqual(merged.gatePolicies, { write: 'always-approve' },
+      "the row's own policy stands where the file named something unrecognisable")
+  })
+})
+
 // The panel and the gate must never disagree about precedence. `buildStatus`
 // used to merge `{...rowConfig, ...settings}` on its own while `apply` consulted
 // the row alone — so a value could be rendered as effective and decide nothing.

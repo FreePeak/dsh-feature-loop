@@ -112,9 +112,51 @@ export function userSettings(rowConfig: Record<string, unknown> = {}): Record<st
       out.router = { ...(out.router as Record<string, unknown> | undefined ?? {}), [key]: value }
       continue
     }
+    if (key === 'gatePolicies') {
+      const policies = usablePolicies(value)
+      if (policies !== undefined) out.gatePolicies = policies
+      continue
+    }
     out[key] = value
   }
   return out
+}
+
+/**
+ * The `gatePolicies` entries worth acting on, and nothing else.
+ *
+ * A hand-edited file is not `saveSettings` — the validator that rejects
+ * `gatePolicies: unknown tool class "wrong_tool_name"` never sees it — and this
+ * is the file `apply` builds the gate from. Measured 2026-10-03 with a row that
+ * said `write: auto`:
+ *
+ *   gatePolicies: { write: definitely-yes }  ->  the run still DENIED the write
+ *
+ * which is the answer a bad value happens to get today, and it is luck rather
+ * than design: `ReviewGate.check` compares the value against three known
+ * strings and every comparison misses, so the call falls through to the final
+ * `review: true`. Add a fourth branch to that chain and the same typo becomes an
+ * ungated write. So the values are filtered HERE rather than trusted, and a
+ * rejected one is DROPPED rather than fatal — dropping it restores the row's own
+ * policy, which is the fail-closed direction, whereas refusing to boot would
+ * turn a typo in a file nobody validates into an outage.
+ *
+ * The page writes exactly the six classes and three values, so a valid file
+ * passes through untouched: filtering is a guard for the keys a human typed by
+ * hand, not a second policy layer.
+ *
+ * @param value - whatever the file held under `gatePolicies`.
+ * @returns the recognised entries, or `undefined` when none are.
+ */
+function usablePolicies(value: unknown): Record<string, string> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const out: Record<string, string> = {}
+  for (const [cls, policy] of Object.entries(value as Record<string, unknown>)) {
+    if (!GATE_POLICY_CLASSES.includes(cls as GatePolicyClass)) continue
+    if (!GATE_POLICY_VALUES.includes(policy as GatePolicyValue)) continue
+    out[cls] = policy as GatePolicyValue
+  }
+  return Object.keys(out).length === 0 ? undefined : out
 }
 
 /**

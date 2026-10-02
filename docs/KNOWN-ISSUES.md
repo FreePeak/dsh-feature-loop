@@ -556,13 +556,35 @@ This is §1a's shape one level down: a value that is wrong in a place nothing
 looks at. The ladder check reads rungs from files; nothing reads the settings
 file's KEYS.
 
-**Not fixed here, deliberately.** The allowlist belongs where the file is read —
-`userSettings` in `remote.ts`, which is the one function every consumer now goes
-through (§1d) — and rejecting an unknown key there would make a typo a boot
-failure rather than a silent no-op. That is the right shape, and it is also a
-behaviour change on a file this branch only just made authoritative, so it
-belongs to whoever owns the settings contract rather than to a session closing a
-list. Recorded with the measurement so the decision is informed.
+**Fixed, after measuring which half actually mattered.** An unknown tool CLASS
+was the harmless half — it is never looked up, so the run falls through to the
+defaults. An unknown policy VALUE was the dangerous one, and the reason is
+structural: `ReviewGate.check` compares the value against three known strings
+and every comparison misses, so the call falls through to its final
+`review: true`. Measured on a row that said `write: auto`:
+
+```
+row: write: auto + file: {write: definitely-yes}   ->  the run DENIED the write
+```
+
+Right answer, **by luck**: it depends on that chain having three links. Add a
+fourth branch and the same typo becomes an ungated write, with no test in the
+repo to notice.
+
+So `userSettings` now filters both — unrecognised classes and values are DROPPED
+rather than fatal. Dropping restores the row's own policy, which is the
+fail-closed direction; refusing to boot would turn a typo in a file nobody
+validates into an outage. Four tests, three of them proven to fail when the
+filter is removed, and the fourth asserting a VALID file passes through
+byte-for-byte so this is a guard and not a second policy layer.
+
+Verified live on a generated profile, row `write: always-approve`:
+
+| settings file | outcome |
+|---|---|
+| `{write: definitely-yes}` | **denied** — the row's policy stands |
+| `{write: auto}` | allowed (the operator asked for it, in the file the page writes) |
+| `{bogus_tool: auto}` | **denied** — a file the gate cannot act on does not widen it |
 
 ### 1. The stylesheet restyled the whole host UI
 
