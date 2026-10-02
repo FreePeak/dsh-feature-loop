@@ -14,6 +14,8 @@ import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 
 import {
+  APPROVAL_MODES,
+  approvalModeFor,
   APPROVAL_OPTIONS,
   assertSettleAccepted,
   expiredOutcomeOf,
@@ -155,4 +157,51 @@ test('an expired outcome reaches the gate as a resolution, not an approval', () 
   assert.equal(resolutionForOutcome('cancelled'), 'cancelled')
   assert.equal(resolutionForOutcome('rejected'), undefined)
   assert.equal(resolutionForOutcome('allowed-once'), undefined)
+})
+
+// The posture a hand-edited file gets LABELLED with, and the direction of
+// "closest" is the content of the function rather than an implementation
+// detail. Measured 2026-10-03 with the file the harness has honoured since the
+// settings file became authoritative: {write: auto, edit: auto, bash: auto} —
+// no write class asks — and the page showed "Review at risky steps", whose own
+// policies ask about all three. The file was LOOSER than the posture it was
+// labelled with, and the run agreed with the file.
+
+test('an all-auto write map is labelled "approve every step", not "review at risky"', () => {
+  assert.equal(approvalModeFor({ read: 'auto', glob: 'auto', grep: 'auto', edit: 'auto', write: 'auto', bash: 'auto' }), 'approve-every-step')
+  // The short form the page and a hand-edited file both produce.
+  assert.equal(approvalModeFor({ write: 'auto', edit: 'auto', bash: 'auto' }), 'approve-every-step')
+})
+
+test('ONE silent write class is enough to be "review at risky"', () => {
+  // The rule is `auto` on EVERY write class, so one class that asks is enough to
+  // be the asking posture. `always-approve` asks, so it lands on `review-risky`
+  // even though every class is named — which is why the two postures' own maps
+  // do NOT classify as themselves, and why the property asserted below is
+  // "never looser than the operator chose" rather than a round trip.
+  assert.equal(approvalModeFor({ write: 'auto', edit: 'auto-if-confident', bash: 'auto' }), 'review-risky')
+  assert.equal(approvalModeFor({ write: 'always-approve', edit: 'always-approve', bash: 'always-approve' }), 'review-risky')
+  assert.equal(approvalModeFor({ write: 'auto', edit: 'auto', bash: 'auto-if-confident' }), 'review-risky')
+})
+
+test('an empty map asks about nothing the file can see, so it is the strict posture', () => {
+  // Nothing named means the DEFAULTS apply, and `ReviewGate`\'s default for an
+  // unclassified tool is `always-approve` — the asking posture.
+  assert.equal(approvalModeFor(undefined), 'review-risky')
+  assert.equal(approvalModeFor({}), 'review-risky')
+})
+
+test('neither posture is mislabelled by the map that defines it', () => {
+  // This is the property that matters, and it is NOT that each map classifies as
+  // its own name: `approve-every-step`'s map asks about everything, so by the
+  // rule it lands on `review-risky` — the stricter END of the two-way line. What
+  // must hold is that the page's SELECT for each name writes a map that lands
+  // somewhere at least as strict, so choosing the strict option can never leave
+  // the gate looser than the operator asked for.
+  for (const name of Object.keys(APPROVAL_MODES)) {
+    const policies = APPROVAL_MODES[name].policies
+    const classified = approvalModeFor(policies)
+    assert.ok(classified === name || (name === 'approve-every-step' && classified === 'review-risky'),
+      `${name} classifies as ${classified}, which is LOOSER than what it writes`)
+  }
 })
