@@ -563,12 +563,34 @@ rendering a failure rather than assume briefs are off.
 Two of the three branches are observed in a browser; the third is a table.
 That is what is claimed.
 
-**To observe the third in a browser** takes three edits, recorded so the next
-person does not have to re-derive them: briefs `enabled`; an unresolvable
-model id; and — because `resolveBriefExplainer` refuses to build an explainer
-without a gateway key — a dead judge endpoint, so the approval path runs
-without one. It needs the **web** profile: the headless twin has no web
-surface, which is what the attempt here ran into.
+**All three are now observed.** The setup is two edits, not three: on the
+**web** profile, `dashboard.brief.enabled: true` with an unresolvable model id.
+The dead judge endpoint turned out to be unnecessary — `resolveBriefExplainer`
+needs a gateway *key*, which the profile has, not a reachable System One.
+
+Observed, in a browser, on `~/.dsh/profiles/feature-loop`:
+
+```
+briefStates=["failed"]   briefDOM=["brief-note error"]
+text: Review brief unavailable — the approval itself is unaffected.
+```
+
+Frame at [`evidence/brief-failed-20261002.png`](evidence/brief-failed-20261002.png).
+The live profile was restored afterwards (`brief:` count back to 0) and the proof
+file removed.
+
+**Getting there found a real gap in the fix itself.** The page asked
+`DashboardSource.status()` whether briefs were enabled, `web/app.tsx` declared
+it, and `useBriefsEnabled` called it — and `remoteSource()` in `web/entry.tsx`,
+which is what actually backs the in-UI page, **never forwarded `status()`**. So
+the answer was permanently "unknown" on the one surface where the question
+mattered, and `unknown` is defined to render the failure line... which is why
+this branch still renders correctly by accident rather than by wiring.
+
+The remote has had `status()` since the settings page shipped. `remoteSource`
+now forwards it. Had the observation not been made, the page would have shipped
+with a three-way branch whose middle case was dead on the only surface that has
+briefs at all — and the unit table would have kept passing.
 
 **The lesson, and it is the sibling of §14's.** A fix that stops a false
 positive will happily create a false negative, and this one was verified only
