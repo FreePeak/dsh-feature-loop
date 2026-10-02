@@ -52,6 +52,16 @@ export interface DashboardSource {
   onChange?(listener: () => void): () => void
   /** Settle one ask. Rejects so the card can report a refused decision. */
   respond(id: string, outcome: BridgeOutcome, feedback: string): Promise<void>
+  /**
+   * The deployment's own config, when the transport carries it.
+   *
+   * Optional because the two surfaces differ: the in-UI remote has a `status()`
+   * method, and the standalone loopback dashboard does not. The page uses it for
+   * exactly one question — is `dashboard.brief.enabled` true — because a brief
+   * that FAILED is news on a deployment that asked for one and noise on every
+   * other, and that difference is in the config rather than in the card.
+   */
+  status?(): Promise<{ config?: Record<string, unknown> }>
 }
 
 declare global {
@@ -105,6 +115,32 @@ function askToMessage(ask: PendingApproval, decided?: BridgeOutcome): ThreadMess
       },
     ],
   } as unknown as ThreadMessageLike
+}
+
+/**
+ * Is `dashboard.brief.enabled` true on this deployment?
+ *
+ * Read once per source and treated as UNKNOWN when the transport cannot answer
+ * — the standalone loopback dashboard has no `status()`. Unknown means the card
+ * keeps its old behaviour: render `failed` as a line, because on a source that
+ * cannot tell us, silence for a feature the deployment may have enabled is the
+ * worse default. Every in-UI deployment CAN answer, which is where the noise
+ * this replaces actually appeared.
+ */
+function useBriefsEnabled(source: DashboardSource): boolean | undefined {
+  const [on, setOn] = useState<boolean | undefined>(undefined)
+  useEffect(() => {
+    let alive = true
+    if (source.status === undefined) return () => undefined
+    void source.status()
+      .then((s) => {
+        const brief = s.config?.dashboard as { brief?: { enabled?: unknown } } | undefined
+        if (alive) setOn(brief?.brief?.enabled === true)
+      })
+      .catch(() => undefined)
+    return () => { alive = false }
+  }, [source])
+  return on
 }
 
 /** Operator chat bubble (local only — never model-authored). */
@@ -166,10 +202,22 @@ function BriefNodeView({ node }: { node: BriefNode }): React.ReactElement {
  * better served by its own load-time error (resolveBriefExplainer throws when
  * `brief.enabled` is set and the gateway key is missing).
  */
-function BriefView({ ask }: { ask: PendingApproval }): React.ReactElement | null {
-  // `none` is the state a deployment with briefs off should be in. `failed`
-  // on such a deployment is bookkeeping, not news, and the card says nothing.
-  if (ask.briefState === 'none' || ask.briefState === 'failed') return null
+function BriefView({ ask, briefsOn }: { ask: PendingApproval, briefsOn: boolean }): React.ReactElement | null {
+  // `none` means briefs were never asked for. `failed` means they were, and the
+  // call did not come back — which is news ONLY on a deployment that turned
+  // briefs on, and noise on every other one. That distinction is the whole fix:
+  // the previous version returned null for both, which silenced the card on a
+  // deployment that DID enable briefs and whose brief failed, and this one makes
+  // it depend on whether briefs are enabled at all.
+  //
+  // The page knows: `brief.enabled` is part of the `config` the status payload
+  // carries (see `buildStatus`), so this is a fact on hand rather than a guess
+  // from the state.
+  if (ask.briefState === 'none') return null
+  if (!briefsOn) return null
+  if (ask.briefState === 'failed') {
+    return <div className="brief-note error">Review brief unavailable — the approval itself is unaffected.</div>
+  }
   if (ask.briefState === 'pending') {
     return <div className="brief-note">Writing review brief…</div>
   }
@@ -208,6 +256,17 @@ function useFeedback(): FeedbackApi {
 }
 
 /** One decision plate: eyebrow, tool, meta, reason, brief, actions. */
+/**
+ * Whether briefs are enabled, for the card.
+ *
+ * Module-level, and set by `ApprovalThread` on every render, because
+ * `ApprovalCard` is assistant-ui's `tools.Override` — React hands it
+ * `ToolCallMessagePartProps` and nothing else, so a prop is not available. It is
+ * written during render rather than in an effect, which is what a value shared
+ * across a subtree normally needs to be, and the thread is the only writer.
+ */
+let BRIEFS_ON: boolean | undefined
+
 function ApprovalCard(props: ToolCallMessagePartProps): React.ReactElement {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -250,7 +309,7 @@ function ApprovalCard(props: ToolCallMessagePartProps): React.ReactElement {
         </div>
       )}
       {gate?.prompt !== undefined && <div className="reason">{gate.prompt}</div>}
-      {ask !== undefined && <BriefView ask={ask} />}
+      {ask !== undefined && <BriefView ask={ask} briefsOn={BRIEFS_ON} />}
       {gate?.resolution !== undefined && (
         <div className="brief-note settled">
           {gate.resolution === 'expired' ? 'Expired — no answer in time.' : 'Cancelled — the ask was withdrawn.'}
@@ -407,10 +466,11 @@ function AssistantBubble(): React.ReactElement {
   )
 }
 
-function ApprovalThread({ pending, feed, source }: {
+function ApprovalThread({ pending, feed, source, briefsOn }: {
   pending: PendingApproval[]
   feed: FeedEntry[]
   source: DashboardSource
+  briefsOn: boolean | undefined
 }): React.ReactElement {
   // The ask's details, as last seen. `clear()` on every render is what let a
   // re-materialised card degrade: the ask had left `pending`, so its entry was
@@ -423,6 +483,8 @@ function ApprovalThread({ pending, feed, source }: {
   // the life of the page.
   for (const ask of pending) ASK_BY_ID.set(ask.id, ask)
   const live = new Set(pending.map(a => a.id))
+  // Written during render, for `ApprovalCard` — see the note on BRIEFS_ON.
+  BRIEFS_ON = briefsOn
 
   // The thread is built from `pending`, so an ask that has LEFT that list has
   // no message to render and no card to carry its outcome — which is the whole
@@ -988,6 +1050,7 @@ function ActivityFeed({
 
 export function DashboardApp({ source }: { source: DashboardSource }): React.ReactElement {
   const snapshot = useSnapshot(source)
+  const briefsOn = useBriefsEnabled(source)
   const [sessionFilter, setSessionFilter] = useState<SessionFilter>('all')
   usePendingBadge(snapshot?.pending.length ?? 0)
 
@@ -1021,7 +1084,7 @@ export function DashboardApp({ source }: { source: DashboardSource }): React.Rea
             {snapshot.pending.length}
           </span>
         </div>
-        <ApprovalThread pending={snapshot.pending} feed={snapshot.feed} source={source} />
+        <ApprovalThread pending={snapshot.pending} feed={snapshot.feed} source={source} briefsOn={briefsOn} />
       </section>
       <aside className="rail" aria-label="Grouped runs">
         <GroupedRunPanels snapshot={snapshot} filter={sessionFilter} />
