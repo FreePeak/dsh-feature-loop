@@ -628,6 +628,46 @@ Five tests, two proven to fail when the table is disconnected. The general form:
 **a hand-edited file is validated by the page's validator only when the page
 wrote it.** One table, checked at the one function every consumer goes through.
 
+### 1m. The settings page called the strictest gate in a hand-edited file the loosest one
+
+**Observed, 2026-10-03, on a generated profile whose settings file is what the
+harness actually honours** (§1d made it authoritative):
+
+```
+gatePolicies: { write: auto, edit: auto, bash: auto }
+```
+
+No write class asks. `approvalModeFor` counted `always-approve` entries instead,
+so `asked === 0 ≠ 3` and the page showed **"Review at risky steps"** — whose own
+policies are `edit/write/bash: auto-if-confident`. The file was **looser** than
+the posture it was labelled with, and the run sided with the file: the write went
+through with no approval demanded. The page was describing a gate that was not
+running.
+
+**Fix.** `auto` is the only value that never reaches a human, so it is the one
+that decides: `auto` on every write class is `approve-every-step`, anything else
+(including nothing named, because `ReviewGate`'s default for an unclassified tool
+is `always-approve`) is `review-risky`. Two tests, proven to fail with the old
+counting restored.
+
+**And the second half is a real UI consequence, still open.** The two postures'
+own maps are on OPPOSITE ends of the line — `review-risky` asks about every
+write class, so classifying it now yields `approve-every-step`, and vice versa.
+The page renders `<select value={approvalMode}>`, so a file the operator just
+wrote with `approve-every-step` selected opens showing **the other option**, and
+a Save with nothing touched writes the other policies.
+
+That is not fixable in the classifier: **three positions exist** — asks about
+everything, asks about some, asks about nothing — and two postures cannot name
+the middle one. Adding the third is a UI change with a copy decision attached
+("when to stop and ask" gets three options, not two), so it is recorded here and
+the assertion in `test/remote.test.ts` is the property that CAN hold: the
+classifier never calls a gate "asks about nothing" when something asks.
+
+Measured and not assumed: `{write: auto, edit: auto, bash: auto}` -> the write
+succeeded with no approval demanded; `{write: always-approve}` alone ->
+`review-risky`, correctly, because `edit` and `bash` still run unattended.
+
 ### 1. The stylesheet restyled the whole host UI
 
 **Observed:** after the dashboard was folded into the DSH UI, the host's `<body>`

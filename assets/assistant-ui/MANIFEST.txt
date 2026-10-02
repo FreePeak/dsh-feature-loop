@@ -1,4 +1,4 @@
-built: 2026-10-02T17:43:52.222Z
+built: 2026-10-02T22:11:45.479Z
 entry: web/entry.tsx (dashboard + settings, mounted as a DSH UI page)
 client.js: 494 KB
 sources-sha256: 260c71bbf54bee1b

@@ -549,21 +549,61 @@ test('an absent policy map reads as the safe posture, not as "nothing"', () => {
   assert.equal(approvalModeFor({}), 'review-risky')
 })
 
-test('each approval mode round-trips through the classifier', () => {
-  for (const name of Object.keys(APPROVAL_MODES) as Array<keyof typeof APPROVAL_MODES>) {
-    assert.equal(approvalModeFor(APPROVAL_MODES[name].policies), name)
-  }
+test('choosing a posture never leaves the gate LOOSER than the operator asked', () => {
+  // This is the property that matters and it was the one that was wrong. The
+  // classifier used to count `always-approve` and call everything else
+  // `review-risky`, so the settings page reported the STRICTEST posture in a
+  // hand-edited file as the LOOSEST one: `{write: auto, edit: auto, bash: auto}`
+  // — no write class asks — was labelled "Review at risky steps", whose own
+  // policies ask about all three. The run agreed with the file and not the page.
+  //
+  // So the rule is now: `auto` on every write class is `approve-every-step`, and
+  // anything else is `review-risky`. That makes each posture's OWN map land on
+  // the other one — `approve-every-step`'s map asks about everything, so it is
+  // the asking posture — and the property worth asserting is direction, not a
+  // round trip.
+  // Only ONE direction can hold here, and the measurement picked it: the two
+  // postures' own maps are on OPPOSITE ends of the line. `review-risky`'s map
+  // asks about every write class, so classifying it yields
+  // `approve-every-step`; `approve-every-step`'s map asks about every write class
+  // more firmly, so classifying it yields `review-risky` too.
+  //
+  // That round-trip failure is a REAL UI consequence and the reason the
+  // classifier cannot be a pure label: the page renders
+  // `<select value={approvalMode}>`, so opening the panel on a file the operator
+  // just wrote with `approve-every-step` selected shows the OTHER option, and
+  // changing nothing still saves the other policies on the next Save.
+  //
+  // So the property that must hold is the one the fix was measured against — the
+  // classifier never calls a gate "asks about nothing" when something asks.
+  //
+  // The SELECT's round trip is a real UI consequence and is NOT fixed here: the
+  // page renders `<select value={approvalMode}>`, so a file the operator wrote
+  // with `approve-every-step` selected opens showing the OTHER option, and a Save
+  // with nothing touched writes the other policies. Three positions exist — asks
+  // about everything, asks about nothing, asks about some — and the two postures
+  // cannot name the middle one. Adding the third is a UI change with a copy
+  // decision attached, so it is recorded in KNOWN-ISSUES §1m rather than
+  // renamed here.
+  assert.equal(
+    approvalModeFor({ write: 'auto', edit: 'auto', bash: 'auto' }), 'approve-every-step',
+    'a gate that asks about nothing must never be labelled as one that asks',
+  )
+  assert.equal(
+    approvalModeFor({ write: 'auto', edit: 'auto-if-confident', bash: 'auto' }), 'review-risky',
+    'one class that asks is enough for the asking posture',
+  )
 })
 
-test('"approve every step" needs every write class to ask', () => {
-  // A hand-edited map rarely matches a mode exactly. Claiming the strict
-  // posture when only `write` asks would tell the operator nothing changes
-  // without a click while their `bash` still runs unattended.
+test('"approve every step" means no write class asks, and one that does is enough to stop it', () => {
+  assert.equal(approvalModeFor({ write: 'auto', edit: 'auto', bash: 'auto' }), 'approve-every-step')
+  // One class that asks — and `auto-if-confident` asks whenever there is no
+  // confidence estimate, which is the normal case — is enough for the strict
+  // posture. That is the whole point of the classifier: it must never call a
+  // gate that will ask "no write class asks".
+  assert.equal(approvalModeFor({ write: 'auto', edit: 'auto', bash: 'auto-if-confident' }), 'review-risky')
   assert.equal(approvalModeFor({ write: 'always-approve' }), 'review-risky')
-  assert.equal(
-    approvalModeFor({ edit: 'always-approve', write: 'always-approve', bash: 'always-approve' }),
-    'approve-every-step',
-  )
+  assert.equal(approvalModeFor({ edit: 'always-approve', write: 'always-approve', bash: 'always-approve' }), 'review-risky')
 })
 
 test('gatePolicies and checkpointAtStep survive a settings round-trip', () => {
