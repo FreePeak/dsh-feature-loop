@@ -788,6 +788,49 @@ because the assertion failed, and each is recorded in the script.
 
 Frame: `docs/evidence/settings-mixed.png`.
 
+### 1o. The demo's committed transcript was two runs spliced into one, and the prose described neither
+
+**Observed, 2026-10-03, reading what the README claims the product does.**
+
+The quick start shows a transcript under "The demo works":
+
+```
+── step 4 · onegw/execution · spent $0.0023
+[run-end] goal-met · 4 steps · $0.0030 · 1 review(s) (25% of steps)
+
+[run-end] goal-met · 12 steps · $0.0066 · 1 review(s) (8% of steps)
+```
+
+**Two different runs in one code fence**, the second from a session that no
+longer exists, with no marker between them. The prose underneath then described
+neither: "was stopped for review **twice** (once by a critical signal, once by the
+write gate)" and "the judge scored the step `0/3`". The run shown has ONE review
+and a judge score of `2.0/3`, and no critical signal. So a reader could not tell
+which half was the run, and the claims underneath matched neither.
+
+**And `demo/TRANSCRIPT.txt` — which the README points at as "full transcript" —
+was stale in a way that reads as current.** Captured from
+`.worktrees/loop-optimize/` (a worktree that no longer exists), on
+`xiaomi/mimo-v2.5` (a model this branch stopped running), showing a planted bug
+`Math.ceil((p / 100) * sorted.length)` that this branch replaced with the integer
+form. Nothing regenerates it: no script writes it, and
+`scripts/check-typecheck-list.mjs` watches `demo/cli.ts` but not the transcript
+it is the output of.
+
+**Fixed.** The spliced line is deleted; the prose now describes the run actually
+shown — 4 steps, one judge review at 2.0/3, a `tool-dominance` signal, a one-line
+fix. The transcript is regenerated from a live run on this branch's route, with
+the two machine-specific lines (sandbox path, history path) removed and a header
+that says plainly what a capture is and when it was taken.
+
+**The standing part.** A committed transcript is a claim about a run, and it goes
+stale the moment the route, the bug, or the judge changes — with nothing failing.
+So it is labelled as a capture with its date and route, the README says it is one
+rather than current output, and the claim that it makes ("the shape does not
+vary") is backed by `make check`, which fails if the planted bug and the fix stop
+agreeing. That is the difference between an artefact and a claim: the artefact can
+age, the claim is checked.
+
 ### 1. The stylesheet restyled the whole host UI
 
 **Observed:** after the dashboard was folded into the DSH UI, the host's `<body>`
