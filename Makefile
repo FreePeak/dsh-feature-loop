@@ -152,6 +152,19 @@ build: ## Build the plugin with tsdown into lib/
 image: ## Build the container image
 	@$(export_key); $(COMPOSE) build
 
+# `up` asserts two things and NOT a third, because the third is not measurable
+# (all measured 2026-10-03, see KNOWN-ISSUES §1h):
+#
+#   1. the RELAY answers 401 or 200 on the published host port;
+#   2. the harness printed a `dsh web:` line in this boot's log.
+#
+# What it cannot assert is that the app is SERVING. The published port is a
+# relay, and the relay answers 401 whether the harness behind it is serving,
+# wedged under SIGSTOP, or gone: with PID 1 stopped, a token request still
+# returned 303 three times in a row, the container healthcheck stayed `healthy`,
+# and `RestartCount` stayed 0. So a token probe reads as alive for a dead app and
+# is NOT a liveness signal — the honest check is (2), the harness's own record
+# that it got as far as printing a URL.
 .PHONY: up
 up: ## Start the container detached, then print the URL and token
 	@$(export_key); \
@@ -164,14 +177,22 @@ up: ## Start the container detached, then print the URL and token
 	    sleep 2; \
 	  done; \
 	  echo; \
-	  if [ "$$code" = "401" ] || [ "$$code" = "200" ]; then \
-	    echo "  up (HTTP $$code)"; \
-	    $(MAKE) --no-print-directory url; \
-	    $(MAKE) --no-print-directory dashboard; \
-	  else \
-	    echo "  ! the UI did not answer on :$(HOST_PORT) (last code: $$code)"; \
+	  if [ "$$code" != "401" ] && [ "$$code" != "200" ]; then \
+	    echo "  ! nothing answered on :$(HOST_PORT) (last code: $$code) — the RELAY"; \
+	    echo "    is not up either."; \
 	    echo "    logs:"; $(COMPOSE) logs --tail 30; exit 1; \
-	  fi
+	  fi; \
+	  app_token=$$($(COMPOSE) logs 2>&1 \
+	    | sed -n "s/.*dsh web: http[^ ]*?token=\([^ ]*\).*/\1/p" | tail -1); \
+	  if [ -z "$$app_token" ]; then \
+	    echo "  ! the harness printed no 'dsh web:' line — it exited before the UI"; \
+	    echo "    existed. The relay answers $$code and the container healthcheck is"; \
+	    echo "    green, because both probe the RELAY rather than the app."; \
+	    echo "    logs:"; $(COMPOSE) logs --tail 30; exit 1; \
+	  fi; \
+	  echo "  up (relay HTTP $$code, harness booted)"; \
+	  $(MAKE) --no-print-directory url; \
+	  $(MAKE) --no-print-directory dashboard
 
 .PHONY: down
 down: ## Stop and remove the container (both volumes survive: sessions AND history)
