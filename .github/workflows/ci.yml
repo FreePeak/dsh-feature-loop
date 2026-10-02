@@ -112,6 +112,14 @@ jobs:
       - name: Every ladder rung is a declared model, and is priced
         run: node scripts/check-ladder-models.mjs
 
+      # Three rounds running. `escalateAfterFailures` is set in every shipped
+      # profile, documented as driven by the step outcome, and had no caller
+      # outside its own unit test — so the ladder could only climb on step
+      # count. `grep` finds the definition; it does not find the ABSENCE of a
+      # caller, which is the thing worth catching.
+      - name: No exported symbol in src/ is dead
+        run: node scripts/check-dead-exports.mjs
+
       - name: Run the test suite
         run: node --experimental-strip-types --test \
           test/agent-policy.test.ts test/approval-bridge.test.ts \

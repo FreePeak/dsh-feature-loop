@@ -223,6 +223,42 @@ And this is the second time in two rounds that a documented-but-uncalled
 behaviour turned out to be dead code. `grep -rn` for the method finds the
 definition; it does not find the absence of a caller.
 
+## Three rounds running: the same defect class, and a check for it
+
+Three separate findings in three rounds were the same shape — **a documented
+behaviour with no caller**:
+
+| Symbol | Documented as | Actually |
+|---|---|---|
+| `ModelLadder.recordFailure()` | driven by the loop's step outcome | called only by its own unit test |
+| `escalationForStep()` | announce an escalation | exported, never called |
+| `LoopBudget.stopNotice()` | the message for a ceiling stop | a second wording, never called |
+
+The first one is the expensive shape: `escalateAfterFailures: 2` is in **every
+shipped profile**, so a config key that reads as a feature and behaves as a
+comment is a thing people copy. The ladder could only climb on step count, so a
+run that failed fast and early — the cheapest case to fix by moving up a rung —
+stayed on the cheap model for its whole life.
+
+`grep -rn recordFailure src/` returns the definition. It does not return the
+**absence of a caller**, and nothing else in the tree is going to notice that.
+`scripts/check-dead-exports.mjs` does, on every run, in CI and in `make check`:
+it fails when `src/` exports a symbol nothing outside the defining file can
+reach, and names both.
+
+Five symbols were file-local and now say so (`BUGFIX_PHASE`, `FEATURE_PHASE`,
+`CHANGE_EMIT_INTERVAL_MS`, `DEFAULT_THRESHOLDS`, `DERIVED_MIN_STEPS`) — an
+`export` on a constant read once by its own file is a public surface with no
+user. Three are exported BY CONSTRUCTION and are named as such in the script:
+`FeatureLoopRemote` is found by `markRemote()` at module load and must not be
+imported, `answerLive` is the seam a socket-free caller drives, and
+`attachApprovalAnswerer` is what an embedding host mounts on a context it built.
+
+It is a regex over the tree, not an import graph, and it over-reports: a name
+mentioned in a comment counts as a caller. That is the safe direction — the cost
+of a miss here is a config key that lies, and the cost of a false positive is a
+line of `export` nobody needed anyway.
+
 ## A config key that read as a feature and behaved as a comment
 
 **Observed:** `escalateAfterFailures: 2` is set in every shipped profile, and
