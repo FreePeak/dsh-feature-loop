@@ -147,6 +147,41 @@ store key for a `_@deepseek-ai+…` suffix.
 
 ---
 
+## `escalateAfterFailures` was configured everywhere and driven by nothing
+
+**Observed:** every shipped profile sets `escalateAfterFailures: 2`, and the
+`ModelLadder` class documents `recordFailure()` as "driven by the loop's step
+outcome". `grep -rn recordFailure src/` returned **the definition and no caller** —
+not in `runner.ts`, not in `plugin.ts`, nowhere.
+
+**Why that is a real defect and not a missing nicety:** the ladder could
+therefore only ever climb on `stepsPerRung`. A run that failed fast and early —
+the exact case the failure signal exists for, and the one that is cheapest to
+fix when the model is too weak for the task — stayed on the cheap model for its
+entire life, and only moved up when it ran out of steps rather than when it ran
+out of capability. `escalateAfterFailures` was a config key that read as a
+feature and behaved as a comment.
+
+**Fixed in both paths, from the same reading of a failed step:**
+
+- `runner.ts` records the outcome after the tool loop: a tool that returned
+  `ok: false`, arguments that would not parse, an unknown tool, or an operator
+  abort. A step with *no* tool calls counts as a success — the model spoke and
+  asked nothing, which is a step that happened, not one that broke.
+- `plugin.ts` records it where it commits the previous step's observation, which
+  is the only place a DSH deployment knows the outcome of a step it did not run
+  itself. A denied call is the failure signal there.
+
+Both are pinned by a test that drives the real loop with `stepsPerRung: 99`, so
+the *only* thing that can move the ladder is the failure signal — and the exact
+sequence is asserted, because a ladder that climbed on the first failure would
+pass a weaker "the route changed" check. Both tests were verified to fail with
+the recording removed.
+
+And this is the second time in two rounds that a documented-but-uncalled
+behaviour turned out to be dead code. `grep -rn` for the method finds the
+definition; it does not find the absence of a caller.
+
 ## The ladder check now reads your profiles too — and two of them are drifting
 
 `scripts/check-ladder-models.mjs` used to read only the three files this repo

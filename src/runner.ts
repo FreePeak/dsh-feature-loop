@@ -426,6 +426,9 @@ export async function runLoop(options: LoopRunnerOptions): Promise<LoopRunResult
 
     // 7. Tools. Each one passes the reversibility gate before it runs.
     messages.push({ role: 'assistant', content: result.content === '' ? null : result.content, tool_calls: result.toolCalls })
+    // The ladder's failure signal, recorded from THIS step's outcome — see the
+    // call after the tool loop, which is the only place that knows it.
+    let stepFailed = false
     for (const call of result.toolCalls) {
       const tool = toolsByName.get(call.function.name)
       if (tool === undefined) {
@@ -435,6 +438,7 @@ export async function runLoop(options: LoopRunnerOptions): Promise<LoopRunResult
           content: `Unknown tool "${call.function.name}". Available: ${[...toolsByName.keys()].join(', ')}`,
         })
         history.push({ index: step, tool: call.function.name, argsKey: '', error: true, costUSD: 0, latencyMs })
+        stepFailed = true
         continue
       }
 
@@ -442,6 +446,7 @@ export async function runLoop(options: LoopRunnerOptions): Promise<LoopRunResult
       if (!parsed.ok) {
         messages.push({ role: 'tool', tool_call_id: call.id, content: `Bad arguments: ${parsed.error}` })
         history.push({ index: step, tool: tool.name, argsKey: '', error: true, costUSD: 0, latencyMs })
+        stepFailed = true
         continue
       }
 
@@ -459,6 +464,7 @@ export async function runLoop(options: LoopRunnerOptions): Promise<LoopRunResult
         if (!cont) {
           messages.push({ role: 'tool', tool_call_id: call.id, content: 'Aborted by the operator.' })
           outcome = 'aborted'
+          stepFailed = true
           break
         }
       }
@@ -493,9 +499,18 @@ export async function runLoop(options: LoopRunnerOptions): Promise<LoopRunResult
         tool_call_id: call.id,
         content: toolResult.ok ? toolResult.output : `ERROR: ${toolResult.error ?? 'tool failed'}`,
       })
+      if (!toolResult.ok) stepFailed = true
     }
 
     if (outcome === 'aborted') break
+
+    // The ladder's failure signal. `escalateAfterFailures` is documented as
+    // "consecutive failures on one rung" and until this line NOTHING recorded
+    // one: `recordFailure` had no caller outside its own unit test. A step with
+    // no tool calls counts as a success — the model spoke and asked nothing,
+    // which is a step that happened, not a step that broke.
+    if (stepFailed) ladder.recordFailure()
+    else ladder.recordSuccess()
 
     // 7. Success check after the step, so the loop stops the moment the
     //    observable condition holds rather than when the model next speaks.

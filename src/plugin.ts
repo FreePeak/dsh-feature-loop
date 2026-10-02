@@ -597,6 +597,7 @@ export async function reviewStep(
   // and skipping it would let a silent spin loop look like a healthy one.
   if (step > 1) {
     const pending = policy.pending
+    const failed = pending?.error ?? false
     policy.history.push({
       index: step - 1,
       // The phase as it was WHEN the step ran. Phase changes happen at a step
@@ -605,10 +606,20 @@ export async function reviewStep(
       tool: pending?.tool,
       argsKey: pending?.argsKey,
       costUSD: 0,
-      error: pending?.error ?? false,
+      error: failed,
     })
     policy.pending = undefined
     policy.router.observeStep()
+    // The ladder's failure signal, from the step that just ended. The plugin
+    // path had none: `recordFailure` had no caller outside the runner's own
+    // test, so a DSH deployment could only ever climb on `stepsPerRung` — a run
+    // that failed fast and early stayed on the cheap model for the whole task.
+    // Same reading as the runner: a step with no tool call is a step that
+    // happened, not one that broke.
+    if (policy.ladder !== undefined) {
+      if (failed) policy.ladder.recordFailure()
+      else policy.ladder.recordSuccess()
+    }
   }
 
   // The snapshot is taken before the stop check so a ceiling stop still
@@ -1878,6 +1889,13 @@ export async function requestBrief(args: {
   question: ApprovalQuestion
 }): Promise<void> {
   const { registry, explainer, id, question } = args
+  // NO_EXPLAINER means briefs are OFF for this deployment (`brief.enabled` was
+  // never set), and the brief is advisory either way — so do not mark the card
+  // pending and then immediately record a failure for a feature nobody asked
+  // for. That is what put "review brief requested" + "Review brief
+  // unavailable." on the feed of every single ask on a profile with briefs
+  // disabled, and "Review brief unavailable." on every card.
+  if (explainer === NO_EXPLAINER) return
   registry.briefs.markBriefPending(id)
   let code: string | undefined
   try {

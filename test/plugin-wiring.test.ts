@@ -25,7 +25,7 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 
-import { apply, createPolicy, reviewStep } from '../src/plugin.ts'
+import { apply, createPolicy, reviewStep, routeForStep } from '../src/plugin.ts'
 import type { CreatePolicyOptions, FeatureLoopPolicy } from '../src/plugin.ts'
 
 /** The plugin's decision shapes, narrowed to what this file reads. */
@@ -259,4 +259,52 @@ test('reviewStep commits history even when no tool ever ran', async () => {
   await reviewStep(policy, 3)
   assert.equal(policy.history.length, 2)
   assert.equal(policy.history[1]?.tool, 'write_file')
+})
+
+test('the plugin path escalates the ladder on failure, not only on step count', async () => {
+  // `escalateAfterFailures` is set in every shipped profile
+  // (`escalateAfterFailures: 2`) and is documented as "consecutive failures on
+  // one rung" — and the plugin path had no caller for `recordFailure` at all.
+  // A DSH deployment could therefore only climb on `stepsPerRung`, so a task
+  // that failed fast and early stayed on the cheap model for its whole life,
+  // which is the opposite of what the rung is for.
+  //
+  // Driven through `reviewStep`, which is what the `agent/pre-step` handler
+  // calls and where the previous step's outcome is committed. `stepsPerRung: 99`
+  // removes the other reason to climb, so nothing but failure can move it.
+  const policy = createPolicy({
+    spec: {
+      ...SPEC,
+      controller: {
+        ladder: [{ provider: 'cheap', model: 'fast' }, { provider: 'pricey', model: 'strong' }],
+        stepsPerRung: 99,
+        escalateAfterFailures: 2,
+      },
+      maxSteps: 6,
+      prices: {
+        'cheap/fast': { inputPerMTok: 1, outputPerMTok: 1 },
+        'pricey/strong': { inputPerMTok: 1, outputPerMTok: 1 },
+      },
+    },
+  })
+
+  // Read the route AFTER the review, which is the order the handler uses:
+  // `reviewStep` commits the previous step's outcome, and `routeForStep` is
+  // what `agent/request` then asks. Escalation is sticky, so the route a step
+  // actually ran on is the answer to "did the ladder move".
+  const routes: string[] = []
+  for (let step = 1; step <= 4; step++) {
+    // The `tools/pre-execute` handler records the step that just ran; a denied
+    // call marks it failed, which is the plugin path's only failure signal.
+    if (step > 1) policy.pending = { tool: 'write_file', argsKey: 'k', error: true }
+    await reviewStep(policy, step)
+    const routed = routeForStep(policy, step, undefined)
+    if (routed !== undefined) routes.push(`${String(routed.provider)}/${String(routed.model)}`)
+  }
+
+  assert.deepEqual(
+    routes,
+    ['cheap/fast', 'cheap/fast', 'pricey/strong', 'pricey/strong'],
+    'two consecutive failures move the ladder, and only then',
+  )
 })

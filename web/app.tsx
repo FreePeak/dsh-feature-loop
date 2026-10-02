@@ -151,13 +151,28 @@ function BriefNodeView({ node }: { node: BriefNode }): React.ReactElement {
   return <p className="brief-para">{node.text}</p>
 }
 
+/**
+ * The brief is ADVISORY and off by default (`dashboard.brief.enabled`), so
+ * "unavailable" is the expected state on a deployment that never turned it on —
+ * and it was rendering as a red-flag line on every single card. The feed
+ * confirmed it: every ask logged `review brief requested: write` and then
+ * `Review brief unavailable.`, because `requestBrief` runs for EVERY claimed
+ * ask, calls `markBriefPending` before it looks at the explainer, and
+ * `NO_EXPLAINER.explain()` resolves `undefined` — which lands in
+ * `recordBrief(id, undefined)`, i.e. the failed branch.
+ *
+ * So this reported a broken feature that was never enabled, on a card whose
+ * gate had just worked perfectly. Silence is the honest rendering of
+ * "this deployment has no brief", and a deployment that HAS enabled it is
+ * better served by its own load-time error (resolveBriefExplainer throws when
+ * `brief.enabled` is set and the gateway key is missing).
+ */
 function BriefView({ ask }: { ask: PendingApproval }): React.ReactElement | null {
-  if (ask.briefState === 'none') return null
+  // `none` is the state a deployment with briefs off should be in. `failed`
+  // on such a deployment is bookkeeping, not news, and the card says nothing.
+  if (ask.briefState === 'none' || ask.briefState === 'failed') return null
   if (ask.briefState === 'pending') {
     return <div className="brief-note">Writing review brief…</div>
-  }
-  if (ask.briefState === 'failed') {
-    return <div className="brief-note">Review brief unavailable.</div>
   }
   return (
     <div className="brief">
