@@ -299,6 +299,80 @@ purpose rather than a drive-by fix at the end of a session.
 plugin.ts needs the harness packages)`) — which is the part that was right and
 the part nobody read.
 
+### 1h. `make up` reported a dead container as up — and no HTTP probe can fix it
+
+**Observed (2026-10-03), starting from this branch's own `make up FORCE_REINIT=1`:**
+
+```
+[entrypoint] booting 'dsh-fl' on 127.0.0.1:3099 (DSH_HOME=/data)
+dsh web: http://127.0.0.1:3099/?token=…
+error: unknown option '--host'
+…
+  up (HTTP 401)
+  open: http://127.0.0.1:3090/?token=…
+```
+
+`make up` printed an open URL for a container whose harness process had exited.
+
+**Why the check could never have caught it.** The published host port is a
+**relay** — `docker/entrypoint.sh` binds the app to loopback (the harness refuses
+`0.0.0.0`) and forwards from the container's own interface. So the old exit
+condition, "the published port answers 401 or 200", was satisfied by the relay
+answering 401 **forever**, and three separate probes all reported a healthy
+dead app:
+
+| probe | with the harness dead |
+|---|---|
+| `make up`'s host-port poll | `401` → "up (HTTP 401)" |
+| the container healthcheck (`fetch 127.0.0.1:8099/`) | `healthy` |
+| `docker inspect … RestartCount` | `0` |
+
+**And then the obvious fix was also wrong, which is the part worth keeping.**
+The natural repair — take the token from the `dsh web:` line and require a `200`
+with it — was measured and abandoned:
+
+- a live app answers a fresh token with **303 + Set-Cookie**, then `200` on the
+  redirect, so "200 only" fails on a *healthy* container;
+- more decisively, `kill -STOP 1` inside the container left every HTTP probe
+  working: a token request returned **303 three times in a row** against a
+  harness that could not execute a single instruction. **No HTTP probe
+  distinguishes a live app from a wedged one**, because the relay keeps
+  answering from the last thing it saw.
+
+So a token probe is not a liveness signal either; it is a better-looking lie.
+
+**What `make up` asserts now**, and the ceiling is stated in the recipe:
+
+1. the relay answers 401 or 200 on the published port;
+2. the harness printed a `dsh web:` line in **this boot's** log.
+
+(2) is the harness's own "I got as far as booting" record, and its absence is
+exactly the failure above — an older CLI in a stale image refusing `--host`,
+which printed the dashboard line and then died before the UI existed. Proven to
+fire by pointing `COMPOSE` at a stub whose `logs` is empty: exit 2, naming the
+branch.
+
+**Not fixed here.** The healthcheck probing the relay instead of the app is a
+real defect in `docker/docker-compose.yml`, and fixing it needs a liveness
+signal that does not go through the relay — a `pid 1 is the dsh process` check,
+or an app-side health endpoint. Both belong with whoever owns the container, and
+both are recorded rather than guessed at.
+
+**A note on what this box actually had running**, because it changes how the
+evidence reads: the `dsh-feature-loop` container was started 12 hours earlier
+from `.worktrees/prod-warts/docker/`, still on the OLD ladder
+(`opencode/deepseek-v4.1-flash` → `xai/grok-4.7`), and `make up` from this
+branch targets a *different* compose project — so it never touched it.
+`docker inspect` on the container names its `working_dir`. **A container found
+by `make up` is not necessarily the one you built.**
+
+**Blocked, and honestly so:** this branch's image cannot be rebuilt on this host
+right now — the build's `pnpm install` needs the npm registry, and the registry's
+TLS handshake is dead here (three `ERR_PNPM_META_FETCH_FAIL`, `Socket timeout`,
+while `github.com` returns 200). Same outage as §1c. So the container path on
+this branch is verified by `make check`'s ladder check and by inspection, **not**
+by a live gated run in a rebuilt container.
+
 ### 1. The stylesheet restyled the whole host UI
 
 **Observed:** after the dashboard was folded into the DSH UI, the host's `<body>`
