@@ -303,6 +303,44 @@ export type ApprovalModeName = keyof typeof APPROVAL_MODES
  * @param policies - the configured map, if any.
  * @returns the posture that describes it.
  */
+export function approvalModeLabel(policies: GatePolicyMap | undefined): string {
+  // A suffix for a map no posture names, so the page never renders a posture's
+  // copy as though it described the file.
+  //
+  // Measured 2026-10-03 with `{write: always-approve, edit: auto, bash: auto}`:
+  // the write asked, the edit and the shell command did not — and the page
+  // showed "Review at risky steps", whose hint reads "A write is reviewed when
+  // the loop has no confidence to judge it". That is a claim about `write`, and
+  // `bash: auto` is the opposite claim about every command the loop runs. Two of
+  // the three write classes are unsupervised and the page said one was reviewed.
+  //
+  // The test is exact equality with a posture's own map rather than a count, so
+  // the suffix appears on every map a person can type that is not one of the
+  // three, including a partial one (`{write: auto}` alone, where `edit` and
+  // `bash` fall back to the gate's defaults). Being marked "mixed" when the
+  // truth is "one class set, the rest defaulted" is the safe direction: it tells
+  // the reader to check the fields rather than to trust the posture.
+  const mode = approvalModeFor(policies)
+  const exact = Object.entries(APPROVAL_MODES).some(([, m]) => mapsEqual(m.policies, policies))
+  return exact ? '' : ' — mixed with the fields below'
+}
+
+/**
+ * Whether two policy maps assign the same value to every named class.
+ *
+ * `Object.keys` yields `string`, so the index needs the class type: this
+ * compares maps a person can type, and an untyped index here is exactly how a
+ * `noUncheckedIndexedAccess`-free build hides a wrong key.
+ */
+function mapsEqual(a: GatePolicyMap, b: GatePolicyMap | undefined): boolean {
+  const keys = new Set<string>([...Object.keys(a), ...Object.keys(b ?? {})])
+  for (const k of keys) {
+    const cls = k as GatePolicyClass
+    if (a[cls] !== b?.[cls]) return false
+  }
+  return true
+}
+
 export function approvalModeFor(policies: GatePolicyMap | undefined): ApprovalModeName {
   const writeClasses = GATE_POLICY_CLASSES.filter(c => c !== 'read' && c !== 'glob' && c !== 'grep')
   const silent = writeClasses.filter(c => policies?.[c] === 'auto').length

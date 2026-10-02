@@ -706,6 +706,42 @@ Measured and not assumed: `{write: auto, edit: auto, bash: auto}` -> the write
 succeeded with no approval demanded; `{write: always-approve}` alone ->
 `review-risky`, correctly, because `edit` and `bash` still run unattended.
 
+### 1n. A MIXED policy file was shown one posture's copy, which was true of one class and false of the others
+
+Last round added the third posture (§1m) and the round trip held. The next
+question is what a hand-edited file looks like when it is a **mixture**, which is
+what a person actually types — three postures bracket the space and most maps are
+between them.
+
+Measured 2026-10-03 on a generated profile with
+
+```
+gatePolicies: { write: always-approve, edit: auto, bash: auto }
+```
+
+The write asked and was refused. The edit and the shell command **did not ask at
+all**. The page showed **"Review at risky steps"**, whose hint reads:
+
+> Reads never interrupt. A write is reviewed when the loop has no confidence to
+> judge it.
+
+That sentence is a claim about `write`, and `bash: auto` is the opposite claim
+about every command the loop runs. Two of the three write classes were
+unsupervised while the page described one of them as reviewed.
+
+**Fix.** `approvalModeLabel` marks any map that is not EXACTLY a posture's own —
+`' — mixed with the fields below'` — and the page prefixes its hint with "Not one
+of the postures — the per-tool fields below are what runs." The test is exact map
+equality rather than a count of `always-approve`, so a partial map (`{write:
+auto}`, where `edit` and `bash` fall back to `ReviewGate`'s default of
+`always-approve`) is marked too: it is not a mixture of postures but it is also
+not one, and being marked is the safe direction because it sends the reader to
+the fields.
+
+Three tests, two proven to fail when the marker is removed. And the honesty
+matters in the naming: the marker says "mixed with the fields below", not "you have
+misconfigured this" — the page cannot know which of the two it is.
+
 ### 1. The stylesheet restyled the whole host UI
 
 **Observed:** after the dashboard was folded into the DSH UI, the host's `<body>`
