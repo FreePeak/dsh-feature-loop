@@ -297,7 +297,7 @@ gets reached.
   five outcomes executed in a **real** DSH context (5/5 pass), plus the exact
   string the approval panel renders.
 - **[`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md)** — the approval
-  dashboard: 296 unit + 11 integration green, a live HTTP transcript (page 200,
+  dashboard: 405 unit + 11 integration green, a live HTTP transcript (page 200,
   token 401, approve → `allowed-once`, 409, 403), the browser click verified
   via `make e2e-dashboard`, and the model-authored review brief.
 - **[`docs/VERIFY-E2E-APPROVAL.md`](docs/VERIFY-E2E-APPROVAL.md)** — a real
@@ -728,7 +728,7 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 - **Phase 1e — HITL approval dashboard** ✅ optional loopback web surface
   (`src/dashboard.ts` + `src/dashboard-page.ts`): pending cards, live run state
   over SSE, Allow/Reject over HTTP — guarded so a tab-less deployment behaves
-  byte-identically to the composer-only path. 296 unit + 11 integration tests;
+  byte-identically to the composer-only path. 405 unit + 11 integration tests;
   the browser click verified via `make e2e-dashboard`
   ([`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md)).
 - **Phase 1f — review briefs** ✅ model-authored brief per ask
@@ -754,18 +754,44 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 ### Verifying the whole thing
 
 ```bash
-node --experimental-strip-types --test test/*.test.ts   # 405 pass
-pnpm test:integration                                   # 9 pass, in the real harness
-tsc --noEmit                                            # clean
-bash demo/run.sh                                        # goal-met
-grep -rn "FORK-DELTA" src/ | wc -l                      # 0 — the fork is gone
+make verify          # compose + tests + typecheck + the six drift checks + integration
 ```
 
-`pnpm test:integration` is the one that matters for human approval: it mounts
-this plugin into a **real** cordis context — real tool runtime, real approval
-service, real session — and drives the actual dispatch path, asserting that
-approving runs the write and rejecting stops it. See
-[`docs/VERIFY-INTEGRATION.md`](docs/VERIFY-INTEGRATION.md).
+That is the whole of it. Spelled out, `make verify` is:
+
+```bash
+node --experimental-strip-types --test test/*.test.ts   # 405 pass
+npx tsc --noEmit                                       # clean, all of src/ incl. plugin.ts
+node scripts/check-ci-shape.mjs                        # CI runs every check
+node scripts/check-test-list.mjs                        # and every pure test
+node scripts/check-typecheck-list.mjs                   # and every harness-free module
+node scripts/check-ladder-models.mjs                    # and no rung names an undeclared model
+node scripts/check-dead-exports.mjs                     # and no export is unreachable
+node scripts/check-noop-config-keys.mjs                 # and no config key claims to work unwired
+bash test/integration/run.sh                            # 11 pass, in the real harness
+bash demo/run.sh                                        # goal-met
+```
+
+The six `check-*.mjs` scripts need no `node_modules`, no gateway and no
+harness — they read the tree. They exist because each of the failures they
+guard is one that passes silently: a module typechecked by nothing, a test run
+by nothing, a rung naming a model no deployment declares, a documented
+behaviour with no caller, a config key claiming to work when no hook reads it,
+and a check CI stopped running.
+
+The integration spec (`bash test/integration/run.sh`) is the one that matters
+for human approval: it mounts this plugin into a **real** cordis context — real
+tool runtime, real approval service, real session — and drives the actual
+dispatch path, asserting that approving runs the write and rejecting stops it.
+See [`docs/VERIFY-INTEGRATION.md`](docs/VERIFY-INTEGRATION.md).
+
+And the two browser checks, both opt-in because they need a browser and a
+running profile:
+
+```bash
+make e2e-dashboard DSH_URL='…'          # the standalone approval page
+make e2e-in-ui     DSH_URL='…'          # the Feature Loop page, end to end
+```
 
 ### Four gaps closed along the way
 
