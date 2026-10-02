@@ -18,6 +18,7 @@ import type { CreatePolicyOptions, FeatureLoopPolicy } from './plugin.ts'
 import type { DashboardConfig } from './dashboard.ts'
 import { parseOptimizeConfig } from './spec.ts'
 import type { OptimizeConfig } from './spec.ts'
+import { mergeRowAndSettings, userSettings } from './remote.ts'
 
 export {
   apply as applyListeners,
@@ -182,17 +183,24 @@ export function apply(ctx: Context, config: Config = {}): (() => void) | void {
     // The deployment's own config, verbatim. The panel must show what the row
     // says (`judge: laya`), not the resolved internals — `options.judge` is a
     // constructed Judge, which no status page can render as a setting.
+    //
+    // It is ALSO what the gate is built from. A user may want to widen the gate
+    // mid-session (`run`/`glob`/`grep` → auto) without editing a shared patch
+    // layer that other profiles inherit, and it is their own machine; the patch
+    // row keeps its comments and its role as deployment configuration, and the
+    // user file wins where the two overlap. Settings the page cannot express —
+    // `spec`, `dashboard`, `optimize` — stay row-only, because the panel offers
+    // no control for them and a half-applied block is worse than a clear
+    // boundary. See `mergeRowAndSettings` in ./remote.ts for the precedence
+    // and for why it is not a deep merge.
     rowConfig: { ...config },
-    confidenceThreshold: config.confidenceThreshold,
-    gatePolicies: config.gatePolicies,
-    gateMode: config.gateMode,
     dashboard: config.dashboard,
     optimize,
-    router: {
-      ...(config.reviewBudget === undefined ? {} : { reviewBudget: config.reviewBudget }),
-      ...(config.judgeThreshold === undefined ? {} : { judgeThreshold: config.judgeThreshold }),
-      ...(config.checkpointAtStep === undefined ? {} : { checkpointAtStep: config.checkpointAtStep }),
-    },
+    // The row's own values first, then the user's file OVER them. One merge
+    // point, so there is exactly one answer to "which of these two is in
+    // effect" and it is written down here rather than spread over three call
+    // sites. See `mergeRowAndSettings` in ./remote.ts.
+    ...mergeRowAndSettings(config as unknown as Record<string, unknown>),
   })
 }
 

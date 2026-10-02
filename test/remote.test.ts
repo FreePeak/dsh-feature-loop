@@ -15,7 +15,7 @@
 import { strict as assert } from 'node:assert'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { parse as parseYaml } from 'yaml'
 
@@ -26,7 +26,9 @@ import {
   probeJudge,
   readSettings,
   saveSettings,
+  mergeRowAndSettings,
   settingsPath,
+  userSettings,
   validateSettings,
 } from '../src/remote.ts'
 
@@ -43,6 +45,96 @@ async function withConfigHome<T>(fn: (home: string, configPath: string) => T | P
     rmSync(home, { recursive: true, force: true })
   }
 }
+
+test('the plugin row merges the settings file OVER itself — the row is the base', async () => {
+  await withConfigHome((_home, path) => {
+    saveSettings({ gatePolicies: { write: 'auto' }, gateMode: 'deny' }, path)
+    const merged = mergeRowAndSettings({
+      gatePolicies: { write: 'always-approve' },
+      gateMode: 'ask',
+      judgeThreshold: 2,
+      reviewBudget: 0.1,
+      checkpointAtStep: 5,
+    })
+    // The file wins on the two keys it set...
+    assert.deepEqual(merged.gatePolicies, { write: 'auto' })
+    assert.equal(merged.gateMode, 'deny')
+    // ...and the row's own router survives, because `router` is merged rather
+    // than replaced: a file that sets one of the three flat keys must not erase
+    // the other two.
+    assert.deepEqual(merged.router, { reviewBudget: 0.1, judgeThreshold: 2, checkpointAtStep: 5 })
+  })
+})
+
+test('a settings file with no reviewBudget leaves the row router untouched', async () => {
+  await withConfigHome((_home, path) => {
+    saveSettings({ gateMode: 'deny' }, path)
+    const merged = mergeRowAndSettings({ gateMode: 'ask', reviewBudget: 0.25, judgeThreshold: 3 })
+    assert.deepEqual(merged.router, { reviewBudget: 0.25, judgeThreshold: 3 })
+  })
+})
+
+// The settings file must reach the GATE, not only the status page. Before this
+// the page showed a value the running policy never consulted, and both the file
+// header and the page's notice said so — accurately, which is worse, because a
+// correct warning about a feature that does not exist still ships the feature's
+// UI. These four cases are the whole contract: the file wins on the keys the
+// page owns, and it cannot reach the blocks it does not.
+
+test('a saved gate policy reaches the policy the plugin builds', async () => {
+  await withConfigHome((_home, path) => {
+    saveSettings({ gatePolicies: { write: 'auto' } }, path)
+    assert.deepEqual(userSettings(), { gatePolicies: { write: 'auto' } })
+  })
+})
+
+test('the file overrides the row, because that is what the page is for', async () => {
+  await withConfigHome((_home, path) => {
+    saveSettings({ gateMode: 'deny', confidenceThreshold: 2 }, path)
+    const user = userSettings()
+    assert.equal(user.gateMode, 'deny')
+    assert.equal(user.confidenceThreshold, 2)
+  })
+})
+
+test('the two flat router keys come back under router, not at the top level', async () => {
+  await withConfigHome((_home, path) => {
+    saveSettings({ reviewBudget: 0.4, judgeThreshold: 3 }, path)
+    assert.deepEqual(userSettings(), { router: { reviewBudget: 0.4, judgeThreshold: 3 } })
+  })
+})
+
+test('the file cannot reach spec, dashboard or optimize — the page offers no control for them', async () => {
+  await withConfigHome((_home, path) => {
+    // Written by hand, not through saveSettings: a hand-edited file is exactly
+    // the case an allowlist has to survive. mkdirSync because saveSettings is
+    // what normally creates the directory, and this case bypasses it.
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, [
+      'spec:',
+      '  maxSteps: 1',
+      'dashboard:',
+      '  enabled: false',
+      'optimize:',
+      '  history: /tmp/hijacked.jsonl',
+      'gateMode: deny',
+      '',
+    ].join('\n'))
+    const user = userSettings()
+    assert.deepEqual(user, { gateMode: 'deny' })
+    assert.equal(user.spec, undefined)
+    assert.equal(user.dashboard, undefined)
+    assert.equal(user.optimize, undefined)
+  })
+})
+
+test('a non-numeric router key is dropped rather than forwarded as a string', async () => {
+  await withConfigHome((_home, path) => {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, 'reviewBudget: not-a-number\ngateMode: ask\n')
+    assert.deepEqual(userSettings(), { gateMode: 'ask' })
+  })
+})
 
 test('settingsPath honours XDG_CONFIG_HOME, resolved per call', async () => {
   await withConfigHome((home) => {
