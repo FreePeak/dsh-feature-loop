@@ -14,20 +14,27 @@
  * *after* the dashboard has already recorded the route, the step and the spend.
  * Nothing errors at boot; nothing errors at config load.
  *
- * Three files ship a `spec:` block, and each one is checked against the model
- * list of the deployment it is FOR:
+ * FIVE places in this repo decide what model runs, and each is checked against
+ * the list the deployment it is FOR:
  *
- *   cordis.patch.yml          → settings.template.yaml (docker) AND the local
- *                                profile's own settings (documented below)
+ *   cordis.patch.yml          → docker/settings.template.yaml
  *   docker/profile.patch.yml  → docker/settings.template.yaml
  *   scripts/make-profile.sh   → its own generated settings row
+ *   demo/cli.ts               → the route it defaults to (asserted, not parsed
+ *                                as a ladder: it is a TS string)
+ *   test/probe-container.mjs  → the model list it writes into the profile it
+ *                                composes, which IS its resolver
+ *
+ * The demo is in the list because it was the FOURTH place to carry a model and
+ * the check above called the other three covered — a list that names its own
+ * files is a promise somebody has to keep, and the demo ran
+ * `xiaomi/mimo-v2.5` for six months after every YAML spec had moved. A fourth
+ * case that reads its answer out of the source is cheaper than a fifth person
+ * remembering.
  *
  * A local DSH profile has no single shipped settings file — the provider row is
- * whatever the operator wrote — so the local check is a documented pair rather
- * than a resolved comparison: `execution` and `planning` are the onegw role
- * aliases this repo's docs and demo tell people to configure, and they must
- * therefore be declared together. A profile that declares one and not the other
- * is exactly the container's bug, one layer over.
+ * whatever the operator wrote — so the local half of this check cannot resolve a
+ * model list and says so per profile rather than guessing.
  *
  * Run: `node scripts/check-ladder-models.mjs` (CI, and `make check`).
  *
@@ -109,28 +116,40 @@ function modelsDeclaredByMakeProfile() {
   return ids
 }
 
-const cases = [
-  {
-    file: 'docker/profile.patch.yml',
-    label: 'the container deployment',
-    ids: dockerIds,
-  },
-  {
-    // The bundle patch ships the DEFAULT spec every deployment inherits, so it
-    // is held to the same declared-id list. When it named `execution` and the
-    // Docker settings did not, this check fired on the very first run — which
-    // is the failure the container already cost a day for.
-    file: 'cordis.patch.yml',
-    label: 'the bundle patch (the shipped defaults)',
-    ids: dockerIds,
-  },
-  {
-    file: 'scripts/make-profile.sh',
-    label: 'the generated local profile',
-    ids: modelsDeclaredByMakeProfile(),
-  },
-]
+/**
+ * The models the demo declares, and the route it defaults to.
+ *
+ * Both are read out of `demo/cli.ts` rather than duplicated: the default is a
+ * TS string (`model: 'onegw/execution'`) and a copy of it here is a second
+ * answer to "which model does the demo run" — the same class of drift the
+ * ladder check exists to catch, inside the check itself.
+ *
+ * @returns the models the demo's parseArgs defaults name, and the default route.
+ */
+function modelsDeclaredByDemo() {
+  const text = readFileSync(join(repo, 'demo/cli.ts'), 'utf8')
+  const ids = new Set()
+  for (const m of text.matchAll(/model:\s*'([\w./-]+)'/g)) ids.add(m[1])
+  return ids
+}
 
+/** The demo's `--model` default, as a `provider/model` key. */
+function demoDefaultRoute() {
+  const text = readFileSync(join(repo, 'demo/cli.ts'), 'utf8')
+  const m = /model:\s*'([\w./-]+)'/.exec(text)
+  return m?.[1] ?? ''
+}
+
+/**
+ * The models `test/probe-container.mjs` writes into its own profile.
+ *
+ * The probe composes a profile whose only `llm-pi-ai` row is its own, because
+ * the container's settings import is one-shot and belongs to `dsh-fl`. So this
+ * list — not the container's settings template — decides whether a probe run can
+ * resolve a rung, and it is invisible to every check that only reads YAML.
+ *
+ * @returns the ids the probe's patch declares.
+ */
 /**
  * The route every shipped deployment in this repo must run on.
  *
@@ -157,16 +176,104 @@ const cases = [
  */
 const TESTED_ROUTE = 'onegw/execution'
 
+function modelsDeclaredByProbe() {
+  const text = readFileSync(join(repo, 'test/probe-container.mjs'), 'utf8')
+  const ids = new Set()
+  for (const m of text.matchAll(/'\s+- id: ([\w./-]+)'/g)) ids.add(m[1])
+  return ids
+}
+
+const cases = [
+  {
+    file: 'docker/profile.patch.yml',
+    label: 'the container deployment',
+    ids: dockerIds,
+  },
+  {
+    // The bundle patch ships the DEFAULT spec every deployment inherits, so it
+    // is held to the same declared-id list. When it named `execution` and the
+    // Docker settings did not, this check fired on the very first run — which
+    // is the failure the container already cost a day for.
+    file: 'cordis.patch.yml',
+    label: 'the bundle patch (the shipped defaults)',
+    ids: dockerIds,
+  },
+  {
+    file: 'scripts/make-profile.sh',
+    label: 'the generated local profile',
+    ids: modelsDeclaredByMakeProfile(),
+  },
+  {
+    // The container PROBE. It builds a profile at run time and — because the
+    // settings import is one-shot — that profile gets NO settings of its own, so
+    // llm-pi-ai resolves its rungs against the `models:` list the probe writes
+    // into its own patch. That list was the FIFTH place carrying the dead
+    // concrete ids, and it cost a round of UNKNOWN_MODEL in the container after
+    // the patch row and the settings were both already correct (§1h).
+    //
+    // The ids are read out of the probe source rather than copied, for the same
+    // reason the demo's route is: a copy here is a second answer.
+    file: 'test/probe-container.mjs',
+    label: 'the container probe profile',
+    ids: modelsDeclaredByProbe(),
+    // No ladder of its own: the probe copies `dsh-fl`'s row, so the rung is the
+    // container's. What this case asserts is the half that is its own — that the
+    // route the inherited ladder names is RESOLVABLE from the ids written here.
+    // That is the assertion that was missing, and its absence is why a probe run
+    // died UNKNOWN_MODEL with the patch row and the settings both correct.
+    resolvesOnly: TESTED_ROUTE,
+  },
+  {
+    // The DEMO. Its default route lives in `demo/cli.ts` as a TS string rather
+    // than YAML, so this case reads the default out of the source instead of
+    // adding a second ladder-shaped file.
+    //
+    // It was the FOURTH place to run a model and it carried
+    // `xiaomi/mimo-v2.5` until this branch changed it — while the check above
+    // called all three YAML specs covered. A check that names its own files is a
+    // list, and a list is a promise somebody has to keep; this one is now
+    // derived from the four files the repo actually ships a route in.
+    file: 'demo/cli.ts',
+    label: 'the demo',
+    ids: modelsDeclaredByDemo(),
+    route: demoDefaultRoute(),
+  },
+]
+
 let failed = false
 for (const c of cases) {
   const text = readFileSync(join(repo, c.file), 'utf8')
   const routes = ladderRoutes(text)
   if (routes.length === 0) {
+    if (c.resolvesOnly !== undefined) {
+      if (!c.ids.has(c.resolvesOnly.split('/').pop())) {
+        console.error(
+          `${c.file}: declares no model for the route ${c.resolvesOnly}.\n` +
+          `  declared here: ${[...c.ids].join(', ') || '(nothing)'}\n` +
+          '  this profile has no ladder of its own, so the model list below IS the\n' +
+          `  resolver — a run on ${c.resolvesOnly} dies UNKNOWN_MODEL on step 1.`,
+        )
+        failed = true
+      }
+      continue
+    }
     console.error(`${c.file}: no ladder found — is the block still shaped as provider/model pairs?`)
     failed = true
     continue
   }
   const prices = priceKeys(text)
+  // A YAML ladder is read from the file; a TS default is asserted directly, so
+  // the same "is this the route we run" rule covers both shapes.
+  if (c.route !== undefined) {
+    if (c.route !== TESTED_ROUTE) {
+      console.error(
+        `${c.file}: the default route is ${String(c.route)}, not ${TESTED_ROUTE}.\n` +
+        `  This repo runs on onegw's EXECUTION role alias. See KNOWN-ISSUES §1a.`,
+      )
+      failed = true
+    }
+    continue
+  }
   for (const r of routes) {
     if (!c.ids.has(r.model)) {
       console.error(

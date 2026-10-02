@@ -426,6 +426,44 @@ probe passed
 and the probe profile's composed ladder is `{ provider: onegw, model: execution }`
 — this branch's route, in a container, on a real gated run.
 
+### 1i. The ladder check named three files and the repo has four
+
+**Found by asking the check a question it had never been asked.** Three shipped
+specs are covered — `cordis.patch.yml`, `docker/profile.patch.yml`,
+`scripts/make-profile.sh` — and every one of them was moved to `execution` in
+this branch. The **demo** was not in the list, and it ran `xiaomi/mimo-v2.5` for
+the six months before this branch, which is the exact drift the check exists to
+prevent, sitting in a fourth file nobody had enumerated.
+
+**Why a named list is the weak part.** The check's whole argument is "every
+shipped deployment is covered". That is only true if the enumeration is right,
+and an enumeration is a claim a person has to remember to extend. A row added
+later is invisible by construction.
+
+**Fix.** `demo/cli.ts` is a fourth case, and its answer is *read out of the
+source* — the default is a TS string (`model: 'onegw/execution'`), so the case
+asserts the route rather than parsing a ladder. Copying the route into the check
+would have been a second answer to "which model does the demo run", which is the
+drift class inside the drift check. Proven to fire by putting `xiaomi/mimo-v2.5`
+back: `demo/cli.ts: the default route is xiaomi/mimo-v2.5, not onegw/execution`,
+exit 1.
+
+**And the fifth: the container probe.** `test/probe-container.mjs` composes a
+profile at run time and declares its own `models:` list, because the settings
+import is one-shot and belongs to `dsh-fl` — so that list, not the container's
+settings template, decides whether a probe run can resolve a rung. It had no
+`ladder:` of its own (it copies `dsh-fl`'s row), so the rung side is inherited;
+the resolver side is its own, and it was carrying the dead concrete ids until
+§1h found them by cost. It is a case here too, asserting the half that is its
+own: that the route the inherited ladder names is resolvable from the ids it
+writes. Proven by removing `execution` from the probe's list:
+
+```
+test/probe-container.mjs: declares no model for the route onegw/execution.
+  declared here: opencode/deepseek-v4.1-flash, xai/grok-4.7
+  resolver — a run on onegw/execution dies UNKNOWN_MODEL on step 1.
+```
+
 ### 1. The stylesheet restyled the whole host UI
 
 **Observed:** after the dashboard was folded into the DSH UI, the host's `<body>`
@@ -729,7 +767,7 @@ was run on a **bare clone with only `npm install`** — no harness checkout, no
 | CI's exact typecheck command | exit 0 |
 | `make check` on the bare clone | green — **but it never ran the drift checks**: `check` depended on `test`, which needs the harness packages, and `test`'s exit code was swallowed by a pipe. Corrected in §1f; `make check` now runs CI's list and is green there for the right reason |
 | Does it write to a developer's machine? | **No** — scripts byte-identical after a run, and no `~/.dsh` created |
-| Summary line names its half? | now: `3 shipped specs + 18 local profile(s) under ~/.dsh/profiles` |
+| Summary line names its half? | yes — and it now reads `5 shipped specs`, because the demo and the container probe are cases too (§1i). The `18` was this machine's profile count at the time, not an assertion. |
 
 That last row was a real fix and not a nicety. The script runs in CI *and* on a
 developer's machine, and it was printing `18 local profile(s)` into a CI log
