@@ -777,7 +777,9 @@ That is the whole of it. Spelled out, `make verify` is:
 ```bash
 make ci-tests    # exactly the 21 files CI runs: 298 pass, no harness needed
 make test        # every suite, incl. six needing the harness: 443 pass
-npx tsc --noEmit # clean, all of src/ incl. plugin.ts
+npx tsc --noEmit # CI's file list: clean. plugin.ts needs dsh-llm's types,
+                  # which only a profile's node_modules carries, so it is not
+                  # typechecked here — see scripts/typecheck.sh and §1g
 node scripts/check-ci-shape.mjs                        # CI runs every check
 node scripts/check-test-list.mjs                        # and every pure test
 node scripts/check-typecheck-list.mjs                   # and every harness-free module

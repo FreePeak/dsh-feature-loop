@@ -49,8 +49,18 @@ const EXCLUDED = {
     'the augmentation (TS2664). Typechecked with src/plugin.ts, which imports both.',
   'src/command.ts': 'imports @deepseek-ai/cordis, for the host command registry.',
   'src/index.ts': 'the package entry; imports the harness and src/plugin.ts.',
-  'src/plugin.ts':
+  'src/plugin.ts': [
     'imports four @deepseek-ai/* packages; this is the module the job exists to avoid.',
+    'NOT TYPECHECKED ANYWHERE, verified 2026-10-03: `npx tsc --noEmit` against the',
+    'whole tsconfig reports 11 errors here, all of the form `ctx.on(...)` where the',
+    'event is not on cordis`\'s `Events` — @deepseek-ai/dsh-llm is not published into',
+    'node_modules/@deepseek-ai (15 packages are linked there and it is not one), so its',
+    '`Events` augmentation is absent. `scripts/typecheck.sh` guards on that directory',
+    'existing, the guard is false, and it falls through to this list. So the README',
+    'claimed "clean, all of src/ incl. plugin.ts" for a file no typecheck reaches.',
+    'Corrected in KNOWN-ISSUES §1g; the decision about vendoring the augmentation is',
+    'deliberately left to a maintainer.',
+  ].join('\n    '),
   'src/remote.ts': 'imports @deepseek-ai/cordis and @deepseek-ai/dsh-typert-protocol.',
 }
 

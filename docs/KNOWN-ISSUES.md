@@ -249,6 +249,56 @@ typecheck and all six drift checks with no harness on the path; `make test`
 exits 2 there and 0 in the full worktree. The `check-test-list.mjs` boundary was
 proven in both directions — dropping the demo suite from ci.yml fails it by name.
 
+### 1g. `plugin.ts` is not typechecked by anything, and the README said it was
+
+**Claimed, in the README's own verification block, for months:**
+
+```
+npx tsc --noEmit    # clean, all of src/ incl. plugin.ts
+```
+
+**Measured (2026-10-03):** eleven errors, all in `src/plugin.ts`:
+
+```
+src/plugin.ts(1302,19): error TS2345: Argument of type '"session/event"' is not
+                           assignable to parameter of type 'keyof Events'.
+src/plugin.ts(1318,30): error TS2345: Argument of type '"agent/pre-step"' …
+src/plugin.ts(1318,57): error TS7031: Binding element 'agent' implicitly has 'any' type.
+…                                    (11 in total)
+```
+
+**Why they are there, and why nothing caught them.** `plugin.ts` needs
+`@deepseek-ai/dsh-llm`'s `Events` augmentation, and that package is **not in this
+repo's `node_modules`**. It lives in the harness monorepo under
+`packages/llm/llm-deepseek`, which is not published as `@deepseek-ai/dsh-llm`
+into `node_modules/@deepseek-ai/` — only 15 packages are linked there and it is
+not one of them. So:
+
+- `scripts/typecheck.sh` guards on `[ -d node_modules/@deepseek-ai/dsh-llm ]`,
+  that test is **false**, and the script falls through to CI's file list — which
+  excludes `plugin.ts` by name, with a reason.
+- So `plugin.ts` is typechecked by **nothing**: not CI, not `make check`, not
+  `npx tsc --noEmit`. It typechecks only inside a DSH profile, where the
+  package resolves, and `make profile` does not run a typecheck.
+
+The errors are harmless today — `ctx.on` is `any`-shaped at runtime and the
+events do exist — but the README claimed a clean typecheck of a file that no
+typecheck reaches. That is the same claim-versus-run gap as §1f, one layer up:
+**the number in the docs was copied from the CI list's scope and attributed to
+all of `src/`.**
+
+**What is NOT proposed here:** making `plugin.ts` typecheck in a bare clone
+would mean vendoring the harness's `Events` augmentation — which §"the approval
+seam" already does deliberately, for the one package that owns an event this
+plugin uses. Widening that to `dsh-llm` is a real change with a real
+maintenance cost, and it is the kind of decision a maintainer should make on
+purpose rather than a drive-by fix at the end of a session.
+
+**Fixed here:** the claim. The README now says what `tsc` actually checks, and
+`make check`'s output already said it (`typecheck clean (CI file list;
+plugin.ts needs the harness packages)`) — which is the part that was right and
+the part nobody read.
+
 ### 1. The stylesheet restyled the whole host UI
 
 **Observed:** after the dashboard was folded into the DSH UI, the host's `<body>`
