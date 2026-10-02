@@ -1,6 +1,6 @@
-built: 2026-09-30T22:44:09.195Z
+built: 2026-10-02T03:47:33.075Z
 entry: web/entry.tsx (dashboard + settings, mounted as a DSH UI page)
-client.js: 461 KB
+client.js: 462 KB
 react: 19.3.0
 react-dom: 19.3.0
 assistant-ui/react: 0.15.21
