@@ -725,6 +725,33 @@ Three tests, two proven to fail when the marker is removed. And the honesty
 matters in the naming: the marker says "mixed with the fields below", not "you have
 misconfigured this" — the page cannot know which of the two it is.
 
+**And then the marker was driven in a real browser, which found the other half.**
+Against a running profile with the mixed file above, the tab renders:
+
+```
+When to stop and ask   [review-risky ▾]
+Not one of the postures — the per-tool fields below are what runs.
+Reads never interrupt. A write is reviewed when the loop has no confidence to judge it.
+```
+
+Three more measurements from the same session, because the questions the unit
+tests cannot answer are about the FILE and the OPERATOR:
+
+| action | what the file became |
+|---|---|
+| **Save**, nothing touched | the mixed map, unchanged — the draft comes from `buildStatus`'s merged config, so preservation is by construction and not luck |
+| **Save** on a *partial* map (`{write: auto}`) | unchanged; `edit`/`bash` are still unset, so the gate's own defaults apply and the marker is still on screen |
+| **pick** `approve-every-step`, then Save | the posture's map — `read/glob/grep: auto`, `edit/write/bash: always-approve` |
+
+The third is correct and unsurprising, and the page never said it: a person who
+has hand-set `bash: auto`, sees "mixed", and picks the strict option has just
+discarded their per-tool values without being told. So the hint now says **"Picking
+an option here REPLACES every one of them."** That is the whole UI contract for a
+mixed file — the marker says what is running, this sentence says what the control
+does — and neither half is discoverable without a browser.
+
+Frame: `docs/evidence/settings-mixed.png`.
+
 ### 1. The stylesheet restyled the whole host UI
 
 **Observed:** after the dashboard was folded into the DSH UI, the host's `<body>`
