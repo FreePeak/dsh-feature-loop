@@ -221,18 +221,19 @@ function SettingsPanel({ host }: { host: Host }): React.ReactElement {
       {notice === null ? null : <div className="fl-notice" data-kind={notice.kind}>{notice.text}</div>}
 
       {/*
-        Stated before the fields, not in a dialog: everything below is stored,
-        and the one thing that decides is the profile patch row. A person who
-        sets `write: always-approve` here and then watches a write sail
-        through needs to know WHICH file to edit, and the page is the only
-        place they are looking. Verified 2026-10-01 — `apply()` reads the patch
-        row and nothing else.
+        Stated before the fields, not in a dialog, because it names WHERE the
+        decision comes from — and that sentence was the opposite of the truth
+        for its first three weeks. It said "stored, not applied", accurately:
+        `apply()` read the patch row and nothing else. An honest warning about
+        an unimplemented feature is still shipping the feature, and worse, it
+        teaches the operator the page is a mock.
       */}
       <div className="fl-notice" data-kind="info" role="note">
-        These fields are <strong>stored, not applied</strong>. The gate is built
-        from your profile&rsquo;s <code>cordis.patch.yml</code> row, which is the
-        only place a setting changes behaviour today. The Status section below
-        shows what is stored and which of it the row overrides.
+        These fields are <strong>applied over your profile&rsquo;s</strong>{' '}
+        <code>cordis.patch.yml</code> row, so this file wins wherever the two
+        disagree. They take effect at the next <strong>plugin load</strong> —
+        restart the harness to apply them, since the running gate was built when
+        it booted. The Status section below shows what is stored.
       </div>
 
       <div className="fl-section">

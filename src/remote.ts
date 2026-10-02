@@ -348,6 +348,22 @@ export function validateSettings(settings: FeatureLoopSettings): Record<string, 
   }
   for (const key of NUMERIC_KEYS) {
     const value = clean[key]
+    // `''` means "not set", and every other validator in the harness spells that
+    // that way — so a form field left blank must not be read as a typo. The
+    // settings page sends exactly this: `checkpointAtStep` is `undefined` when
+    // the input is empty, and `String(undefined)` is what the form serialises
+    // when the operator has not touched it.
+    //
+    // Measured 2026-10-03 against the real page in a real browser: with this
+    // check as it was, pressing **Save** on an UNCHANGED panel answered
+    // `save: checkpointAtStep must be a finite number, received ""` and wrote
+    // nothing. Every other field validated, the notice turned red, and a person
+    // reading it concludes the settings page is broken rather than that one
+    // field is optional — which it has always been, in the patch row too.
+    if (value === '' || value === null) {
+      delete clean[key]
+      continue
+    }
     if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value))) {
       throw new Error(`${key} must be a finite number, received ${JSON.stringify(value)}`)
     }

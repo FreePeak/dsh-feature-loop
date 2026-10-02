@@ -162,11 +162,24 @@ rather than carrying its own:
   <img src="docs/screenshots/A4-dashboard-dark.png" alt="The same page in dark theme" width="100%">
 </p>
 
-Configuration lives in the same place:
+Configuration lives in the same place, and it **changes the gate**:
 
 <p align="center">
   <img src="docs/screenshots/A3-settings.png" alt="The Settings tab: status, judge, attention and gate mode" width="100%">
 </p>
+
+The Settings tab writes `~/.config/dshloop/config.yaml`, which is applied **over**
+your profile's `cordis.patch.yml` row — so the file wins wherever the two
+disagree, and the patch row keeps its comments and its role as shared deployment
+configuration. It takes effect at the next **plugin load** (restart the harness),
+because the running gate is built when it boots. `spec`, `dashboard` and
+`optimize` stay in the row: the page offers no control for them.
+
+Verified by clicking it: `make e2e-settings` saves, reads the notice and the
+file; `make e2e-settings-gate` additionally boots a profile after the save and
+requires the refusal. Two defects came out of writing those, both of which had
+been invisible to every unit test — see
+[`docs/KNOWN-ISSUES.md`](docs/KNOWN-ISSUES.md) §1d.
 
 ### It responds to the page, not the window
 
@@ -949,6 +962,7 @@ running profile:
 ```bash
 make e2e-dashboard DSH_URL='…'          # the standalone approval page
 make e2e-in-ui     DSH_URL='…'          # the Feature Loop page, end to end
+make e2e-settings  DSH_URL='…'          # the Settings tab saves, and the file holds it
 ```
 
 ### Four gaps closed along the way

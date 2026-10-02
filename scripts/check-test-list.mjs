@@ -49,8 +49,9 @@ const runBlock = (prose.match(/- name: Run the test suite\n\s+run: [\s\S]*?(?=\n
 const listed = new Set(runBlock.match(/test\/[a-z0-9-]+\.test\.ts/g) ?? [])
 
 // Only `*.test.ts`. The `test/*.mjs` files are opt-in PROBES, not suite
-// members: `e2e-dashboard` and `e2e-in-ui` need a browser, `probe-container`
-// needs a RUNNING container, and `capture-standalone-evidence` writes images.
+// members: `e2e-dashboard`, `e2e-in-ui` and `e2e-settings` need a browser,
+// `probe-container` needs a RUNNING container, and `capture-standalone-evidence`
+// writes images.
 // Counting them here would be a false failure the first time one is added, and
 // the fix would be to widen the pattern — which is how a check starts passing
 // everything. They are named in EXCLUDED-adjacent prose in docker/README.md and
