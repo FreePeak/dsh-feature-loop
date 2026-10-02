@@ -167,6 +167,27 @@ Counting call sites is mechanical and caught all three. A grep for a symbol
 finds its *definition*; it does not find the absence of a caller, and a
 definition with a doc comment above it reads exactly like a feature.
 
+### And the check that found them, run where CI runs it
+
+A check is worth exactly as much as the environment it survives, so this one
+was run on a **bare clone with only `npm install`** — no harness checkout, no
+`DSH_HOME`, and on a second pass with a `$HOME` that has no `.dsh` at all:
+
+| | Result |
+|---|---|
+| All three drift checks, `HOME=/tmp/empty-home` | pass, 0 local profiles |
+| CI's exact test list, 18 files | **277 pass, 0 fail** |
+| CI's exact typecheck command | exit 0 |
+| `make check` on the bare clone | green |
+| Does it write to a developer's machine? | **No** — scripts byte-identical after a run, and no `~/.dsh` created |
+| Summary line names its half? | now: `3 shipped specs + 18 local profile(s) under ~/.dsh/profiles` |
+
+That last row was a real fix and not a nicety. The script runs in CI *and* on a
+developer's machine, and it was printing `18 local profile(s)` into a CI log
+where there are none and the shipped configs are the whole claim. A number in
+a log that does not mean what the log is about is a small lie, and this script's
+whole value is that it is not one.
+
 ## `escalateAfterFailures` was configured everywhere and driven by nothing
 
 **Observed:** every shipped profile sets `escalateAfterFailures: 2`, and the

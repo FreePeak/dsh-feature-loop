@@ -68,7 +68,7 @@ function rules(title: string, rules: readonly string[]): string {
 }
 
 /** The phase that ships in the MVP: fix a bug, end to end. */
-export const BUGFIX_PHASE: Phase = {
+const BUGFIX_PHASE: Phase = {
   name: 'bugfix',
   prompt: [
     'You are fixing one bug. Work in the smallest possible steps and verify every one of them.',
@@ -92,7 +92,7 @@ export const BUGFIX_PHASE: Phase = {
 }
 
 /** The second MVP phase: implement a small feature, end to end. */
-export const FEATURE_PHASE: Phase = {
+const FEATURE_PHASE: Phase = {
   name: 'feature',
   prompt: [
     'You are implementing one small feature. Read before you write, and follow what you find.',

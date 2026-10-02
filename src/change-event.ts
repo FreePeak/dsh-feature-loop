@@ -45,7 +45,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
 }
 
 /** Shortest gap between two change events, in ms. */
-export const CHANGE_EMIT_INTERVAL_MS = 250
+const CHANGE_EMIT_INTERVAL_MS = 250
 
 /**
  * Create a coalescing emitter over a Host context.
