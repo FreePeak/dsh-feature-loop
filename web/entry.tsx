@@ -311,7 +311,10 @@ function SettingsPanel({ host }: { host: Host }): React.ReactElement {
             // this the page said a write is reviewed when the loop has no
             // confidence to judge it, while two of the three write classes were
             // never reviewed at all.
-          hint={(mixedWithFields ? 'Not one of the postures — the per-tool fields below are what runs. ' : '')
+          hint={(mixedWithFields
+            ? 'Not one of the postures — the per-tool fields below are what runs. '
+              + 'Picking an option here REPLACES every one of them. '
+            : '')
             + APPROVAL_MODES[approvalMode].detail}
         >
           <select
