@@ -220,19 +220,35 @@ export const APPROVAL_MODES = {
       edit: 'auto-if-confident', write: 'auto-if-confident', bash: 'auto-if-confident',
     },
   },
-  // `approve-every-step` is the posture the settings page reaches when a hand-
-  // edited file asks about NOTHING (`auto` on every write class) — see
-  // `approvalModeFor`, which classifies it here. So the map below is the OTHER
-  // end of the line: every write class DOES ask. The page offers two postures and
-  // classifies a map onto them by what it asks; a third position, "asks about
-  // nothing", is what the file can express and the two postures cannot, which is
-  // why this label is the one that means the gate is effectively off.
   'approve-every-step': {
     label: 'Approve every step',
     detail: 'Every write, edit and shell command waits for you. Nothing changes without a click.',
     policies: {
       read: 'auto', glob: 'auto', grep: 'auto',
       edit: 'always-approve', write: 'always-approve', bash: 'always-approve',
+    },
+  },
+  /**
+   * The position the two postures above cannot name, and the one a hand-edited
+   * file reaches most easily: every write class is `auto`, so nothing ever
+   * reaches a human.
+   *
+   * It is a mode rather than a warning because `always-approve` is a choice
+   * anybody can make and this is the one a TYPO produces — §1m measured a file
+   * with `write: auto` on a row saying `always-approve`, and the write went
+   * through. Labelling it "Approve every step" is the label that lies in the
+   * dangerous direction, so the page says what it does instead.
+   *
+   * The name is deliberately unflattering, because it is the string a person
+   * reads in a dropdown while deciding how much supervision they want — and the
+   * honest answer is that this one has none.
+   */
+  'never-ask': {
+    label: 'Never ask (gate off)',
+    detail: 'Writes, edits and shell commands run with no approval. Reads never interrupt either.',
+    policies: {
+      read: 'auto', glob: 'auto', grep: 'auto',
+      edit: 'auto', write: 'auto', bash: 'auto',
     },
   },
 } as const
@@ -267,7 +283,8 @@ export type ApprovalModeName = keyof typeof APPROVAL_MODES
  *
  * | every write class | posture |
  * |---|---|
- * | `auto` — none of them asks | `approve-every-step` |
+ * | `auto` — none of them asks | `never-ask` |
+ * | `always-approve` — all of them ask | `approve-every-step` |
  * | anything else, including nothing named | `review-risky` |
  *
  * `auto` is the only value that never reaches a human, so it is the one that
@@ -289,7 +306,9 @@ export type ApprovalModeName = keyof typeof APPROVAL_MODES
 export function approvalModeFor(policies: GatePolicyMap | undefined): ApprovalModeName {
   const writeClasses = GATE_POLICY_CLASSES.filter(c => c !== 'read' && c !== 'glob' && c !== 'grep')
   const silent = writeClasses.filter(c => policies?.[c] === 'auto').length
-  return silent === writeClasses.length ? 'approve-every-step' : 'review-risky'
+  if (silent === writeClasses.length) return 'never-ask'
+  const firm = writeClasses.filter(c => policies?.[c] === 'always-approve').length
+  return firm === writeClasses.length ? 'approve-every-step' : 'review-risky'
 }
 
 /** Every tool class a policy may name, for validation and error messages. */

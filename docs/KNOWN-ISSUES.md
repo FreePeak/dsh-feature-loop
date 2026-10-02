@@ -657,12 +657,33 @@ The page renders `<select value={approvalMode}>`, so a file the operator just
 wrote with `approve-every-step` selected opens showing **the other option**, and
 a Save with nothing touched writes the other policies.
 
-That is not fixable in the classifier: **three positions exist** — asks about
-everything, asks about some, asks about nothing — and two postures cannot name
-the middle one. Adding the third is a UI change with a copy decision attached
-("when to stop and ask" gets three options, not two), so it is recorded here and
-the assertion in `test/remote.test.ts` is the property that CAN hold: the
-classifier never calls a gate "asks about nothing" when something asks.
+**And then it was fixed anyway, because the copy decision turned out to be
+small.** The third position is now a named posture:
+
+| posture | the map it writes | label |
+|---|---|---|
+| `review-risky` | every write class `auto-if-confident` | Review at risky steps |
+| `approve-every-step` | every write class `always-approve` | Approve every step |
+| `never-ask` | every write class `auto` | **Never ask (gate off)** |
+
+`never-ask` is named for what it does rather than for a reassuring reading of it,
+because this is the posture a **typo** produces — §1m measured a hand-edited
+`write: auto` over a row saying `always-approve`, and the write went through.
+Labelling it "Approve every step" is the label that lies in the dangerous
+direction. A test asserts the label and the detail line, so the copy cannot be
+softened without someone failing a test deliberately.
+
+With three postures the round trip **holds**: each maps to itself, so the page's
+`<select value={approvalMode}>` opens on the option the file means and a Save
+with nothing touched writes the same policies back. That round trip is asserted
+in both `test/approval-bridge.test.ts` and `test/remote.test.ts`, and both were
+proven to fail when the posture is folded back in.
+
+The lesson is the one I wrote last round and then did not act on: I recorded
+"three positions exist and two postures cannot name the middle one" as a reason
+to stop, when the thing missing was a NAME, not a mechanism. The copy was an
+hour's work and the decision behind it — does the operator get told the gate is
+off — was the decision worth making, not deferring.
 
 Measured and not assumed: `{write: auto, edit: auto, bash: auto}` -> the write
 succeeded with no approval demanded; `{write: always-approve}` alone ->
