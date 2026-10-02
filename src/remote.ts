@@ -108,8 +108,8 @@ export function userSettings(rowConfig: Record<string, unknown> = {}): Record<st
     const value = settings[key]
     if (value === undefined) continue
     if (key === 'reviewBudget' || key === 'judgeThreshold') {
-      if (typeof value !== 'number' || !Number.isFinite(value)) continue
-      out.router = { ...(out.router as Record<string, unknown> | undefined ?? {}), [key]: value }
+      const num = usableNumber(key, value)
+      out.router = { ...(out.router as Record<string, unknown> | undefined ?? {}), [key]: num }
       continue
     }
     if (key === 'gatePolicies') {
@@ -120,6 +120,44 @@ export function userSettings(rowConfig: Record<string, unknown> = {}): Record<st
     out[key] = value
   }
   return out
+}
+
+/**
+ * Whether a numeric settings value is one this file can act on.
+ *
+ * Both router keys go through `userSettings`, which DROPS a non-number rather
+ * than forwarding it — so `reviewBudget: "x"` is discarded and the row's own
+ * `0.1` stands. That is the fail-closed direction and it is already what
+ * happens; what was missing is that it happened SILENTLY. Measured 2026-10-03 on
+ * a generated profile, and the two shapes behave differently on purpose:
+ *
+ *   reviewBudget: 0     -> the plugin THROWS and the run exits 1
+ *   reviewBudget: "x"   -> the value is dropped, the run answers
+ *
+ * The first is right: a number outside `(0, 1]` reaches `AttentionRouter`, which
+ * rejects it loudly and the operator sees why. The second is right too — but the
+ * operator who typed `"x"` gets no sentence saying it was ignored. So the
+ * numeric keys are validated HERE, with the same band `AttentionRouter` uses, and
+ * a value outside it is thrown with that sentence rather than dropped.
+ *
+ * @param key - the settings key.
+ * @param value - whatever the file held under it.
+ * @returns the number, when the value is one the plugin can use.
+ * @throws Error naming the key and the accepted band.
+ */
+function usableNumber(key: string, value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(
+      `settings: ${key} must be a finite number, received ${JSON.stringify(value)}. `
+      + 'The Feature Loop settings page writes one; a hand-edited file must match.',
+    )
+  }
+  if (key === 'reviewBudget' && (value <= 0 || value > 1)) {
+    throw new Error(
+      `settings: reviewBudget must be in (0, 1], received ${String(value)}.`,
+    )
+  }
+  return value
 }
 
 /**

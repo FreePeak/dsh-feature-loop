@@ -168,6 +168,46 @@ test('the merged gate is the FILTERED one, so the row cannot be widened by a typ
   })
 })
 
+// The router keys reach AttentionRouter, which rejects reviewBudget outside
+// (0, 1]. A number outside the band already fails loudly; a STRING was dropped
+// in silence, so a hand-edited `reviewBudget: "x"` left the row's own 0.1 in
+// place with nothing said about it. Both now say the same sentence.
+
+test('a non-numeric router key throws, naming the key', async () => {
+  await withConfigHome((_home, path) => {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, 'reviewBudget: "x"\n')
+    assert.throws(() => userSettings(), /reviewBudget must be a finite number, received "x"/)
+  })
+})
+
+test('a router key outside AttentionRouter\'s own band throws with THAT band', async () => {
+  await withConfigHome((_home, path) => {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, 'reviewBudget: 0\n')
+    assert.throws(() => userSettings(), /reviewBudget must be in \(0, 1\], received 0/)
+  })
+})
+
+test('a negative threshold is allowed — only reviewBudget has a band', async () => {
+  await withConfigHome((_home, path) => {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, 'judgeThreshold: 0\n')
+    // `judgeThreshold` is a 0–3 score, not a fraction: clamping it here would be
+    // a second policy layer, and the gate already treats a score below the bar
+    // as a reason to ask.
+    assert.deepEqual(userSettings(), { router: { judgeThreshold: 0 } })
+  })
+})
+
+test('a valid router key still reaches the merge', async () => {
+  await withConfigHome((_home, path) => {
+    saveSettings({ reviewBudget: 0.25 }, path)
+    const merged = mergeRowAndSettings({ reviewBudget: 0.1, judgeThreshold: 2 })
+    assert.deepEqual(merged.router, { reviewBudget: 0.25, judgeThreshold: 2 })
+  })
+})
+
 // The panel and the gate must never disagree about precedence. `buildStatus`
 // used to merge `{...rowConfig, ...settings}` on its own while `apply` consulted
 // the row alone — so a value could be rendered as effective and decide nothing.
@@ -269,11 +309,19 @@ test('the file cannot reach spec, dashboard or optimize — the page offers no c
   })
 })
 
-test('a non-numeric router key is dropped rather than forwarded as a string', async () => {
+// This one was written when a non-numeric router key was DROPPED, which is the
+// fail-closed direction and still is for `gatePolicies`. A DROPPED key is
+// different from a THROWN one only in whether the operator is told, and being
+// told is the whole point of a setting file a human typed by hand — so the
+// router keys throw (see the four cases added below) while an unrecognised
+// POLICY entry is still dropped. Both are right for their own reason; this
+// comment is here so the asymmetry reads as a decision rather than an oversight.
+test('a non-numeric POLICY VALUE is still dropped, not thrown', async () => {
   await withConfigHome((_home, path) => {
     mkdirSync(dirname(path), { recursive: true })
-    writeFileSync(path, 'reviewBudget: not-a-number\ngateMode: ask\n')
-    assert.deepEqual(userSettings(), { gateMode: 'ask' })
+    writeFileSync(path, 'gatePolicies:\n  write: not-a-policy\ngateMode: ask\n')
+    assert.deepEqual(userSettings(), { gateMode: 'ask' },
+      'a bad policy restores the row\'s own; it cannot widen the gate, so silence is safe')
   })
 })
 
