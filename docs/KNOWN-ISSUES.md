@@ -621,10 +621,29 @@ oversight until they are stated:
 | bad value | behaviour | why |
 |---|---|---|
 | `gatePolicies: {write: not-a-policy}` | **dropped** | it cannot widen the gate — the row's own policy stands — so silence is safe |
-| `reviewBudget: "x"` | **thrown** | it silently changes how often a human is asked, and nothing else would say so |
+| `reviewBudget: "x"`, `gateMode: maybe` | **thrown** | it silently changes how often a human is asked, or which posture the gate takes, and nothing else would say so |
 
 A test asserts each half, and the `gatePolicies` one is the earlier case
 restated with its reasoning attached rather than quietly rewritten.
+
+**And then the same question was asked of the other five keys**, because fixing
+two is not a pattern. Measured, each of these passed straight through
+`userSettings` unexamined: `confidenceThreshold: "high"`, `checkpointAtStep:
+soon`, `judge: telepathy`, `systemOneModel: 7`, `gateMode: maybe`. Every one of
+them was the safe direction **by luck** — `gateMode === 'deny'` is the only
+branch, so anything unrecognised is `ask`, and a non-number router key fell
+through to the row's value.
+
+So the constrained keys are in one table — `gateMode`, `judge`,
+`confidenceThreshold`, `checkpointAtStep` — and `systemOneModel` is
+deliberately **absent** from it: it is a provider's own alias, this repo cannot
+know the set, and a table that listed it would be a check that forbids the
+truth. A test asserts that absence, because "why isn't this one checked?" is the
+question the next reader asks.
+
+Five tests, two proven to fail when the table is disconnected. The general form:
+**a hand-edited file is validated by the page's validator only when the page
+wrote it.** One table, checked at the one function every consumer goes through.
 
 ### 1. The stylesheet restyled the whole host UI
 

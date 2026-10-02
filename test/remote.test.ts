@@ -208,6 +208,54 @@ test('a valid router key still reaches the merge', async () => {
   })
 })
 
+// Every constrained key is checked HERE, because a hand-edited file reaches the
+// gate through userSettings and through nothing else — saveSettings validates
+// the page's own writes. Measured 2026-10-03 with `gateMode: maybe`: accepted,
+// the gate fell through to `ask` (safe), the write refused, and nothing said the
+// word was not one anybody understands.
+
+test('an unrecognised gateMode is refused with both values named', async () => {
+  await withConfigHome((_home, path) => {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, 'gateMode: maybe\n')
+    assert.throws(() => userSettings(), /gateMode must be one of ask, deny, received "maybe"/)
+  })
+})
+
+test('an unrecognised judge is refused, with the three kinds named', async () => {
+  await withConfigHome((_home, path) => {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, 'judge: telepathy\n')
+    assert.throws(() => userSettings(), /judge must be one of none, chat, laya, received "telepathy"/)
+  })
+})
+
+test('confidenceThreshold and checkpointAtStep must be numbers', async () => {
+  await withConfigHome((_home, path) => {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, 'confidenceThreshold: "high"\ncheckpointAtStep: soon\n')
+    assert.throws(() => userSettings(), /confidenceThreshold must be a finite number/)
+  })
+})
+
+test('an UNCONSTRAINED key is not invented into a rule', async () => {
+  await withConfigHome((_home, path) => {
+    // `systemOneModel` is a provider's own alias — this repo cannot know the
+    // set, so a table that listed it would be a check that forbids the truth.
+    saveSettings({ systemOneModel: 'my-local-laya' }, path)
+    assert.deepEqual(userSettings(), { systemOneModel: 'my-local-laya' })
+  })
+})
+
+test('every valid value the page can write passes through', async () => {
+  await withConfigHome((_home, path) => {
+    saveSettings({ gateMode: 'deny', judge: 'chat', confidenceThreshold: 1.5, checkpointAtStep: 4 }, path)
+    assert.deepEqual(userSettings(), {
+      gateMode: 'deny', judge: 'chat', confidenceThreshold: 1.5, checkpointAtStep: 4,
+    })
+  })
+})
+
 // The panel and the gate must never disagree about precedence. `buildStatus`
 // used to merge `{...rowConfig, ...settings}` on its own while `apply` consulted
 // the row alone — so a value could be rendered as effective and decide nothing.
