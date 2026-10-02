@@ -96,7 +96,20 @@ const PROBE_ROWS = [
   '        apiKeyEnv: ONEGW_API_KEY',
   '        api: openai-completions',
   '        baseURL: ' + (process.env.ONEGW_BASE_URL ?? 'http://host.docker.internal:8080/v1'),
+  // `execution` FIRST, and it is the route every shipped deployment in this
+  // repo uses (cordis.patch.yml, docker/profile.patch.yml,
+  // scripts/make-profile.sh, the demo). The probe's own profile has to declare
+  // it: the settings import is one-shot, so a second profile gets NO settings of
+  // its own and llm-pi-ai resolves rungs against the list right here.
+  //
+  // This probe was the third place to carry the dead concrete ids, and it is
+  // why the container ran `UNKNOWN_MODEL` on 2026-10-03 even with the patch row
+  // and the settings both declaring `execution` correctly.
   '        models:',
+  '          - id: execution',
+  '            name: execution',
+  '            contextWindow: 200000',
+  '            maxTokens: 32000',
   '          - id: opencode/deepseek-v4.1-flash',
   '            name: opencode/deepseek-v4.1-flash',
   '          - id: xai/grok-4.7',

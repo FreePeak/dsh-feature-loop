@@ -168,7 +168,28 @@ or telemetry code. See the dashboard section of the root README.
 | `DSH_HOST_PORT` | no | Host port. Defaults to `3090`. |
 | `DSH_DASHBOARD_PORT` | no | Host port for the approval dashboard. Defaults to `3092` (container-internal 8100). |
 | `DSH_PROFILE` | no | Profile name. Defaults to `dsh-fl`. |
-| `FORCE_REINIT` | no | `1` re-seeds the profile and activation patch from the image — **required once** if the volume predates the dashboard. |
+| `FORCE_REINIT` | no | `1` re-seeds the profile, the activation patch **and `settings.yaml`** from the image — **required once** if the volume predates the dashboard, and required again after any change to the shipped `settings.template.yaml`. It removes `settings.yaml.imported` too, because the harness renames a legacy settings file on first import and that marker otherwise makes the re-render unreachable forever. Without this the patch row and the resolver can disagree: the patch says `model: execution` while the settings still declare other ids, and the run dies `UNKNOWN_MODEL` on step 1. |
+| `NPM_REGISTRY` | no | A registry **build argument**, empty by default. Set it behind a filtered network: `NPM_REGISTRY=https://registry.npmmirror.com docker compose … build`. Both Dockerfile stages take it, because every install in the image needs it. Not a committed `.npmrc` line on purpose — see the note below. |
+
+### Behind a network that filters npmjs
+
+Measured 2026-10-03 on a path where `registry.npmjs.org` was unreachable: TCP to
+Cloudflare's edge connects, DNS resolves, `github.com` answers, and the **TLS
+handshake stalls only for npmjs SNIs** (`openssl s_client` succeeds for
+`example.com` and `registry.yarnpkg.com` on the same address). So
+`npm install`, `pnpm install` and every `docker build` here appear to **hang**
+rather than fail — which is what makes it expensive to diagnose.
+
+`NPM_REGISTRY` is a build argument rather than a `.npmrc` line because a mirror
+baked into a committed file silently changes where every package on every
+developer's machine comes from. If your network filters npmjs, export the mirror
+for the build:
+
+```bash
+NPM_REGISTRY=https://registry.npmmirror.com docker compose -f docker/docker-compose.yml build
+```
+
+The default build — no argument — is unchanged.
 
 ### The gateway address is the one thing that usually needs changing
 
