@@ -312,8 +312,9 @@ function SettingsPanel({ host }: { host: Host }): React.ReactElement {
             // confidence to judge it, while two of the three write classes were
             // never reviewed at all.
           hint={(mixedWithFields
-            ? 'Not one of the postures — the per-tool fields below are what runs. '
-              + 'Picking an option here REPLACES every one of them. '
+            ? 'Not one of the postures, and this page has no per-tool fields: '
+              + 'it lives in ~/.config/dshloop/config.yaml. Picking an option here '
+              + 'REPLACES every class in that file. '
             : '')
             + APPROVAL_MODES[approvalMode].detail}
         >
