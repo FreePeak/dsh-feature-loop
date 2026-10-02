@@ -55,6 +55,38 @@ transport, and `test/llm.test.ts` pins that.
 labelled `onegw/execution`, against the live gateway. Both new assertions were
 proven to FIRE by reverting each one and watching it fail, not merely to pass.
 
+### 1b. `peers resolved` was reported as "your profile is ready"
+
+**Observed:** `scripts/make-profile.sh` printed `==> peers resolved (10 harness
+packages on the plugin's entry)` and `==> compose check` passed, then a real
+`dsh headless` run on that profile wrote the file it was asked for with
+**nothing gated**. The boot carried one line of warning —
+`feature-loop (@freepeak/dsh-feature-loop): failed to import` — and the loader
+continued past it, which is by design.
+
+**Why:** two necessary conditions were being read as a sufficient one. The peers
+resolve, so the plugin is inert. The cause was `lib/` absent from the installed
+copy: the package ships built ESM in `lib/`, `lib/` is `.gitignore`d, and a
+`file:` dependency installs whatever happens to be on disk — so an unbuilt
+checkout yields a profile whose plugin cannot import, and whose diagnostics
+name neither the plugin nor the operator. The script's pre-flight guard
+compounded it: it *refused* ("`$REPO/lib` is missing — run `pnpm build` first")
+instead of building, turning a fixable state into a dead end.
+
+**Fix:** the script now builds `lib/`, then imports the package FROM INSIDE
+the profile — the only place its `@deepseek-ai/*` peers resolve — and exits
+non-zero naming the fix if either step fails. That is the check that turns "the
+row composed" into "the module loads". `docker/Dockerfile` has run the same
+import since the container shipped with the same silent failure.
+
+**Verified:** the failure reproduced by removing `lib/` from an installed
+profile (`import FAILED: Cannot find module .../lib/index.mjs`) and the pass
+after restoring it; then a real run on a generated profile with the gate live —
+`write` raised `REVIEW REQUESTED (policy): write: irreversible is always
+approved by a human.`, Allow once produced the file, Reject did not. The two
+`docs/evidence/in-ui-*.png` frames were re-taken against that run, because the
+committed ones came from a boot where nothing was gated.
+
 ### 1. The stylesheet restyled the whole host UI
 
 **Observed:** after the dashboard was folded into the DSH UI, the host's `<body>`
