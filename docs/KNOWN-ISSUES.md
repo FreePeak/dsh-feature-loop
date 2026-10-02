@@ -87,6 +87,33 @@ approved by a human.`, Allow once produced the file, Reject did not. The two
 `docs/evidence/in-ui-*.png` frames were re-taken against that run, because the
 committed ones came from a boot where nothing was gated.
 
+### 1c. `make profile` hung for nine minutes with the registry unreachable
+
+**Observed:** `bash scripts/make-profile.sh webz --port 4596` printed
+`==> install (pnpm 9 …)` and then produced nothing at all — no error, no
+progress, no timeout, for nine minutes. Every other network in the box was fine.
+
+**Why:** the install was not slow, it was waiting. Measured: the pnpm process
+burned **1.2 seconds of CPU across those nine minutes**, and `sample` put every
+one of its threads in `uv__io_poll` on five half-open sockets to
+`104.16.x:443`. TCP to that address connected, `github.com` answered 200, DNS
+resolved — the stall is the **TLS handshake after connect**, which pnpm sits on
+until its own fetch timeout with no output. To a person watching the terminal
+this is indistinguishable from a hung script, and the useful question ("is the
+network down or is my config wrong?") has no answer in the output.
+
+**Fix:** `--prefer-offline` on the install. Every package a profile needs is
+already in the local store from a previous profile, so pnpm resolves from disk
+and touches the network only for what is genuinely missing. The same install
+against the warm store now finishes in **1.4s**; a full `make profile` for the
+web app is **1m47s** end to end including the build and the in-profile import.
+
+The general form of this bug, and the fourth instance of it in this file: a
+silent failure that is *silent about being silent*. The plugin that failed to
+import, the ladder rung that resolved but was never tested, the profile that
+composed with nothing gated — none of them printed the thing that would have
+identified them. A hang is the same failure wearing a different mask.
+
 ### 1. The stylesheet restyled the whole host UI
 
 **Observed:** after the dashboard was folded into the DSH UI, the host's `<body>`
