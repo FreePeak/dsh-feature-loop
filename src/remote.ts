@@ -117,9 +117,48 @@ export function userSettings(rowConfig: Record<string, unknown> = {}): Record<st
       if (policies !== undefined) out.gatePolicies = policies
       continue
     }
+    if (key === 'confidenceThreshold' || key === 'checkpointAtStep') {
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        throw new Error(
+          `settings: ${key} must be a finite number, received ${JSON.stringify(value)}. `
+          + 'The Feature Loop settings page writes one; a hand-edited file must match.',
+        )
+      }
+      out[key] = value
+      continue
+    }
+    const rule = KEY_RULES[key]
+    if (rule?.values !== undefined && !rule.values.includes(value as string)) {
+      throw new Error(
+        `settings: ${key} must be one of ${rule.values.join(', ')}, received ${JSON.stringify(value)}. `
+        + 'The Feature Loop settings page writes one; a hand-edited file must match.',
+      )
+    }
     out[key] = value
   }
   return out
+}
+
+/**
+ * One file key's accepted values, and whether the value must be a number.
+ *
+ * A hand-edited file reaches the gate through this function and through nothing
+ * else — `saveSettings` validates the page's own writes and never sees it. Every
+ * key the page offers is therefore checked here, with the same values the page
+ * can produce, so a typo is answered rather than forwarded. Measured 2026-10-03
+ * with `gateMode: maybe`: the plugin accepted it, the gate fell through to
+ * `ask` (the safe default), the write was refused — and nothing anywhere said
+ * the word `maybe` was not one anybody understands. The refusal was luck again:
+ * `gateMode === 'deny'` is the only branch, so anything unrecognised is `ask`.
+ *
+ * ponytail: a table, because the alternative is a switch with the same six
+ * cases and no place to write why each one is what it is.
+ */
+const KEY_RULES: Record<string, { values?: readonly string[], numeric?: boolean }> = {
+  gateMode: { values: ['ask', 'deny'] },
+  judge: { values: ['none', 'chat', 'laya'] },
+  confidenceThreshold: { numeric: true },
+  checkpointAtStep: { numeric: true },
 }
 
 /**
