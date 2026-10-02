@@ -514,6 +514,46 @@ reporting nonsense on the first run:
 
 A check that cannot fail is worse than no check, and this one did.
 
+### 13. A "skipped" profile is not a checked profile
+
+**Found 2026-10-02.** `scripts/check-ladder-models.mjs` reported four of the
+eighteen local profiles as `skipped — no models declared here` and moved on.
+Two of them (`flsdk`, `headless`) declare a ladder rung naming `onegw`, and
+**neither declares an `llm-pi-ai` row, and `~/.dsh` declares none either** — the
+composed `--dump-config` for `flsdk` shows the row with no `config:` at all.
+
+So those profiles carry exactly the defect this check was written to find — a
+rung whose provider is not configured — and the check called it *skipped*.
+
+**Why the earlier version was right to be silent, and why it is now wrong:**
+it could not read a profile's `settings.yaml`, so it could not know whether
+`onegw` was configured there. That is still true. What it CAN know is which
+PROVIDER the rungs name, and that `dsh-base` ships
+`agent-default-model: deepseek-official/deepseek-flash` — so a rung naming any
+*other* provider is unresolved unless something outside this file says
+otherwise. The check now names the rung, names the provider, and says the one
+sentence that matters:
+
+```
+profile flsdk: rung onegw/opencode/deepseek-v4.1-flash names provider onegw,
+and this profile declares no llm-pi-ai row of its own. Its model list lives
+in settings, which this check does not read — verify that provider is
+configured there, or the run dies UNKNOWN_MODEL.
+```
+
+Two profiles (`flheadless`, `flproof`) name `deepseek-official`, which IS the
+harness default, and are correctly silent. So the line distinguishes the two
+cases by arithmetic, not by a guess.
+
+**The lesson, which is now four deep in this file:** a check that cannot verify
+a thing must not be silent about it, because silence and a pass are
+indistinguishable in an exit code. Every previous instance here was a skip
+(`no models declared here`, `change-event.ts` in the typecheck list, an
+exclusion note that was never tested) read as "nothing to see".
+
+Not fixed in the profiles themselves — they are the developer's own machines and
+not this package's business. Fixed in the check, which is.
+
 ## CLOSED 2026-10-02 — CI was running 138 of 277, and said so once asked
 
 **Found 2026-10-01. Cause never identified. Closed by measuring instead.**
