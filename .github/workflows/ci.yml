@@ -136,6 +136,25 @@ jobs:
       - name: Every accepted-but-unconsulted config key is labelled a no-op
         run: node scripts/check-noop-config-keys.mjs
 
+      # One file per process, in a loop, and the list is the SAME list
+      # `scripts/check-test-list.mjs` reads. Two reasons, and the second is the
+      # reason this changed at all:
+      #
+      #   1. a file that fails to load, or that loads and is then dropped,
+      #      must not take the other eighteen down with it — one failure, one
+      #      file, one line of output.
+      #
+      #   2. passing 19 paths to one `node --test` made CI report 138 tests
+      #      where the same command on the same node (v22.23.3), the same
+      #      tree and no node_modules runs 277 here. Nothing failed; eight of
+      #      the nineteen files simply never appeared in the log. Which eight
+      #      is not explained by anything reproducible from here, so rather
+      #      than ship a job whose own count is a mystery, each file is run on
+      #      its own and the total is counted from the per-file output. If the
+      #      gap is a batching bug, the loop cannot reproduce it; if it is a
+      #      file that does not load, the loop says which one, by name.
+      #
+      # KNOWN-ISSUES records the measurement and what was ruled out.
       - name: Run the test suite
         run: node --experimental-strip-types --test \
           test/agent-policy.test.ts test/approval-bridge.test.ts test/approvals.test.ts test/brief.test.ts \
@@ -154,6 +173,27 @@ jobs:
           test/questioner.test.ts \
           test/policy.test.ts test/refine.test.ts test/runlog.test.ts \
           test/runner.test.ts test/start-target.test.ts test/tools.test.ts
+        run: |
+          total=0
+          for f in \
+            test/agent-policy.test.ts test/approval-bridge.test.ts \
+            test/approvals.test.ts test/assistant-ui.test.ts test/brief.test.ts \
+            test/budget.test.ts test/envelope.test.ts test/explainer.test.ts \
+            test/judge.test.ts test/metrics.test.ts test/optimize.test.ts \
+            test/optimizer.test.ts test/questioner.test.ts test/policy.test.ts \
+            test/refine.test.ts test/runlog.test.ts test/runner.test.ts \
+            test/start-target.test.ts test/tools.test.ts ; do
+            echo "::group::$f"
+            out=$(node --experimental-strip-types --test "$f" 2>&1) || {
+              echo "$out"
+              echo "::error::$f FAILED"
+              exit 1
+            }
+            echo "$out"
+            echo "::endgroup::"
+            total=$((total + $(printf '%s\n' "$out" | sed -nE 's/^# pass ([0-9]+)$/\1/p')))
+          done
+          echo "== $total tests passed across 19 files" 
 
   typecheck:
     name: typecheck (harness-free src/ modules)
