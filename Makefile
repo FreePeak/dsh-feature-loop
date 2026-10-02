@@ -196,6 +196,7 @@ rmi: ## Remove the container image
 # ── checks (no container required) ─────────────────────────────────────────
 .PHONY: check
 check: test typecheck ## Run the test suite, the typecheck, and the config drift checks
+	@node scripts/check-ci-shape.mjs
 	@node scripts/check-test-list.mjs
 	@node scripts/check-ladder-models.mjs
 	@node scripts/check-dead-exports.mjs
