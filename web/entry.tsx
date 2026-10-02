@@ -105,6 +105,19 @@ function remoteSource(host: Host): DashboardSource {
       // card with live buttons. See assertSettleAccepted.
       assertSettleAccepted(await svc.answer(id, outcome, feedback))
     },
+    // Added with `DashboardSource.status?()` in mind, and it is what makes the
+    // `failed` brief state renderable at all on THIS surface: the page asks
+    // whether `dashboard.brief.enabled` is set, and without this method the
+    // answer is always "unknown", so a deployment that turned briefs on and
+    // whose model call failed saw nothing. The remote has had `status()` since
+    // the settings page shipped; `remoteSource` simply never forwarded it.
+    async status() {
+      const svc = host.get('remote.featureLoop')
+      if (svc === undefined) throw new Error('feature-loop host remote is not mounted')
+      const answer = await svc.status()
+      if (!answer.ok) throw new Error(answer.error.message)
+      return { config: answer.value.config }
+    },
   }
 }
 
