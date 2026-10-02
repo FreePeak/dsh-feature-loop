@@ -882,6 +882,33 @@ old ones were close enough.
 every other entry here is: a reader who arrives at the old number needs to see
 that it was wrong and why, not to find a gap.
 
+**And the four re-runs turned up a defect the table could never show.** Running
+the demo plants the bug (`reset.sh`) and the loop fixes it — so the tree after a
+run is not the tree before it, and a SECOND run starts by planting the bug again.
+Measured, on the two shapes where that survives:
+
+| | no trap | with the trap |
+|---|---|---|
+| `demo/run.sh --max-steps 2` (ceiling, never reaches the fix) | `budget-stop` exit 1, **bug planted**, `git status` dirty | exit 1, bug restored, clean |
+| `Ctrl-C` partway through | exit **-2**, **bug planted**, dirty | exit **130**, bug restored, clean |
+
+So `demo/run.sh` now restores the one file the loop is allowed to change, on
+every exit path. Two details that had to be right for it to work at all:
+
+- **`exec` had to go.** `exec node …` replaces the shell, so the EXIT trap would
+  never have fired — the restore would have been the one part of the file that
+  silently did nothing. node runs as a child now and the script's exit status is
+  propagated explicitly, which is what the `-2` / `130` difference above records:
+  130 is bash reporting an interrupt it handled, -2 is the signal arriving with
+  nothing to handle it.
+- **`trap … EXIT INT TERM`,** because the case a person actually hits is Ctrl-C,
+  and a demo that leaves the tree dirty after the case somebody stopped watching
+  is the worst possible place for it.
+
+The bug is *restored*, not the tree: `git checkout --` on one named file. A
+stash would also swallow whatever else the loop wrote, and this demo's whole point
+is that its output is disposable.
+
 ### 1. The stylesheet restyled the whole host UI
 
 **Observed:** after the dashboard was folded into the DSH UI, the host's `<body>`
