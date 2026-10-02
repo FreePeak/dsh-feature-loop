@@ -293,7 +293,7 @@ estimate is now **denied** rather than dispatched.
   attempt from `agent/request` usage. **This is the largest correctness gap.**
 - **`run_tests` timeouts kill the direct child, not grandchildren** (marked
   `ponytail:` in `tools.ts`; upgrade path is detached spawn + `kill(-pid)`).
-- **The price table is an estimate.** `mimo-v2.5` runs on a subscription plan,
+- **The price table is an estimate.** the gateway runs on a subscription plan,
   so marginal cost is near zero; the rates in `cli.ts` are illustrative and
   exist so the ceiling has something to measure against.
 
