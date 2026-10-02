@@ -546,25 +546,36 @@ The 139-test gap is exactly the tests of the eight files
 appearing anywhere in the CI log. The other eleven files' tests are all
 there.
 
-**What this costs:** not correctness — nothing is failing — but
-confidence. A CI job that reports 138 tests is not visibly checking the
-half it skipped, and `scripts/check-test-list.mjs` can only see list
-MEMBERSHIP. It cannot see that a listed file ran nothing, which is the
-same class of blindness as every other check here before it, one level up.
+The exact split, re-measured on run `36971045027` (SHA `a406b90`):
 
-**What would settle it,** in the order I would try:
-1. `node --test --test-reporter=tap` in the step, and count `# Subtest:` lines
-   rather than the summary — the summary is what disagrees.
-2. `--test-concurrency=1`, in case parallel file runners on the hosted
-   runner are dropping files (it would show as a hang or a timeout, so this
-   is the weaker hypothesis, but it is one line).
-3. Run the list through a shell loop so each file's result is separately
-   visible. Three lines, and it turns "138" into "277 across 19 files"
-   even if the cause is never found.
+| ran in CI | contributed nothing |
+|---|---|
+| approval-bridge, assistant-ui, brief, envelope, explainer, optimize, optimizer, refine, runlog, start-target, tools | agent-policy, approvals, budget, judge, metrics, policy, questioner, runner |
 
-Until then: **treat the `test` job's count as a lower bound.** The full
-405-test suite runs locally via `make check`, and `make verify` is the
-gate this branch was built on.
+**Resolved by not resolving it.** The step now runs **one file per process,
+in a shell loop**, and sums the per-file `# pass` counts:
+
+```
+== 277 tests passed across 19 files
+```
+
+Run locally it reports 277 — the number the single `node --test` invocation has
+always given here. Run in CI it will report 277 **if** the batched form was the
+cause, and it will name the offending file if it was not, because each file's
+output is its own `::group::`. Either way the count is arithmetic the step
+performed itself, not a summary a batching bug produced.
+
+The batching is also gone for a reason that is not this puzzle: with 19 paths in
+one invocation, a file that fails to *load* takes the other eighteen with it.
+One file, one process, one line of output.
+
+Both properties verified locally: the loop totals 277 across the 19 files, and a
+deliberately failing file stops the loop at that file with `# fail 1` and exits
+non-zero.
+
+Until CI answers, the honest statement stands: **the batched step reported 138
+and nothing failed**, and the file list was not the problem — the list is correct,
+and 19 of 19 files exist in the checked-out SHA.
 
 ## Re-checked 2026-10-01 — the permission-preset trap, and what actually triggers it
 
