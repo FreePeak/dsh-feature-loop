@@ -36,7 +36,6 @@ const EXCLUDED = {
   'test/plugin-approval.test.ts': 'imports src/plugin.ts',
   'test/plugin-wiring.test.ts': 'imports src/plugin.ts — it exists to test that wiring',
   'test/remote.test.ts': 'imports src/remote.ts, which imports @deepseek-ai/cordis',
-  'test/start-target.test.ts': 'pure, but it reads web/start-target.ts as TEXT (no import) — see below',
   'test/change-event.test.ts': 'imports src/change-event.ts, which augments two @deepseek-ai modules',
 }
 
