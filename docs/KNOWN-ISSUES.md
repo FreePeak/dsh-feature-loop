@@ -147,6 +147,45 @@ store key for a `_@deepseek-ai+…` suffix.
 
 ---
 
+## Two dead branches in one module, found by asking a different question
+
+Last round's finding came from asking *"is this documented behaviour actually
+wired"*. Asking it again over the whole policy surface — enumerate every
+exported function and method in `src/`, count call sites outside its own
+definition — found two more, and the second one is the better story.
+
+### 14. A rung change was recorded and never announced
+
+`escalationForStep` was exported from `src/plugin.ts` and documented as
+*"announce an escalation, if the ladder moved the route this step"*. No caller
+outside the export list. So a DSH deployment moved rungs without the **model**
+being told: the dashboard showed `ROUTE` changing, the transcript showed
+nothing, and a model handed a harder turn with no warning is a model reasoning
+from a conversation that has suddenly stopped making sense. The standalone
+runner has done this correctly all along.
+
+The channel is `agent/pre-step`, not `agent/request`, and getting that wrong is
+instructive: the first attempt put the notice in the `agent/request` handler
+and **typechecked cleanly**, because that hook returns an `LlmCallConfig`
+(`{provider, model}`) — it has no `messages` for a caller to splice, so a
+notice appended there is dropped without any error anywhere. A notice that
+disappears quietly is exactly the failure this branch existed to prevent, in a
+place nobody was looking.
+
+### 15. `budget.stopNotice` — deleted rather than wired
+
+`LoopBudget.stopNotice` was a second, shorter wording of the message
+`budgetStopText` in `messages.ts` already builds, and which both the runner and
+the plugin actually use. It had no caller. It is **deleted**, not wired: two
+wordings for one event is drift waiting to happen, and the one that reached a
+model was the one nobody had been reading.
+
+### The method, since it now has three instances
+
+Counting call sites is mechanical and caught all three. A grep for a symbol
+finds its *definition*; it does not find the absence of a caller, and a
+definition with a doc comment above it reads exactly like a feature.
+
 ## `escalateAfterFailures` was configured everywhere and driven by nothing
 
 **Observed:** every shipped profile sets `escalateAfterFailures: 2`, and the
