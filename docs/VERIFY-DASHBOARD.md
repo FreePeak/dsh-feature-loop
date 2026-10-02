@@ -127,7 +127,7 @@ e2e-dashboard (rejected): the Reject click resolved the ask rejected
 
 The UI moved from OpenUI to [assistant-ui](https://github.com/assistant-ui/assistant-ui),
 so the browser claim was re-established against the new shell rather than
-inherited. `make verify` is green at **396 unit + 11 integration** as of
+inherited. `make verify` is green at **405 unit + 11 integration** as of
 2026-10-01 (it was 194 when this was written; the dashboard's own suite grew,
 and `test/plugin-wiring.test.ts` added 10), and `make e2e-dashboard` passes both
 directions repeatedly:
