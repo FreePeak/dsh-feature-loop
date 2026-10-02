@@ -383,6 +383,29 @@ cannot distinguish *"the gate is right"* from *"the gate is misconfigured in a
 way that happens to default to asking"*. It stays, and the claim it makes is the
 narrow one the transcript shows.
 
+**Re-measured 2026-10-03, and the second half is now a hard failure.** The
+`Config` schema is exported because cordis asks for it, and it is **not run** —
+`gateMode: auto` composed, loaded, and ran a full turn. `apply` now throws on an
+unrecognised `gateMode`, naming the field:
+
+```
+feature-loop (@freepeak/dsh-feature-loop): Error: gateMode must be "ask" or
+"deny", received "auto". "ask" prompts a human; "deny" refuses outright for
+unattended runs.
+```
+
+Two things that measurement settled, both worth keeping:
+
+- **the throw is loud, not fatal.** The harness prints the message as a warning,
+  the plugin never constructs, and the run still **answers** — `say hi` came
+  back with no gate in the loop. So the sentence that names the field is what the
+  throw buys; the protection is still `?? 'ask'` plus `ask` failing closed.
+  Verified on the same profile: `Create a file … gm2-proof.txt` under
+  `gateMode: ask` is **denied**, no file.
+- **`--dump-config` is not the reason.** It skips validation, which is why the
+  dump showed `gateMode: auto` — but the *load* path did not reject it either,
+  and that was the finding.
+
 ### What is NOT verified in-container
 
 - **The rendered approval panel.** Same reason as everywhere else in this repo:

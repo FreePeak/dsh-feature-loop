@@ -190,6 +190,42 @@ export function apply(ctx: Context, config: Config = {}): (() => void) | void {
   // from loading; it never degrades into a refinement loop nobody meant to
   // start. The parsed block is forwarded so the plugin can record history and
   // feed the dashboard's Metrics panel from it.
+  // `Config` is exported because cordis's contract asks for it — and it is NOT
+  // run here. Measured 2026-10-03, in the live container, on this branch:
+  // `gateMode: auto` composed, the plugin LOADED, and the loop RAN — the schema
+  // rejected nothing, because `--dump-config` skips validation AND the loader
+  // takes the row as written.
+  //
+  // So the union is a TYPE, not a guard. What did hold was
+  // `createPolicy`: `gateMode: options.gateMode ?? 'ask'` sends an unrecognised
+  // value to the SAFE default, and `ask` with no answerer refuses. That is the
+  // right direction for a safety setting and the wrong substitute for a
+  // rejection — a typo that happens to default to asking reads as a working
+  // gate. (docker/README.md has said so about `--dump-config` since 2026-10-01;
+  // this is the same finding for the whole load path, not just the dump.)
+  //
+  // One line, and it names the field, because every OTHER block here already
+  // fails loudly and this one silently did not.
+  //
+  // Measured both ways on a profile this script generated, 2026-10-03:
+  //
+  //   gateMode: auto  ->  the plugin throws, the harness prints the message as a
+  //     WARNING, the plugin never constructs… and the run ANSWERS. `say hi` came
+  //     back; so did a requested `gm-proof.txt` containing `hello`, written with
+  //     no gate in front of it. A throw is loud and not fatal: the harness
+  //     carries on past a failed plugin, and a loop with no gate never asks.
+  //   gateMode: ask   ->  `Create a file … gm2-proof.txt` is DENIED, no file.
+  //
+  // Which is the point. The throw buys the operator the sentence that names the
+  // field; the fail-closed behaviour they actually get comes from `ask` being
+  // the default, and that is the behaviour this line is protecting. A typo must
+  // not silently become "never gated".
+  if (config.gateMode !== undefined && config.gateMode !== 'ask' && config.gateMode !== 'deny') {
+    throw new Error(
+      `gateMode must be "ask" or "deny", received ${JSON.stringify(config.gateMode)}. `
+      + '"ask" prompts a human; "deny" refuses outright for unattended runs.',
+    )
+  }
   const optimize = config.optimize === undefined ? undefined : parseOptimizeConfig(config.optimize)
   // The pipeline block gets the same treatment, plus one check of its own: a
   // pipeline with no spec has no run budget to carve into phase budgets, and
