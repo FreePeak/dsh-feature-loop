@@ -533,6 +533,53 @@ reporting nonsense on the first run:
 
 A check that cannot fail is worse than no check, and this one did.
 
+### 16. c57f2d8's fix silenced the noise and the news
+
+**Follows §15, and is the other half of the same fix.**
+
+§15 verified that a brief which is off by default no longer prints
+`unavailable` on every card. Reading the change rather than only running it
+shows it silenced one case too many:
+
+```diff
+-  if (ask.briefState === 'none') return null
++  if (ask.briefState === 'none' || ask.briefState === 'failed') return null
+```
+
+`failed` is not "briefs are off". It is "briefs were asked for and the call
+did not come back" — so the new version also silenced a **real** failure on
+every deployment that HAS enabled `dashboard.brief`, which is exactly the
+deployment whose operator needs to hear that the model call failed.
+
+**The distinction is in the config, not the card.** `dashboard.brief.enabled`
+is part of the `config` the status payload already carries
+(`buildStatus` → `DashboardSource.status()`), so the page can ask. It now does:
+
+- `briefsOn === false` → `failed` renders nothing. The noise is gone, for the
+  reason it was noise.
+- `briefsOn === true` → `failed` renders *"Review brief unavailable — the
+  approval itself is unaffected."* The news is back.
+- `status()` absent (the standalone loopback dashboard has none) → treated as
+  unknown and `failed` keeps rendering, which is the old behaviour: on a
+  surface that cannot tell us, silence for a feature that may be on is the
+  worse default.
+
+Verified live, both directions, against `~/.dsh/profiles/feature-loop`:
+
+| deployment | brief elements | says `unavailable` |
+|---|---|---|
+| briefs off (the shipped row) | 0 | no |
+| `brief.enabled: true`, model returns a brief | 1 (the brief text) | no |
+
+The failed-brief line itself was not observed — the enabled run's model call
+succeeded — so that branch is covered by the reasoning and not by a screenshot.
+Stated rather than rounded up.
+
+**The lesson, and it is the sibling of §14's.** A fix that stops a false
+positive will happily create a false negative, and this one was verified only
+in the direction that had been reported. Reading the diff found the other
+direction in the same three seconds it took to run the test that could not.
+
 ### 15. The brief fix that the stale bundle had been hiding is now verified LIVE
 
 **Follows §14, and it closes the loop on that entry.**
