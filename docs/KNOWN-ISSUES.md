@@ -30,7 +30,47 @@ package to that array — idempotently, and touching only that one array so the 
 is the change rather than a reformat. Verified on the `web` profile: 191 → 194
 rows, all three `feature-loop*` rows composing, zero incompatible-row warnings.
 
+### 1a. Nothing in this repo ran on the model it was supposed to run on
 
+**Observed:** every deployment and the demo ran on concrete model ids —
+`opencode/deepseek-v4.1-flash`, then `xai/grok-4.7`, and `xiaomi/mimo-v2.5` in
+the demo — while onegw's own `execution` EXECUTION role alias sat declared in
+`/v1/models` and unused. Switching the default to `execution` then produced a
+run that died on step 1: `404 unknown provider onegw`.
+
+**Why, in two parts that had to be found separately:**
+
+1. *The alias was not running* because commit `d9464b9` fixed a real
+   `UNKNOWN_MODEL` bug — `execution` named in a ladder, absent from the
+   deployment's own `models:` list — by replacing the alias with concrete ids
+   everywhere, including the demo. The fix was correct for the bug and left the
+   repo on a model nobody here had ever run. "Resolves" and "tested" are
+   different questions, and only the first one had a check.
+2. *The alias could not run from the demo* because a route key is not a gateway
+   id. Every route here is `provider/model` — that is what a ladder rung names
+   and what the price table keys on — but onegw's role aliases sit at the top
+   level of its id space:
+
+   ```
+   POST /v1/chat/completions {"model":"execution"}        -> 200
+   POST /v1/chat/completions {"model":"onegw/execution"}  -> 404 unknown provider onegw
+   ```
+
+   The plugin path never hits this: `llm-pi-ai` resolves a rung through its own
+   catalog and puts `entry.id` on the wire. Only the standalone transport sent
+   the route key verbatim.
+
+**Fix:** one tested route, `onegw/execution`, in `cordis.patch.yml`,
+`docker/profile.patch.yml`, `docker/settings.template.yaml`,
+`scripts/make-profile.sh` and the demo — with `execution` declared in every
+`models:` list so the alias resolves, each price table rekeyed to match, and
+`TESTED_ROUTE` in `scripts/check-ladder-models.mjs` asserting that no shipped
+ladder names anything else. `createOnegwClient` drops the `onegw/` prefix at the
+transport, and `test/llm.test.ts` pins that.
+
+**Verified:** `bash demo/run.sh` -> `goal-met - 4 steps - $0.0039`, every step
+labelled `onegw/execution`, against the live gateway. Both new assertions were
+proven to FIRE by reverting each one and watching it fail, not merely to pass.
 
 ### 1. The stylesheet restyled the whole host UI
 

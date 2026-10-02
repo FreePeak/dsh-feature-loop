@@ -356,3 +356,122 @@ test('a rung change is announced to the model, not only to the dashboard', async
   assert.ok(sawEscalationNotice,
     'and the model is told, in a message the harness will actually deliver')
 })
+
+
+// ── spend drain + session→agent resolution ─────────────────────────────────
+
+/**
+ * A fake session log with one settled assistant message already on it.
+ * Mirrors the harness contract: `seq` is the *next* seq (log length), and
+ * `snapshotEvents(from)` returns events whose seq is >= from.
+ */
+function settledSession(events: readonly {
+  seq: number
+  type: string
+  data?: unknown
+}[]): { seq: number, snapshotEvents: (from?: number) => typeof events } {
+  return {
+    seq: events.length === 0 ? 0 : Math.max(...events.map(e => e.seq)) + 1,
+    snapshotEvents(from = 0) {
+      return events.filter(e => e.seq >= from)
+    },
+  }
+}
+
+const PRICED_MSG = {
+  seq: 0,
+  type: 'assistant/message',
+  data: {
+    usage: { inputTokens: 1_000_000, outputTokens: 0 },
+    message: { source: { provider: 'onegw', model: 'execution' } },
+  },
+}
+
+test('a settled attempt is priced even when the session cursor is already past it', async () => {
+  // The bug: pricedThroughSeq seeded from session.seq (the NEXT seq) skipped
+  // every already-settled assistant/message, so costBudgetUSD stayed zero.
+  const session = settledSession([PRICED_MSG])
+  assert.equal(session.seq, 1, 'harness seq is next-to-write, not last-written')
+  const agent = { session }
+  const { handler, dispose } = mount({
+    spec: {
+      ...SPEC,
+      maxSteps: 99,
+      costBudgetUSD: 0.1, // 1M tokens at $0.3/MTok = $0.30 → over
+      prices: {
+        'onegw/execution': { inputPerMTok: 0.3, outputPerMTok: 1.2 },
+      },
+      controller: { ladder: [{ provider: 'onegw', model: 'execution' }] },
+    },
+  })
+  const decision = await preStep(handler, 1, agent)
+  assert.equal(decision.kind, 'reject', 'priced usage must fire the cost ceiling')
+  assert.match(decision.reason ?? '', /cost ceiling/)
+  dispose()
+})
+
+test('session/event records cost against the agent resolved from ctx.agents', async () => {
+  // agentOfSession was a stub returning undefined, so turn records always
+  // read the agent-less shared policy (fresh zero budget) even when the live
+  // agent had already spent.
+  const { mkdtempSync, readFileSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-agent-of-'))
+  const historyPath = join(dir, 'runs.jsonl')
+
+  const session = settledSession([PRICED_MSG])
+  const agent = { id: 'sess-live', session }
+  const agents = new Map<string, typeof agent>([['sess-live', agent]])
+
+  const handlers = new Map<string, (...args: unknown[]) => unknown>()
+  const ctx = {
+    agents: { get: (id: string) => agents.get(id) },
+    on(event: string, fn: (...args: unknown[]) => unknown): () => void {
+      handlers.set(event, fn)
+      return () => { handlers.delete(event) }
+    },
+  }
+  const dispose = apply(ctx as never, {
+    spec: {
+      ...SPEC,
+      maxSteps: 99,
+      costBudgetUSD: 5,
+      prices: {
+        'onegw/execution': { inputPerMTok: 0.3, outputPerMTok: 1.2 },
+      },
+      controller: { ladder: [{ provider: 'onegw', model: 'execution' }] },
+    },
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+  })
+
+  // Charge the live agent via pre-step drain before the turn closes.
+  const pre = handlers.get('agent/pre-step') as Handler
+  await pre(
+    { agent, messages: [], turn: 1, step: 1, signal: new AbortController().signal },
+    async () => ({ kind: 'enter', messages: [] }),
+  )
+
+  const sessionHandler = handlers.get('session/event')
+  assert.ok(sessionHandler !== undefined, 'session/event must register when history is on')
+  sessionHandler({ id: 'sess-live' }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+
+  const deadline = Date.now() + 5000
+  let record: Record<string, unknown> | undefined
+  for (;;) {
+    try {
+      const lines = readFileSync(historyPath, 'utf8').trim().split('\n')
+      if (lines.length >= 1 && lines[0]) {
+        record = JSON.parse(lines[0]!) as Record<string, unknown>
+        break
+      }
+    } catch { /* not yet */ }
+    if (Date.now() > deadline) break
+    await new Promise(r => setTimeout(r, 10))
+  }
+  dispose()
+  assert.ok(record !== undefined, 'run record must land')
+  assert.ok((record!.costUSD as number) > 0, `expected non-zero cost, got ${String(record!.costUSD)}`)
+  assert.equal(record!.runId, 'sess-live')
+})

@@ -123,11 +123,11 @@ of failures that live in intermediate steps.
 
 | | |
 |---|---|
+| **Budget the loop** | Step and USD ceilings that stop the run — a limit, not an invoice |
+| **Cheap-first routing** | A model ladder resolved by evidence, not by vibes — onegw's `execution` role alias, the one route every shipped deployment and the demo run on |
 | **0→1 product loop** | research → PRD → implement → test → ship, each phase gated and budgeted |
 | **Bounded YOLO** | Never prompts; a worktree, a tested deny-list and a kill switch instead |
 | **Evidence per step** | A bundle per run; unverified writes can never render as a success |
-| **Budget the loop** | Step and USD ceilings — per run *and* per phase — checked before the call |
-| **Cheap-first routing** | Model ladder by step type (`onegw/cheap` → execution) |
 | **Loop hygiene** | Tool-cycle, error-cascade, budget trajectory, and related detectors |
 | **Fail-closed review gate** | Tiered by reversibility; low judge confidence → ask the human |
 | **HITL ops dashboard** | Phase rail, workspaces, activity, grouped runs, Allow / Reject |

@@ -1468,8 +1468,13 @@ function spendSettledUsage(policy: FeatureLoopPolicy, agent: Agent | undefined):
   if (policy.budget === undefined) return
   const session = (agent as { readonly session?: SettledSession } | undefined)?.session
   if (session === undefined) return
+  // Always start from seq 0 on first drain. `session.seq` is the *next* seq
+  // (log length), so seeding the cursor there skips every already-settled
+  // `assistant/message` — including the one that just landed one tick earlier
+  // — and `costBudgetUSD` stays at zero forever. Re-pricing historical rows
+  // into a fresh policy is correct: the budget is also fresh.
   if (policy.pricedThroughSeq === undefined) {
-    policy.pricedThroughSeq = typeof session.seq === 'number' ? session.seq : 0
+    policy.pricedThroughSeq = 0
   }
   for (const event of session.snapshotEvents(policy.pricedThroughSeq)) {
     const seq = Number(event.seq)
@@ -1609,6 +1614,8 @@ interface TurnRecordInput {
   event: { turn: number, reasonKind: string }
   options: Parameters<typeof createPolicy>[0] & { dashboard?: DashboardConfig }
   policyFor: (agent: Agent | undefined) => FeatureLoopPolicy
+  /** Live agent lookup keyed by session id (`ctx.agents.get`). */
+  resolveAgent: (sessionId: string) => Agent | undefined
   state: DashboardState
   historyPath: string
   /**
@@ -1676,9 +1683,9 @@ function outcomeOf(reasonKind: string, policy: FeatureLoopPolicy): RunOutcome {
  * @param input - the closed turn and everything the record is built from.
  */
 async function recordTurn(input: TurnRecordInput): Promise<void> {
-  const { session, event, options, policyFor, state, historyPath, agents } = input
+  const { session, event, options, policyFor, resolveAgent, state, historyPath } = input
   const runlog = await import('./runlog.ts')
-  const agent = agentOfSession(agents, session)
+  const agent = agentOfSession(session, resolveAgent)
   const policy = policyFor(agent)
   const snapshot = policy.budget?.snapshot()
   const spec = policy.spec ?? options.spec
@@ -1730,35 +1737,43 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
 /**
  * The agent behind a session, via the harness's own registry.
  *
- * This used to return `undefined` unconditionally, with a note describing the
- * upgrade path. Running the loop for real showed what that cost: the
- * `turn/end` handler looked the policy up by this, so every run record was
- * written against the shared agent-less policy — which never sees a step,
- * because steps land on the per-agent policy. The result was a history file full
- * of `steps: 0, costUSD: 0` records for runs that had demonstrably done work.
+ * `session/event` hands the session, not the agent — but the per-agent policy
+ * (budget, spec, history) is keyed by agent. Resolution order:
  *
- * That is the failure this package's own PRD names: a module that looks wired and
- * silently does nothing. The ceiling is not worth having when it is reported as
- * zero, and a `$0.00` history is worse than no history — it is believed.
+ * 1. Structural fields some harness builds put on the session (`agent`, or
+ *    `owner` when it looks like an Agent with a `session` handle).
+ * 2. `ctx.agents.get(session.id)` — agent id === session id in DSH
+ *    (`AgentRegistry.get`), which this plugin already declares via
+ *    `inject = ['agents']`.
  *
- * `ctx.agents.get(sessionId)` is the documented registry lookup, and this plugin
- * already injects `agents`, so there was never a second injection to add.
- *
- * @param agents - the harness agent registry.
- * @param session - the session the event belongs to.
- * @returns the agent, or `undefined` when the session has none yet — which is a
- *   real state for a session whose agent was never created, not an error.
+ * When neither resolves, the record falls back to the agent-less policy — the
+ * same fail-closed stance `policyFor` takes for agent-less calls: shared
+ * ceilings, honestly labelled, rather than no record at all.
  */
-/**
- * The pipeline's slice of a run record, or nothing when there is no pipeline.
- *
- * Returns `{}` rather than absent fields so a record from a plain bounded loop
- * keeps exactly the shape it had before the pipeline existed.
- *
- * @param policy - the run's policies.
- * @param runId - the run's id, which names the evidence bundle.
- * @returns the additive pipeline fields.
- */
+function agentOfSession(
+  session: unknown,
+  resolveAgent?: (sessionId: string) => Agent | undefined,
+): Agent | undefined {
+  if (session !== null && typeof session === 'object') {
+    const record = session as {
+      readonly agent?: unknown
+      readonly owner?: unknown
+    }
+    if (isAgentLike(record.agent)) return record.agent
+    if (isAgentLike(record.owner)) return record.owner
+  }
+  const id = sessionIdOf(session)
+  if (id === 'unknown-session' || resolveAgent === undefined) return undefined
+  return resolveAgent(id)
+}
+
+/** Structural: anything the registry would hand back has a session handle. */
+function isAgentLike(value: unknown): value is Agent {
+  if (value === null || typeof value !== 'object') return false
+  const session = (value as { readonly session?: unknown }).session
+  return session !== null && typeof session === 'object'
+}
+
 /**
  * Project one step observation onto the record's step line.
  *
@@ -1825,16 +1840,6 @@ function pipelineFields(policy: FeatureLoopPolicy, runId: string): Record<string
     })),
     ...(policy.worktreeRoot === undefined ? {} : { worktree: policy.worktreeRoot }),
   }
-}
-
-function agentOfSession(agents: AgentRegistry | undefined, session: unknown): Agent | undefined {
-  if (agents === undefined) return undefined
-  const id = sessionIdOf(session)
-  if (id === undefined || id.length === 0) return undefined
-  // The registry is keyed by a branded `SessionId`. The id read here is that
-  // brand at runtime — a string that came from the session itself — so it needs
-  // no cast and no re-validation.
-  return agents.get(id as Parameters<AgentRegistry['get']>[0]) ?? undefined
 }
 
 /**
@@ -2060,6 +2065,15 @@ export function apply(
     return policy
   }
 
+  // Agent id === session id in DSH (`AgentRegistry.get`). Structural: a test
+  // double without `agents` still mounts; live cordis always injects it.
+  const resolveAgent = (sessionId: string): Agent | undefined => {
+    const agents = (ctx as { agents?: { get?: (id: string) => Agent | undefined } }).agents
+    const get = agents?.get
+    if (typeof get !== 'function') return undefined
+    return get.call(agents, sessionId)
+  }
+
   // The dashboard is process-wide (one server, one feed), not per agent — it
   // lives here rather than in `createPolicy`, whose policies are per-run.
   // Enabled by default: omitting the block starts the page on 127.0.0.1:8100
@@ -2261,9 +2275,9 @@ export function apply(
       // it. Without this a run that wrote a perfectly good research note and then
       // finished its turn left the pipeline in `research` with the note sitting
       // there, and the next turn re-entered a phase that was already done.
-      const turnAgent = agentOfSession(agents, session)
+      const turnAgent = agentOfSession(session, resolveAgent)
       if (turnAgent !== undefined) advanceIfGated(policyFor(turnAgent), turnAgent)
-      void recordTurn({ session, event: end, options, policyFor, state, historyPath: path, agents })
+      void recordTurn({ session, event: end, options, policyFor, state, historyPath: path })
         .catch((error: unknown) => {
           // A failed append must never fail the turn: the record is
           // evidence, not control. The feed line says so in the harness's
