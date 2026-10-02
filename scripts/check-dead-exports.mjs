@@ -70,6 +70,28 @@ const read = new Map(files.map(f => [f, readFileSync(f, 'utf8')]))
 /** `export function X` / `export const X` / `export class X`, at top level. */
 const DECLARATION = /^export (?:async )?(?:function|const|let|class|enum) (\w+)/gm
 
+/**
+ * Symbols that LOOK unused to a reference search and are not.
+ *
+ * Each is exported for a reason a text search cannot see, and each is reachable
+ * by CONSTRUCTION rather than by call:
+ *
+ *   FeatureLoopRemote         the harness discovers a remote service by
+ *                              `markRemote(proto, ...)` at module load; nothing
+ *                              imports the class, and nothing should.
+ *   answerLive                a seam the remote's `answer()` delegates to, kept
+ *                              exported so the browser-side answer path can be
+ *                              driven without a socket.
+ *   attachApprovalAnswerer    installed by `apply()`, and exported so a test or
+ *                              an embedding host can mount the gate on a
+ *                              context it built itself.
+ */
+const BY_CONSTRUCTION = new Set([
+  'FeatureLoopRemote',
+  'answerLive',
+  'attachApprovalAnswerer',
+])
+
 const dead = []
 for (const file of files.filter(f => f.startsWith(srcDir))) {
   const text = read.get(file)
@@ -87,7 +109,9 @@ for (const file of files.filter(f => f.startsWith(srcDir))) {
     const own = ((text.slice(0, m.index) + text.slice(m.index + declaration.length)).match(word)?.length ?? 0)
     const callers = files.filter(other =>
       other !== file && word.test(read.get(other)))
-    if (callers.length === 0) dead.push({ name, file: relative(repo, file), own })
+    if (callers.length === 0 && !BY_CONSTRUCTION.has(name)) {
+      dead.push({ name, file: relative(repo, file), own })
+    }
   }
 }
 
