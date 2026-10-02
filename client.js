@@ -4764,9 +4764,9 @@ details.help {
    after a save, because the person who needs to know is the one about to type. */
 .fl-notice[data-kind="info"] {
   /* Every token here is in the host's own published set, which
-     \`test/css-parity.test.ts\` enforces. The first draft reached for
+     \`test/css-parity.test.ts\` enforces: the first draft reached for
      \`--dsw-alias-accent-default\`, which is not one of them, and that check
-     failed the build for it. */
+     failed the build for it. That check has now earned its fourth keep. */
   background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 8%, transparent);
   color: var(--dsw-alias-label-secondary);
   border-left: 2px solid var(--dsw-alias-state-warn-primary);

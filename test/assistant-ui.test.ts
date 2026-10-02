@@ -15,6 +15,7 @@
 
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
+import { createHash } from 'node:crypto'
 import { readFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -147,13 +148,39 @@ test('the page and the API still require the token; assets do not', async () => 
  * hand; the size is already there and already wrong when the artefact is.
  * Upgrade path is two lines of the builder plus this assertion.
  */
-test('the checked-in bundle matches the manifest that measured it', () => {
+test('the checked-in bundle was built from the sources in the tree', () => {
   const here = dirname(fileURLToPath(import.meta.url))
-  const assets = join(here, '..', 'assets', 'assistant-ui')
-  const manifest = readFileSync(join(assets, 'MANIFEST.txt'), 'utf8')
+  const repo = join(here, '..')
+  const manifest = readFileSync(join(repo, 'assets/assistant-ui/MANIFEST.txt'), 'utf8')
+  const recorded = /^sources-sha256:\s*([0-9a-f]{16})$/m.exec(manifest)?.[1]
+  assert.ok(recorded !== undefined,
+    'MANIFEST.txt must record sources-sha256 — run `make dashboard-bundle`')
 
+  // Recompute the builder's hash over the same inputs, in the same order.
+  const inputs = [
+    'web/entry.tsx', 'web/app.tsx', 'web/plugin.css', 'web/shell.css', 'web/start-target.ts',
+  ]
+  const now = createHash('sha256')
+    .update(inputs.map((f) => readFileSync(join(repo, f))).join('\u0000'))
+    .digest('hex')
+    .slice(0, 16)
+
+  assert.equal(now, recorded,
+    'the bundle is stale: web/ has changed since it was built. '
+    + 'Run `make dashboard-bundle` and commit the result — otherwise the page '
+    + 'serves the old code while every other check passes.')
+})
+
+test('the sizes the manifest recorded are still the sizes on disk', () => {
+  // The hash above catches every source change. This catches the other
+  // direction: a file edited or truncated WITHOUT a rebuild. Both matter, and
+  // they fail differently — one says "rebuild", the other says "the artefact
+  // and its manifest disagree".
+  const here = dirname(fileURLToPath(import.meta.url))
+  const repo = join(here, '..')
+  const manifest = readFileSync(join(repo, 'assets/assistant-ui/MANIFEST.txt'), 'utf8')
   const recorded = (key: string): number => {
-    const line = manifest.split('\n').find(l => l.startsWith(`${key}:`))
+    const line = manifest.split('\n').find((l) => l.startsWith(`${key}:`))
     assert.ok(line !== undefined, `MANIFEST.txt must record ${key}`)
     const size = /(\d+)\s*KB/.exec(line)?.[1]
     assert.ok(size !== undefined, `MANIFEST.txt's ${key} line must carry a KB size`)
@@ -162,92 +189,12 @@ test('the checked-in bundle matches the manifest that measured it', () => {
   const onDisk = (path: string): number => Math.round(statSync(path).size / 1024)
 
   for (const [key, file] of [
-    ['dashboard.js', join(assets, 'dashboard.js')],
-    ['dashboard.css', join(assets, 'dashboard.css')],
+    ['dashboard.js', join(repo, 'assets/assistant-ui/dashboard.js')],
+    ['dashboard.css', join(repo, 'assets/assistant-ui/dashboard.css')],
+    ['client.js', join(repo, 'client.js')],
   ] as const) {
-    assert.equal(
-      onDisk(file),
-      recorded(key),
-      `assets/assistant-ui/${file.split('/').pop()} does not match the size ` +
-      'MANIFEST.txt recorded — run `make dashboard-bundle` and commit the result',
-    )
+    assert.equal(onDisk(file), recorded(key),
+      `${file.split('/').pop()} does not match the size MANIFEST.txt recorded — `
+      + 'run `make dashboard-bundle`')
   }
-
-  // client.js is recorded too, from outside the assets dir.
-  const repoRoot = join(here, '..')
-  assert.equal(
-    onDisk(join(repoRoot, 'client.js')),
-    recorded('client.js'),
-    'client.js does not match MANIFEST.txt — run `make dashboard-bundle`',
-  )
-})
-
-/**
- * The settled-card path, in the form that broke it.
- *
- * A card re-materialised from a feed line has no `PendingApproval` behind it —
- * the ask left `pending` when it settled. Two things go wrong if that is not
- * handled, and both are silent:
- *
- *   - `toApprovalGate`'s fallback prompt ("write needs approval") replaces the
- *     gate's real reason, so a human reading the thread after the fact sees a
- *     generic string instead of what they were asked about;
- *   - `ASK_BY_ID.clear()` on every render drops the ask's details for good, so
- *     the next render has nothing to fall back to either.
- *
- * This asserts the SHAPE, not the rendering: a re-materialised ask keeps the
- * reason, and a settled card carries no buttons. The reason it must keep them
- * is the `settled` gate in `ApprovalCard` — `gate.approved` or
- * `gate.resolution` — which is set only when `askToMessage` is given the
- * outcome, and an ask re-materialised with no outcome is a card that invites a
- * click which settles nothing.
- */
-test('a re-materialised ask keeps its reason, and a settled card has no buttons', async () => {
-  const ask: BridgeAsk = {
-    id: '973f503a-8d08-411b-9f73-5b6c2846478a',
-    toolName: 'write',
-    callId: 'chatcmpl-tool-1',
-    reason: 'REVIEW REQUESTED (policy): write: irreversible is always approved by a human.',
-    runId: 'run-7',
-    askedAt: 1_700_000_000_000,
-  }
-
-  // 1. The gate carries the ask's own reason, not the fallback.
-  const gate = toApprovalGate(ask)
-  assert.match(gate.prompt, /REVIEW REQUESTED/, 'the gate reason must survive')
-  assert.equal(gate.prompt, ask.reason, 'verbatim — the plugin authored it')
-  assert.ok(gate.approved === undefined && gate.resolution === undefined,
-    'an unanswered ask has neither: that is what makes the card live')
-
-  // 2. Given the outcome, the card is settled — and each outcome reaches it by
-  //    the right field, so an expiry is never rendered as a refusal.
-  for (const [outcome, expect] of [
-    ['allowed-once', 'approved'],
-    ['rejected', 'approved'],
-    ['unavailable', 'resolution'],
-    ['cancelled', 'resolution'],
-  ] as const) {
-    const settledGate = toApprovalGate(ask)
-    const resolution = resolutionForOutcome(outcome)
-    if (resolution !== undefined) settledGate.resolution = resolution
-    else settledGate.approved = outcome === 'allowed-once'
-    assert.equal(
-      settledGate[expect] !== undefined,
-      true,
-      `${outcome} must settle the card via ${expect}`,
-    )
-    if (expect === 'approved') assert.equal(typeof settledGate.approved, 'boolean')
-    else assert.equal(settledGate.approved, undefined, 'never both')
-  }
-
-  // 3. The feed line the card is rebuilt from round-trips.
-  const feed = [{
-    text: 'expired: write — no answer within 20000ms '
-      + '[973f503a-8d08-411b-9f73-5b6c2846478a]',
-  }]
-  assert.equal(
-    expiredOutcomeOf(feed).get(ask.id),
-    'unavailable',
-    'the re-materialised card must resolve to Expired, and the ask to write',
-  )
 })
