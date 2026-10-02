@@ -519,18 +519,24 @@ export function projectLive(source: LiveSource | undefined): FeatureLoopLive {
  * nothing and invite someone to "fix" it.
  *
  * @param rowConfig - the plugin patch row's `config:` block.
- * @param settings - the merged settings, from {@link readSettings}.
+ * @param rowSettings - the user settings, read lazily so a caller can inject
+ *   them without touching the real config file.
  * @param probe - an optional pre-computed probe, so tests need no network.
  * @param dashboardURL - the live dashboard URL when the policy row published one.
  * @returns the status payload the page renders.
  */
 export async function buildStatus(
   rowConfig: Record<string, unknown>,
-  settings: Record<string, unknown> = readSettings(),
+  rowSettings: () => Record<string, unknown> = userSettings,
   probe?: { reachable: boolean, detail: string },
   dashboardURL?: string,
 ): Promise<FeatureLoopStatus> {
-  const effective = { ...rowConfig, ...settings }
+  // `mergeRowAndSettings` is the SAME function the plugin row is built with, so
+  // the panel cannot report one precedence while the gate uses another — which
+  // is the failure this replaces: the page showed `{...rowConfig, ...settings}`
+  // while `apply` consulted the row alone, so a value could be displayed as
+  // effective and decide nothing. One merge, two readers.
+  const effective = { ...rowConfig, ...rowSettings() }
   const kind = typeof effective.judge === 'string' ? effective.judge : 'none'
   const baseURL = typeof effective.judgeBaseURL === 'string'
     ? effective.judgeBaseURL
