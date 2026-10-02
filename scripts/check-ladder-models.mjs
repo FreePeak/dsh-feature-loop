@@ -213,8 +213,27 @@ for (const dir of profiles) {
   // it as a skip, not a failure: the honest statement is "this file does not
   // say which models exist", not "these rungs are broken".
   if (ids.size === 0) {
-    console.log(`profile ${basename(dir)}: skipped — no models declared here ` +
-      '(the provider row lives in its settings, which this check does not read)')
+    // A profile with no `llm-pi-ai` row of its own resolves through whatever
+    // provider the HARNESS mounts — `dsh-base` declares
+    // `agent-default-model: deepseek-official/deepseek-flash`. So a rung naming
+    // some OTHER provider is not merely unverified: unless that provider is
+    // configured somewhere this check cannot see, the rung is the day-one bug
+    // this check exists for, on a profile the previous version called
+    // "skipped" and moved past.
+    //
+    // What it can say, precisely: which provider the rungs name, and whether
+    // that is the harness default. It cannot resolve the model list, so it
+    // reports the rung and does not claim the model is missing. One line, named
+    // — a skip that reads as a pass is the failure mode.
+    for (const r of routes) {
+      if (r.provider === 'deepseek-official') continue
+      console.log(
+        `profile ${basename(dir)}: rung ${r.key} names provider ${r.provider}, ` +
+        'and this profile declares no llm-pi-ai row of its own. Its model list ' +
+        'lives in settings, which this check does not read — verify that ' +
+        `provider is configured there, or the run dies UNKNOWN_MODEL.`,
+      )
+    }
     continue
   }
   // Severity measured, not assumed. This started as a warning on the reasoning
