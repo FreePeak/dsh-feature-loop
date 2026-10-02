@@ -419,6 +419,15 @@ export async function reviewStep(
   budget: BudgetSnapshot | undefined
 }> {
   const notices: string[] = []
+  // The escalation notice goes out on THIS channel, not on `agent/request`:
+  // that hook returns an `LlmCallConfig` ({provider, model}) and has no
+  // `messages` for a caller to splice, so a notice appended there is silently
+  // dropped. `escalationForStep` existed and was exported for exactly this and
+  // had no caller — a DSH deployment moved rungs without the model ever being
+  // told, so the dashboard showed ROUTE changing while the transcript showed
+  // nothing.
+  const escalation = escalationForStep(policy, step, undefined)
+  if (escalation !== undefined) notices.push(escalation)
 
   // Commit the previous step's observed tool call before the detectors run, so
   // they read a complete history. A step that ran no tool still gets an

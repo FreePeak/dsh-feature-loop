@@ -308,3 +308,51 @@ test('the plugin path escalates the ladder on failure, not only on step count', 
     'two consecutive failures move the ladder, and only then',
   )
 })
+
+test('a rung change is announced to the model, not only to the dashboard', async () => {
+  // `escalationForStep` was exported and documented — "announce an escalation,
+  // if the ladder moved the route this step" — with no caller outside the
+  // export list. So a DSH deployment could move rungs without the MODEL being
+  // told: the dashboard showed ROUTE changing and the transcript showed
+  // nothing, and a model handed a harder turn with no warning is a model
+  // reasoning from a transcript that has suddenly stopped making sense.
+  //
+  // The channel is `agent/pre-step`, not `agent/request`: that hook returns an
+  // `LlmCallConfig` ({provider, model}) and carries no `messages` for a caller
+  // to splice, so a notice appended there is dropped without error. The first
+  // attempt put it there and typechecked happily.
+  const policy = createPolicy({
+    spec: {
+      ...SPEC,
+      controller: {
+        ladder: [{ provider: 'cheap', model: 'fast' }, { provider: 'pricey', model: 'strong' }],
+        stepsPerRung: 99,
+        escalateAfterFailures: 2,
+      },
+      maxSteps: 6,
+      prices: {
+        'cheap/fast': { inputPerMTok: 1, outputPerMTok: 1 },
+        'pricey/strong': { inputPerMTok: 1, outputPerMTok: 1 },
+      },
+    },
+  })
+
+  const routes: string[] = []
+  let sawEscalationNotice = false
+  for (let step = 1; step <= 4; step++) {
+    if (step > 1) policy.pending = { tool: 'write_file', argsKey: 'k', error: true }
+    const decision = await reviewStep(policy, step)
+    const routed = routeForStep(policy, step, undefined)
+    if (routed !== undefined) routes.push(`${String(routed.provider)}/${String(routed.model)}`)
+    // `reviewStep` is the handler's seam; the decision it returns carries the
+    // messages the harness will splice into the conversation.
+    for (const m of decision.notices) {
+      if (/ROUTING|escalat|rung/i.test(m)) sawEscalationNotice = true
+    }
+  }
+
+  assert.deepEqual(routes, ['cheap/fast', 'cheap/fast', 'pricey/strong', 'pricey/strong'],
+    'the ladder still moves on failure')
+  assert.ok(sawEscalationNotice,
+    'and the model is told, in a message the harness will actually deliver')
+})

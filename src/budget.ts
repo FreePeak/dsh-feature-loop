@@ -256,9 +256,10 @@ export class LoopBudget {
     }
   }
 
-  /** The message appended as a logged step when the ceiling is hit. */
-  stopNotice(verdict: Extract<Verdict, { kind: 'stop' }>): string {
-    return `${verdict.reason}. Stop starting new work and report what you have completed so far, `
-      + 'what remains, and the single next action you would take.'
-  }
+  // `stopNotice` used to live here — a second, shorter version of the same
+  // message that `budgetStopText` in `messages.ts` already builds, and which
+  // both the runner and the plugin actually use. It had no caller, so the copy
+  // that reached a model was the one in messages.ts and this one was dead. It
+  // is deleted rather than wired: two wordings for one event is a drift waiting
+  // to happen, and the shorter one is the one nobody had been reading.
 }
