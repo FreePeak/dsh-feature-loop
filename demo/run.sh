@@ -14,12 +14,12 @@ cd "$ROOT"
 
 bash demo/reset.sh
 
-exec node --experimental-strip-types src/cli.ts \
+exec node --experimental-strip-types demo/cli.ts \
   --root demo \
   --verify "bash verify.sh" \
   --goal "Read README.md to understand the reported bug, then make the test suite pass without breaking any currently-passing test" \
   --phase bugfix \
-  --model xiaomi/mimo-v2.5 \
+  --model onegw/execution \
   --judge chat \
   --auto \
   "$@"

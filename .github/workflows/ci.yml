@@ -81,24 +81,99 @@ jobs:
       # same way the typecheck job lists its `src/` inputs — and a test that
       # gains a harness import (`test/plugin-approval.test.ts` already has one,
       # through `src/plugin.ts`) or a dependency import must leave this list,
-      # exactly as `src/plugin.ts` leaves the typecheck list. `test/dashboard.test.ts`,
-      # `test/assistant-ui.test.ts` and `test/explainer.test.ts` run locally via
-      # `make test`; `test/approval-bridge.test.ts`, `test/brief.test.ts`, and
-      # `test/questioner.test.ts` are pure and run here.
+      # exactly as `src/plugin.ts` leaves the typecheck list. `test/dashboard.test.ts`
+      # and the CSS pair run locally via `make test` — they import
+      # `src/plugin.ts`, which the harness-free job cannot load.
+      # `test/assistant-ui.test.ts` IS in this list: the bundle it asserts against
+      # is CHECKED IN, not built here, so it runs with no install — verified on a
+      # bare clone before it was moved here (2026-10-01); its exclusion note
+      # claimed the opposite. Everything pure runs
+      # here, including `test/approvals.test.ts` (the registry behind the gate),
+      # added 2026-10-01 because `scripts/check-test-list.mjs` noticed it was in
+      # neither this list nor any other: the most consequential test in the repo
+      # was running nowhere in CI.
       # `test/judge-config.test.ts` is out for the same reason as
       # `test/plugin-approval.test.ts`: it imports `src/plugin.ts` to reach
       # `resolveJudge`, which carries a runtime `@deepseek-ai/dsh-llm` import.
       # `test/judge.test.ts` stays IN this list — the judge client itself is pure,
       # so the config resolution lives in its own file rather than dragging a
       # harness import into a file that currently runs here.
+      # The same drift the typecheck job checks for: a new PURE test file is not
+      # in this list, so it never runs in CI and nothing says so. The step after
+      # this one fails on that.
+      # First, because every other check below is a claim ABOUT this job, and a
+      # claim nothing verifies is how a check gets committed and orphaned.
+      - name: CI still runs every check, and the no-install job still installs nothing
+        run: node scripts/check-ci-shape.mjs
+
+      - name: The no-install test list is not stale
+        run: node scripts/check-test-list.mjs
+
+      # The shipped specs' ladders must name models their deployment declares.
+      # A rung that does not is not a config smell, it is a run that dies
+      # UNKNOWN_MODEL on step 1 — after the dashboard has already recorded the
+      # route, the step and the spend, which reads as a working loop. The
+      # container shipped exactly that and it cost a day to find.
+      - name: Every ladder rung is a declared model, and is priced
+        run: node scripts/check-ladder-models.mjs
+
+      # Three rounds running. `escalateAfterFailures` is set in every shipped
+      # profile, documented as driven by the step outcome, and had no caller
+      # outside its own unit test — so the ladder could only climb on step
+      # count. `grep` finds the definition; it does not find the ABSENCE of a
+      # caller, which is the thing worth catching.
+      - name: No exported symbol in src/ is dead
+        run: node scripts/check-dead-exports.mjs
+
+      # A config key the validator accepts and no hook consults looks live to
+      # every reference-based check — this is the one shape they cannot see.
+      # It has shipped a false note once already (`derive` was documented as
+      # driving the run-history recording; it is read by nothing).
+      - name: Every accepted-but-unconsulted config key is labelled a no-op
+        run: node scripts/check-noop-config-keys.mjs
+
+      # One file per process, in a loop, and the list is the SAME list
+      # `scripts/check-test-list.mjs` reads. Two reasons, and the second is the
+      # reason this changed at all:
+      #
+      #   1. a file that fails to load, or that loads and is then dropped,
+      #      must not take the other eighteen down with it — one failure, one
+      #      file, one line of output.
+      #
+      #   2. passing 19 paths to one `node --test` made CI report 138 tests
+      #      where the same command on the same node (v22.23.3), the same
+      #      tree and no node_modules runs 277 here. Nothing failed; eight of
+      #      the nineteen files simply never appeared in the log. Which eight
+      #      is not explained by anything reproducible from here, so rather
+      #      than ship a job whose own count is a mystery, each file is run on
+      #      its own and the total is counted from the per-file output. If the
+      #      gap is a batching bug, the loop cannot reproduce it; if it is a
+      #      file that does not load, the loop says which one, by name.
+      #
+      # KNOWN-ISSUES records the measurement and what was ruled out.
       - name: Run the test suite
-        run: node --experimental-strip-types --test \
-          test/agent-policy.test.ts test/approval-bridge.test.ts \
-          test/budget.test.ts test/envelope.test.ts test/judge.test.ts \
-          test/metrics.test.ts test/optimize.test.ts test/optimizer.test.ts \
-          test/questioner.test.ts \
-          test/policy.test.ts test/refine.test.ts test/runlog.test.ts \
-          test/runner.test.ts test/tools.test.ts
+        run: |
+          total=0
+          for f in \
+            test/agent-policy.test.ts test/approval-bridge.test.ts \
+            test/approvals.test.ts test/assistant-ui.test.ts test/brief.test.ts \
+            test/budget.test.ts test/envelope.test.ts test/explainer.test.ts \
+            test/judge.test.ts test/llm.test.ts test/metrics.test.ts \
+            test/optimize.test.ts \
+            test/optimizer.test.ts test/questioner.test.ts test/policy.test.ts \
+            test/refine.test.ts test/runlog.test.ts test/runner.test.ts \
+            test/start-target.test.ts test/tools.test.ts ; do
+            echo "::group::$f"
+            out=$(node --experimental-strip-types --test "$f" 2>&1) || {
+              echo "$out"
+              echo "::error::$f FAILED"
+              exit 1
+            }
+            echo "$out"
+            echo "::endgroup::"
+            total=$((total + $(printf '%s\n' "$out" | sed -nE 's/^# pass ([0-9]+)$/\1/p')))
+          done
+          echo "== $total tests passed across 19 files" 
 
   typecheck:
     name: typecheck (harness-free src/ modules)
@@ -139,6 +214,13 @@ jobs:
       # the two harness-coupled modules are typechecked locally instead, against
       # the prebuilt packages from a harness checkout. Add a new pure module to
       # this list; a module that gains a harness import must leave it.
+      # `src/change-event.ts` looks harness-free — it imports nothing at all —
+      # but it is two `declare module` AUGMENTATIONS of `@deepseek-ai/cordis`
+      # and `@deepseek-ai/dsh-typert-protocol`, and a `tsc` run that has not
+      # installed those packages rejects an augmentation of a module it cannot
+      # resolve (TS2664). It is typechecked with `src/plugin.ts`, which imports
+      # the same two. A first draft of this change listed it anyway and CI went
+      # red on exactly that error.
       # src/brief.ts, src/approval-bridge.ts and src/explainer.ts are the pure
       # additions: `brief.ts` and `approval-bridge.ts` import nothing at all
       # (which is why their tests run in the no-install job above), and
@@ -151,11 +233,21 @@ jobs:
             --target ES2024 --module NodeNext --moduleResolution NodeNext \
             --strict --esModuleInterop --skipLibCheck --isolatedModules \
             --allowImportingTsExtensions \
-            src/agent-policy.ts src/budget.ts \
-            src/approval-bridge.ts src/brief.ts \
+            src/agent-policy.ts src/approval-bridge.ts src/approvals.ts \
+            src/brief.ts src/budget.ts \
             src/dashboard.ts src/dashboard-page.ts src/envelope.ts src/explainer.ts \
             src/judge.ts src/laya.ts src/llm.ts src/messages.ts \
             src/metrics.ts src/optimize.ts src/optimizer.ts src/prompts.ts \
             src/questioner.ts src/refine.ts \
-            src/review.ts src/routing.ts src/runlog.ts src/runner.ts src/signals.ts src/spec.ts \
-            src/tools.ts
+            src/review.ts src/routing.ts src/runlog.ts src/runner.ts \
+            src/signals.ts src/spec.ts src/tools.ts src/watcher-ttl.ts
+
+      # The list is hand-maintained and has already drifted twice — see the
+      # `change-event` note above — so this step recomputes it and fails on a
+      # module that has fallen off. Rule: a module belongs in the list unless it
+      # (or anything it reaches) imports or augments an `@deepseek-ai/*` module.
+      # `plugin.ts`, `index.ts`, `remote.ts`, `command.ts` and `change-event.ts`
+      # are the five excluded today, and each exclusion is named in
+      # `scripts/check-typecheck-list.mjs`, so a new one has to be written down.
+      - name: The typecheck list is not stale
+        run: node scripts/check-typecheck-list.mjs

@@ -110,6 +110,9 @@ export function clearWatcher(): void {
 export function createApprovalRegistry(options: ApprovalRegistryOptions): ApprovalRegistry {
   const { state, answers, answerTimeoutMs, hasWatcher } = options
   const pending = new Map<string, PendingEntry>()
+  // Tool name per ask id, kept after `pending` drops the entry: a settle line
+  // arrives AFTER the ask is gone, and "expired: tool" is not a sentence.
+  const toolNameOf = new Map<string, string>()
   let stopped = false
 
   const settleEntry = (id: string, outcome: ApprovalOutcome, feedText?: string): boolean => {
@@ -118,6 +121,8 @@ export function createApprovalRegistry(options: ApprovalRegistryOptions): Approv
     entry.settle(outcome, feedText)
     return true
   }
+  /** The tool an ask was for, by id. `pending` is already deleted by then. */
+  const nameOf = (id: string): string => toolNameOf.get(id) ?? 'tool'
 
   const briefs = {
     markBriefPending(id: string): void {
@@ -159,11 +164,26 @@ export function createApprovalRegistry(options: ApprovalRegistryOptions): Approv
         pending.delete(id)
         if (timer !== undefined) clearTimeout(timer)
         question.signal?.removeEventListener('abort', onAbort)
-        state.note('approval', feedText ?? `${OUTCOME_LABEL[outcome]}: ${toolName}`, runId)
+        // The ask's ID goes in the feed line. It is the only way a front end
+        // can tell WHICH ask ended: `expired: write` names a tool, and a run
+        // with two writes in flight cannot tell which card just went blank. The
+        // page renders it (`gate.resolution`), so without it an expiry is an
+        // empty space where a decision used to be.
+        state.note(
+          'approval',
+          feedText ?? `${OUTCOME_LABEL[outcome]}: ${toolName} [${id}]`,
+          runId,
+        )
         resolve(outcome)
       }
-      const onAbort = (): void => settle('cancelled', `cancelled: ${toolName} (the ask was withdrawn)`)
+      // Same shape on this path as the timeout's: the id goes IN the text,
+      // because this call passes its own and so bypasses the default entirely.
+      const onAbort = (): void => settle(
+        'cancelled',
+        `cancelled: ${toolName} (the ask was withdrawn) [${id}]`,
+      )
 
+      toolNameOf.set(id, toolName)
       pending.set(id, {
         id,
         toolName,
@@ -175,7 +195,16 @@ export function createApprovalRegistry(options: ApprovalRegistryOptions): Approv
         settle,
       })
       timer = setTimeout(
-        () => settle('unavailable', `expired: ${toolName} — no answer within ${String(answerTimeoutMs)}ms`),
+        // The default text is built WITHOUT the id and the id-carrying form is
+        // the default path, so exactly one of them is written. An earlier draft
+        // put the id in the DEFAULT and this timeout kept passing its own text
+        // — so every expiry arrived id-less, and the page's card had no way to
+        // name it. The lesson is the boring one: a default and an explicit
+        // argument are two paths, and only one of them was getting the change.
+        () => settle(
+          'unavailable',
+          `expired: ${toolName} — no answer within ${String(answerTimeoutMs)}ms [${id}]`,
+        ),
         answerTimeoutMs,
       )
       timer.unref?.()
@@ -193,13 +222,18 @@ export function createApprovalRegistry(options: ApprovalRegistryOptions): Approv
     briefs,
     pendingSnapshot: () => [...pending.values()].map(({ settle: _settle, ...rest }) => ({ ...rest })),
     settleApproval: (id, outcome, feedback) => {
-      const text = feedback === undefined || feedback.trim() === ''
-        ? undefined
-        : `${OUTCOME_LABEL[outcome]}: ${feedback.trim()}`
-      return settleEntry(id, outcome, text)
+      // The id is part of the TEXT on this path too, for the same reason as the
+      // abort above: any call that passes `feedText` bypasses the default, and
+      // this one always does whenever the operator typed a note. A page that
+      // cannot read the id off the feed cannot say which card just settled.
+      const note = feedback === undefined || feedback.trim() === ''
+        ? ''
+        : ` — ${feedback.trim()}`
+      return settleEntry(id, outcome, `${OUTCOME_LABEL[outcome]}: ${nameOf(id)}${note} [${id}]`)
     },
     stop: () => {
       stopped = true
+      toolNameOf.clear()
       for (const entry of [...pending.values()]) entry.settle('unavailable')
     },
   }

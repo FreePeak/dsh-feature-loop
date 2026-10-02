@@ -271,6 +271,28 @@
   background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 12%, transparent);
   color: var(--dsw-alias-state-success-primary);
 }
+/* `info` is the STANDING notice on the settings page — the fields are stored,
+   the patch row decides. It sits above the form rather than appearing only
+   after a save, because the person who needs to know is the one about to type. */
+.fl-notice[data-kind="info"] {
+  /* Every token here is in the host's own published set, which
+     `test/css-parity.test.ts` enforces: the first draft reached for
+     `--dsw-alias-accent-default`, which is not one of them, and that check
+     failed the build for it. That check has now earned its fourth keep. */
+  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 8%, transparent);
+  color: var(--dsw-alias-label-secondary);
+  border-left: 2px solid var(--dsw-alias-state-warn-primary);
+  padding: 10px 12px;
+  margin-bottom: 4px;
+}
+.fl-notice[data-kind="info"] strong {
+  color: var(--dsw-alias-label-primary);
+  font-weight: 600;
+}
+.fl-notice[data-kind="info"] code {
+  font-size: 0.92em;
+  color: var(--dsw-alias-label-primary);
+}
 
 .fl-pre {
   background: var(--dsw-alias-bg-layer-1);

@@ -107,11 +107,21 @@ export interface Config {
   /**
    * The optimization block (`loops`, `derive`, `history`, `judge`,
    * `totalBudgetUSD`). The block is validated at load and forwarded to the
-   * plugin, which uses it for exactly what a deployed loop can use: `derive`
-   * and `history` drive the run-history recording and the dashboard's Metrics
-   * payload, while `loops`/`totalBudgetUSD` are accepted but intentionally not
-   * consumed by any hook — iteration belongs to the caller (the CLI's
-   * `runRefined`), not to a step waterfall. See `OptimizePolicyOptions`.
+   * plugin, which reads exactly ONE key: `history`, the run-history file.
+   *
+   * **`derive` is read by nothing** — `grep -n 'optimize?.derive' src/plugin.ts`
+   * returns no match — and `history` alone drives the run-history recording, as
+   * it did before `derive` was checked. A note here claimed both. The rest
+   * (`loops`, `judge`, `totalBudgetUSD`) are likewise accepted and not
+   * consumed, because iteration belongs to the caller (the CLI's
+   * `runRefined`), not to a step waterfall.
+   *
+   * The keys are kept rather than deleted so a deployment that sets them does
+   * not start failing validation when they are eventually honoured — and
+   * `scripts/check-dead-exports.mjs` does not flag them, because they ARE
+   * reachable: `parseOptimizeConfig` reads every one of them. A key that is
+   * validated and then ignored is a documented no-op, not dead code; the bug
+   * this note records is the CLAIM that it was read.
    */
   optimize?: OptimizeConfig
 }

@@ -16,6 +16,7 @@ import { test } from 'node:test'
 import {
   APPROVAL_OPTIONS,
   assertSettleAccepted,
+  expiredOutcomeOf,
   isDecided,
   outcomeForResponse,
   resolutionForOutcome,
@@ -121,4 +122,37 @@ test('a host failure IS reported, so a real error is not silently swallowed', ()
     () => assertSettleAccepted({ ok: false, error: { message: 'host remote is not mounted' } }),
     /host remote is not mounted/,
   )
+})
+
+test('expiredOutcomeOf keys every settled ask by the id its feed line carries', async () => {
+  const id = '973f503a-8d08-411b-9f73-5b6c2846478a'
+  const out = expiredOutcomeOf([
+    { text: 'asked: write — REVIEW REQUESTED (policy): write: irreversible is always approved by a human.' },
+    { text: `expired: write — no answer within 20000ms [${id}]` },
+    { text: 'allowed once: read_file [11111111-1111-4111-8111-111111111111]' },
+    { text: 'rejected: bash [22222222-2222-4222-8222-222222222222]' },
+  ])
+  assert.equal(out.get(id), 'unavailable')
+  assert.equal(out.get('11111111-1111-4111-8111-111111111111'), 'allowed-once')
+  assert.equal(out.get('22222222-2222-4222-8222-222222222222'), 'rejected')
+})
+
+test('expiredOutcomeOf ignores a line with no id rather than guessing at one', () => {
+  // The shape that motivated this: `expired: write` names a TOOL, and a run
+  // with two writes in flight cannot say which card went blank. Attributing it
+  // to the first live ask would put "Expired — no answer in time." on a card
+  // the operator is still holding, which is worse than saying nothing.
+  assert.equal(expiredOutcomeOf([{ text: 'expired: write — no answer within 20000ms' }]).size, 0)
+  assert.equal(expiredOutcomeOf([{ text: 'expired: write [not-a-uuid]' }]).size, 0)
+  assert.equal(expiredOutcomeOf([{ text: 'a human said something' }]).size, 0)
+})
+
+test('an expired outcome reaches the gate as a resolution, not an approval', () => {
+  // The distinction that matters to the card: `approved` means a human decided;
+  // `resolution` means nobody did. Rendering an expiry as `approved: false` would
+  // claim the operator refused.
+  assert.equal(resolutionForOutcome('unavailable'), 'expired')
+  assert.equal(resolutionForOutcome('cancelled'), 'cancelled')
+  assert.equal(resolutionForOutcome('rejected'), undefined)
+  assert.equal(resolutionForOutcome('allowed-once'), undefined)
 })

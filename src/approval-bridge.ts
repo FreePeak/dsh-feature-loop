@@ -255,3 +255,44 @@ export const GATE_POLICY_CLASSES: GatePolicyClass[] = ['read', 'glob', 'grep', '
 
 /** Every policy a class may carry, for validation and error messages. */
 export const GATE_POLICY_VALUES: GatePolicyValue[] = ['auto', 'auto-if-confident', 'always-approve']
+
+/** The label `approvals.ts` writes for each outcome, inverted. */
+const OUTCOME_BY_LABEL: Record<string, BridgeOutcome> = {
+  'allowed once': 'allowed-once',
+  rejected: 'rejected',
+  cancelled: 'cancelled',
+  expired: 'unavailable',
+}
+
+/**
+ * The outcome of every settled ask named in the activity feed, keyed by ask id.
+ *
+ * `approvals.ts` writes `<label>: <tool> [<id>]` into the feed when an ask
+ * settles, which is the only place the ID survives the ask leaving `pending`.
+ * The page needs it because the card is built from the pending list: when an ask
+ * expires or aborts, the list no longer has it, so the card would simply
+ * vanish and the operator would watch a decision disappear with nothing named.
+ *
+ * Parsing the feed rather than growing the payload is deliberate — the feed is
+ * already the place a human reads what happened, and a second channel saying the
+ * same thing would be a second thing to keep in sync. The shape it reads is one
+ * line this repo writes; `test/approval-bridge.test.ts` pins both directions,
+ * including that a line without an id is ignored rather than guessed at.
+ *
+ * @param feed - the snapshot's feed, oldest first.
+ * @returns ask id to outcome, for every ask the feed names an outcome for.
+ */
+export function expiredOutcomeOf(
+  feed: readonly { text: string }[],
+): ReadonlyMap<string, BridgeOutcome> {
+  const out = new Map<string, BridgeOutcome>()
+  for (const entry of feed) {
+    if (entry.text === undefined || typeof entry.text !== 'string') continue
+    const m = /^(allowed once|rejected|cancelled|expired): .+ \[([0-9a-f-]{36})\]$/.exec(entry.text)
+    if (m === null) continue
+    const outcome = OUTCOME_BY_LABEL[m[1] as keyof typeof OUTCOME_BY_LABEL]
+    if (outcome !== undefined) out.set(m[2], outcome)
+  }
+  return out
+}
+

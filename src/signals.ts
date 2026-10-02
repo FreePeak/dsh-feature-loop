@@ -115,7 +115,7 @@ export interface SignalThresholds {
 }
 
 /** Defaults: the book's numbers. */
-export const DEFAULT_THRESHOLDS: SignalThresholds = { ...BOOK_THRESHOLDS }
+const DEFAULT_THRESHOLDS: SignalThresholds = { ...BOOK_THRESHOLDS }
 
 /**
  * Consecutive identical (tool, args) calls at the end of the history.

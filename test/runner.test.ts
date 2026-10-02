@@ -353,3 +353,71 @@ test('the sandbox confines a tool to the root — an escape is a failed step, no
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test('consecutive failing steps escalate the ladder — recordFailure has a caller now', async () => {
+  // `escalateAfterFailures` is documented as "consecutive failures on one rung"
+  // and is set in every shipped profile — and until this fix `recordFailure`
+  // had NO caller outside its own unit test. The ladder could therefore only
+  // climb on `stepsPerRung`, so a run that failed fast and early stayed on the
+  // cheap model for the whole task, which is the opposite of what the rung is
+  // for: a model that cannot do the work is the strongest possible evidence
+  // that a stronger model is worth its price.
+  //
+  // `stepsPerRung: 99` removes the other reason to climb, so the ONLY thing
+  // that can move this ladder is the failure signal.
+  const routes: string[] = []
+  const failingTools = [{
+    name: 'read_file',
+    description: 'a tool that always fails',
+    parameters: { type: 'object' as const, properties: { path: { type: 'string' as const, description: 'p' } }, required: ['path'] },
+    reversibility: 'read' as const,
+    run: () => Promise.resolve({ ok: false, output: '', error: 'no such file' }),
+  }]
+  const ladderSpec = spec({
+    controller: {
+      ladder: [{ provider: 'cheap', model: 'fast' }, { provider: 'pricey', model: 'strong' }],
+      stepsPerRung: 99,
+      escalateAfterFailures: 2,
+    },
+    maxSteps: 4,
+    prices: {
+      'cheap/fast': { inputPerMTok: 1, outputPerMTok: 1 },
+      'pricey/strong': { inputPerMTok: 1, outputPerMTok: 1 },
+    },
+  })
+  const llm = createScriptedClient([
+    callTool('read_file', { path: 'a.ts' }),
+    callTool('read_file', { path: 'a.ts' }),
+    callTool('read_file', { path: 'a.ts' }),
+    callTool('read_file', { path: 'a.ts' }),
+  ])
+  const result = await runLoop({
+    spec: ladderSpec,
+    phase: phaseOf('bugfix'),
+    tools: failingTools,
+    llm,
+    checkSuccess: () => Promise.resolve({ ok: false, output: 'still failing' }),
+    // The emitted `step-start` frame carries the route the step ran on, which
+    // is the observable this is about — no new hook needed for a test to see it.
+    onEvent: e => { if (e.kind === 'step-start') routes.push(e.route) },
+  })
+
+  // The climb lands on the THIRD step, not the second: the counter reads the
+  // step it just finished, so `escalateAfterFailures: 2` means "after two have
+  // failed" and the next request is the one that moves. Asserting the exact
+  // sequence is the point — a ladder that climbs on the first failure would
+  // pass a weaker `routes[0] !== routes[1]`.
+  assert.deepEqual(
+    routes,
+    ['cheap/fast', 'cheap/fast', 'pricey/strong', 'pricey/strong'],
+    'two consecutive failures move the ladder, and only then',
+  )
+  assert.equal(routes[0], 'cheap/fast', 'step 1 uses the cheap rung')
+  assert.equal(routes[routes.length - 1], 'pricey/strong', 'and the run finishes on the strong one')
+  // An escalation is a routing decision, not an escape from the ceiling. This
+  // run stops on the COST ceiling rather than the step one — four steps at
+  // 1/MTok each — and that is the honest outcome for this spec, so the
+  // assertion names it rather than the one the test author expected.
+  assert.equal(result.outcome, 'budget-stop')
+  assert.equal(result.steps, 4)
+})

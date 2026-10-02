@@ -41,7 +41,7 @@ import type { LoopSpec } from './spec.ts'
  * the configured `maxSteps`, which is the operator's stated willingness — a
  * derived ceiling may tighten that but never quietly exceed it.
  */
-export const DERIVED_MIN_STEPS = 3
+const DERIVED_MIN_STEPS = 3
 
 /** The default history path, resolved against the invoking workspace. */
 export function defaultHistoryPath(cwd: string = process.cwd()): string {

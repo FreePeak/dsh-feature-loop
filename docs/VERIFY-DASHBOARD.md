@@ -106,12 +106,31 @@ feature-loop dashboard: http://127.0.0.1:55370/?token=<redacted>
 e2e-dashboard (rejected): the Reject click resolved the ask rejected
 ```
 
+### Re-run 2026-10-01, with no environment variables at all
+
+Both env vars used to be required, and this machine had neither in the place the
+script looked — the only `playwright-core` was in an unrelated `~/node_modules`,
+and the only Chromium was the installed Google Chrome. Both are now discovered
+(§ "Environment" in `test/e2e-dashboard.mjs`), so `make e2e-dashboard` runs on a
+plain checkout:
+
+```
+$ node --experimental-strip-types test/e2e-dashboard.mjs allow
+feature-loop dashboard: http://127.0.0.1:55421/?token=<redacted>
+e2e-dashboard (allowed-once): the Allow once click resolved the ask allowed-once
+$ node --experimental-strip-types test/e2e-dashboard.mjs reject
+feature-loop dashboard: http://127.0.0.1:55440/?token=<redacted>
+e2e-dashboard (rejected): the Reject click resolved the ask rejected
+```
+
 ## Re-verified on assistant-ui (this branch)
 
 The UI moved from OpenUI to [assistant-ui](https://github.com/assistant-ui/assistant-ui),
 so the browser claim was re-established against the new shell rather than
-inherited. `make verify` is green at **194 unit + 11 integration**, and
-`make e2e-dashboard` passes both directions repeatedly:
+inherited. `make verify` is green at **405 unit + 11 integration** as of
+2026-10-01 (it was 194 when this was written; the dashboard's own suite grew,
+and `test/plugin-wiring.test.ts` added 10), and `make e2e-dashboard` passes both
+directions repeatedly:
 
 ```
 $ node --experimental-strip-types test/e2e-dashboard.mjs allow

@@ -71,7 +71,20 @@
           glob: auto
           grep: auto
           edit: auto-if-confident
-          write: auto-if-confident
+          # `always-approve`, deliberately, and this is the one shipped default
+          # that changed. It used to be `auto-if-confident`, which asks only
+          # when the judge is NOT confident — so with a working local judge the
+          # shipped config cleared writes silently and a human watching a loop
+          # saw no approval at all. That reads as "the gate is broken" (it was
+          # in fact working exactly as configured), which is the worst first
+          # impression this plugin can give.
+          #
+          # `bash` is not listed because the spec's `actuator` classifies it
+          # `irreversible`, which already means `always-approve`.
+          #
+          # To get the throughput posture back once you trust the judge, put
+          # `write: auto-if-confident` here. Nothing else changes.
+          write: always-approve
 
         # How a review reaches a human. `ask` (the default) prompts in the Web
         # UI's conversation composer, so you can approve or reject the step.
@@ -114,8 +127,8 @@
         # optimize:
         #   history: .feature-loop/runs.jsonl   # run-history file: appended per closed turn, read for Metrics
         #   loops: 3              # refinement passes, integer 3–10 (CLI only; validated at load)
-        #   derive: true          # accepted; the CLI's `--derive` derives envelopes, the plugin records the history they come from
-        #   judge: chat           # none | chat | laya — who scores across passes (CLI only)
+        #   derive: true          # accepted, READ BY NOTHING — see the note in OptimizePolicyOptions
+        #   judge: chat           # none | chat | laya — cross-pass judge, read by nothing; the CLI's `runRefined` takes it
         #   totalBudgetUSD: 3.00  # refinement budget; default is derived × loops × 0.6 (CLI only)
         # ────────────────────────────────────────────────────────────────────
 
@@ -138,13 +151,37 @@
           controller:
             # Cheap-first: most steps run on the first rung, and the loop climbs
             # only on evidence (steps spent, consecutive failures) — never on
-            # vibes. `execution`/`planning` are onegw role aliases, resolved by
-            # the gateway; swap in provider/model pairs if you route directly.
+            # vibes.
+            #
+            # THE MODEL IDS MUST APPEAR IN YOUR PROVIDER PROFILE'S `models:`
+            # LIST. llm-pi-ai resolves a rung against that list, not against the
+            # gateway: a model the gateway serves but the deployment never
+            # declared makes the run die `UNKNOWN_MODEL` on step 1 — after the
+            # dashboard has already recorded the route, the step and the spend.
+            # Nothing errors at boot and nothing errors at config load.
+            #
+            # The rung is onegw's `execution` alias — the gateway's own name for
+            # the model configured to EXECUTE work, so the loop follows whatever
+            # the account points that role at instead of a model id frozen into
+            # this file. Verified against the live gateway 2026-10-02: /v1/models
+            # lists `execution` and a live chat completion on it returns 200.
+            #
+            # `llm-pi-ai` resolves a rung against YOUR `models:` list, not against
+            # the gateway, so the alias has to be declared there —
+            # docker/settings.template.yaml does:
+            #   llm-pi-ai: { providers: { onegw: { models: [{ id: execution, … }] } } }
+            #
+            # One rung, deliberately. This file once shipped two CONCRETE ids so
+            # the ladder could escalate, and every deployment that inherited them
+            # ran a model nobody here had tested; when `execution` itself was
+            # undeclared the whole thing died UNKNOWN_MODEL on step 1. A rung no
+            # deployment can resolve is not a ladder, it is a claim. Add a rung
+            # in the same edit that declares it and prices it, and
+            # scripts/check-ladder-models.mjs names whichever of the three you
+            # forgot.
             ladder:
               - provider: onegw
                 model: execution
-              - provider: onegw
-                model: planning
             stepsPerRung: 5
             escalateAfterFailures: 2
 
@@ -173,17 +210,20 @@
           costBudgetUSD: 1.00
 
           # Without a price table the cost ceiling cannot price a step and would
-          # read $0.00 forever — the failure budget.ts refuses to hide. These are
-          # the plan rates for the onegw aliases above; replace them if you
-          # route to different models.
+          # read $0.00 forever — the failure budget.ts refuses to hide.
+          #
+          # The keys MUST be the same `provider/model` strings the ladder above
+          # names: a price keyed by anything else leaves the route the loop
+          # actually took unpriced, so every run records `unpricedSteps: 1`
+          # against a ceiling that can then never stop anything.
+          #
+          # Estimates, labelled as such — a gateway plan's marginal rate is not
+          # a published price. Replace them with your account's rates.
           prices:
             onegw/execution:
               inputPerMTok: 0.30
               outputPerMTok: 1.20
               cacheReadPerMTok: 0.03
-            onegw/planning:
-              inputPerMTok: 2.50
-              outputPerMTok: 10.00
           unpricedFallback:
             inputPerMTok: 0.30
             outputPerMTok: 1.20

@@ -388,6 +388,54 @@ test('POST validation: no token 401, cross-origin 403, bad outcome 400, bad body
   assert.equal(await pending, 'allowed-once')
 })
 
+test('every route takes the query token, the settling one included', async (t) => {
+  // KNOWN-ISSUES §5. The settle route used to require the HEADER while every
+  // read route accepted `?token=` too, so the two halves of one five-route API
+  // disagreed about how to authenticate and the failure was a 401 that read
+  // as "wrong token" when it meant "wrong mechanism".
+  const { dash } = await started(t)
+  const close = await connectSse(dash)
+  t.after(close)
+
+  const pending = dash.answer(QUESTION, delegatingNext().next)
+  const { id } = (await getState(dash)).pending[0] as { id: string }
+
+  const res = await fetch(
+    `${dash.url}api/approvals/${encodeURIComponent(id)}?token=${encodeURIComponent(dash.token)}`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: new URL(dash.url).origin },
+      body: JSON.stringify({ outcome: 'allowed-once' }),
+    },
+  )
+  assert.equal(res.status, 200)
+  assert.equal(await pending, 'allowed-once')
+
+  // Query auth is not a hole: no token at all is still a 401, and a browser
+  // from another origin is still a 403 even when it holds the query token.
+  const second = dash.answer(QUESTION, delegatingNext().next)
+  const next = (await getState(dash)).pending[0] as { id: string }
+  assert.equal(
+    (await fetch(`${dash.url}api/approvals/${next.id}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ outcome: 'rejected' }),
+    })).status,
+    401,
+  )
+  assert.equal(
+    (await fetch(`${dash.url}api/approvals/${next.id}?token=${encodeURIComponent(dash.token)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'http://evil.example' },
+      body: JSON.stringify({ outcome: 'rejected' }),
+    })).status,
+    403,
+    'the query token must not buy a cross-origin state change',
+  )
+  assert.equal((await post(dash, next.id, 'rejected', { token: dash.token })).status, 200)
+  assert.equal(await second, 'rejected')
+})
+
 test('an abort (the ask was withdrawn) cancels the pending approval', async (t) => {
   const { dash } = await started(t)
   const close = await connectSse(dash)
@@ -398,6 +446,84 @@ test('an abort (the ask was withdrawn) cancels the pending approval', async (t) 
   controller.abort()
   assert.equal(await pending, 'cancelled')
   assert.deepEqual((await getState(dash)).pending, [])
+})
+
+test('every settle names the ask it settled, so a page can say WHICH one ended', async (t) => {
+  // The page's card is built from `pending`, so a settled ask has left it — and
+  // the only record that survives is the feed line. `expired: write_file` names
+  // a TOOL, which is not enough: a run with two writes in flight cannot say
+  // which card went blank. The id is what makes the line addressable, and this
+  // asserts it on ALL FOUR settle paths, because the fix that came first touched
+  // only the default text and the timeout kept passing its own.
+  // 5s, not 30ms: cases 2-4 create their own asks and a 30ms ceiling would
+  // expire the one under test before the test reached it. The expiry path is
+  // case 1 and wants a tight ceiling — so this uses two dashboards.
+  const { dash } = await started(t, { answerTimeoutMs: 5000 })
+  const close = await connectSse(dash)
+  t.after(close)
+
+  // Every id in a feed, in order — and `idIn` is the Nth of them. An earlier
+  // draft read only the FIRST match, so cases 2-4 were all silently comparing
+  // case 1's id and the distinctness assertion could never fail. The nth form is
+  // what makes each case check its own settle.
+  const idsIn = (feed: readonly { text: string }[]): string[] =>
+    [...feed.map(l => l.text).join('\n').matchAll(/\[([0-9a-f-]{36})\]/g)].map(m => m[1])
+  const idIn = (feed: readonly { text: string }[], n: number): string | undefined =>
+    idsIn(feed)[n]
+
+  // 1. expiry (the timer passes its own text) — its own dashboard, because
+  //    this one's ceiling is 5s and waiting for it four times is not a test.
+  const { dash: quick } = await started(t, { answerTimeoutMs: 30 })
+  const quickClose = await connectSse(quick)
+  t.after(quickClose)
+  await quick.answer(QUESTION, delegatingNext().next)
+  const expiredId = idIn((await getState(quick)).feed, 0)
+  assert.ok(expiredId !== undefined, 'an expiry must name the ask it expired')
+
+  // 2. abort. Its own signal, aborted while the ask is live.
+  const controller = new AbortController()
+  const abortNext = delegatingNext()
+  const aborted = dash.answer({ ...QUESTION, signal: controller.signal }, abortNext.next)
+  await delay(20)
+  controller.abort()
+  assert.equal(await aborted, 'cancelled')
+  assert.equal(abortNext.delegated(), false, 'the ask was claimed, so nothing delegated')
+  const cancelledId = idIn((await getState(dash)).feed, 0)
+  assert.ok(cancelledId !== undefined, 'an abort must name the ask it cancelled')
+
+  // 3. an explicit decision from the page, WITH operator feedback — the path
+  //    that builds its own text and so bypasses the default entirely.
+  const decideNext = delegatingNext()
+  const decided = dash.answer(QUESTION, decideNext.next)
+  const live = (await getState(dash)).pending
+  assert.equal(live.length, 1, 'exactly one ask is in flight')
+  const pending = live[0] as { id: string }
+  const res = await post(dash, pending.id, 'allowed-once', {
+    token: dash.token,
+    body: JSON.stringify({ outcome: 'allowed-once', feedback: 'looks right' }),
+  })
+  assert.equal(res.status, 200, await res.text())
+  assert.equal(await decided, 'allowed-once')
+  assert.equal(decideNext.delegated(), false)
+  const allowedId = idIn((await getState(dash)).feed, 1)
+  assert.ok(allowedId !== undefined, 'a decision must name the ask it settled')
+
+  // 4. the last tab disconnecting
+  const orphan = dash.answer(QUESTION, delegatingNext().next)
+  await delay(5)
+  close()
+  assert.equal(await orphan, 'unavailable')
+  const disconnectedId = idIn((await getState(dash)).feed, 2)
+  assert.ok(disconnectedId !== undefined, 'a disconnect must name the ask it closed')
+
+  // The ids are DISTINCT, which is the whole point: three settles of the same
+  // tool are three different asks. `expiredId` came from the OTHER dashboard,
+  // so only the three from this one are comparable.
+  assert.equal(new Set([cancelledId, allowedId, disconnectedId]).size, 3)
+  assert.ok(
+    expiredId !== undefined && !new Set([cancelledId, allowedId, disconnectedId]).has(expiredId),
+    'the expiry happened on its own dashboard, so its id must not collide either',
+  )
 })
 
 test('answerTimeoutMs expires the ask to unavailable, never a hang', async (t) => {
@@ -877,12 +1003,17 @@ test('absent metrics/recommendations still produce a valid snapshot shape', asyn
   const { dash } = await started(t)
   const snapshot = await getState(dash)
   // Exact key set: absent surfaces are absent keys, never zeroed numbers
-  // that would read as "measured, and it is all fine".
+  // that would read as "measured, and it is all fine". `watching` is the one
+  // addition — a `/api/state` poll is itself the heartbeat that makes this
+  // caller eligible to answer, so it is always true on the response that
+  // carries it. (The SSE frame is the other place `snapshot()` is served, and
+  // it does NOT carry the key: nothing has proven a watcher at that point.)
   assert.deepEqual(snapshot, {
     answers: true,
     pending: [],
     runs: [],
     feed: [],
+    watching: true,
   })
 })
 
@@ -936,6 +1067,32 @@ test('an SSE client is a watcher while open, and stops being one when the last t
   disconnect()
   await delay(50)
   assert.equal(watcherActive(), false, 'the last tab going releases the claim')
+})
+
+/**
+ * KNOWN-ISSUES §6: a client that polls `/api/state` is watching, even though it
+ * holds no stream. It used not to count, so a headless run was told "no
+ * approval channel is available" while its own poller sat right there — and
+ * the only way to learn it was ineligible was to watch a gate refuse an ask.
+ */
+test('a /api/state poll counts as a watcher and says so', async (t) => {
+  clearWatcher()
+  t.after(clearWatcher)
+  const { dash } = await started(t, { host: '127.0.0.1', answers: true })
+  assert.equal(watcherActive(), false, 'starts unwatched')
+  const state = await getState(dash)
+  assert.equal(watcherActive(), true, 'a poll is the heartbeat a stream would have been')
+  assert.equal(state.watching, true, 'and the response says the client is eligible to answer')
+
+  // `answers: false` means observe-only: the page may render, but the registry
+  // must not let it claim, so it never registers a heartbeat and `watching`
+  // stays false. That is the field's whole job — it answers "if I POST an
+  // answer right now, am I eligible to have it counted?".
+  clearWatcher()
+  const { dash: observer } = await started(t, { host: '127.0.0.1', answers: false })
+  const seen = await getState(observer)
+  assert.equal(seen.answers, false, 'observe-only stays observe-only')
+  assert.equal(seen.watching, false, 'and reports itself ineligible to answer')
 })
 
 // ── the watcher TTL and the page poll must not drift apart ─────────────────

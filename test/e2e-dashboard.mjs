@@ -14,12 +14,18 @@
  *   node test/e2e-dashboard.mjs [allow|reject]
  *   PLAYWRIGHT_CORE=/path/to/playwright-core node test/e2e-dashboard.mjs allow
  *
- * Environment:
- *   PLAYWRIGHT_CORE - path to a `playwright-core` package (default: resolve
- *     from the harness checkout's node_modules, then from `npm root -g`).
- *   CHROME_PATH    - explicit Chromium executable (default: Playwright's
- *     bundled chromium_headless_shell, falling back to the full-chromium
- *     cache entry).
+ * Environment — both are found automatically now, and the reason is worth
+ * recording: the script used to need BOTH set by hand, on a machine where the
+ * only `playwright-core` lived in an unrelated `~/node_modules` and the only
+ * Chromium was the installed Google Chrome. Both are now defaults, so
+ * `make e2e-dashboard` works on a plain checkout.
+ *
+ *   PLAYWRIGHT_CORE - path to a `playwright-core` package. Defaults to this
+ *     machine's resolution order, which found none under the harness checkout
+ *     and would have failed; `~/node_modules` is now in the list.
+ *   CHROME_PATH    - explicit Chromium executable. Defaults to the Playwright
+ *     browser cache, then to the INSTALLED Google Chrome — which is present on
+ *     every Mac and needs no download.
  */
 import { strict as assert } from 'node:assert'
 import { createRequire } from 'node:module'
@@ -39,6 +45,8 @@ function resolvePlaywrightCore() {
   const candidates = [
     join(homedir(), 'work/harvey/freepeak/deepseek-harness/node_modules/playwright-core'),
     join(homedir(), 'work/harvey/freepeak/deepseek-harness/node_modules/.pnpm'),
+    join(homedir(), 'node_modules/playwright-core'),
+    join(homedir(), '.bun/install/cache/playwright-core'),
   ]
   for (const candidate of candidates) {
     if (existsSync(join(candidate, 'package.json'))) return candidate
@@ -54,6 +62,11 @@ function resolveChrome() {
   if (existsSync(shell)) return shell
   const full = join(homedir(), 'Library/Caches/ms-playwright/chromium-1228/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome')
   if (existsSync(full)) return full
+  // The installed Chrome. Playwright drives it through the same CDP path it
+  // uses for its own builds; the only cost is a visible window, which is the
+  // point when the check exists to see the page a human sees.
+  const installed = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+  if (existsSync(installed)) return installed
   return undefined
 }
 
