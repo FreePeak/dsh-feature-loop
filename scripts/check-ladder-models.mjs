@@ -181,8 +181,11 @@ for (const c of cases) {
  * `--profile <name-or-dir>` checks one. With no argument, every profile under
  * `$DSH_HOME/profiles` that has a `cordis.patch.yml` is checked.
  */
+/** Where profiles live: $DSH_HOME if set, else ~/.dsh. Named in the summary. */
+const PROFILES_ROOT = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'profiles')
+
 function localProfiles() {
-  const root = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'profiles')
+  const root = PROFILES_ROOT
   const named = process.argv[2]
   if (named !== undefined) {
     const dir = named.startsWith('/') ? named : join(root, named)
@@ -254,5 +257,10 @@ for (const dir of profiles) {
 }
 
 if (failed) process.exit(1)
+// One line, and it says which half is which: this script runs in CI, where
+// there are no local profiles, and on a developer's machine, where the
+// profiles are the interesting part. A bare "18 profiles checked" in a CI log
+// reads as a claim about the repo that is not being made.
 console.log(`ladder models: ${String(cases.length)} shipped specs + ` +
-  `${String(profiles.length)} local profile(s), every rung declared and priced.`)
+  `${String(profiles.length)} local profile(s) under ` +
+  `${PROFILES_ROOT === join(homedir(), '.dsh', 'profiles') ? '~/.dsh/profiles' : PROFILES_ROOT}.`)
