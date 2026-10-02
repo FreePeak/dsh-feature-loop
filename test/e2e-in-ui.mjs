@@ -74,9 +74,17 @@ const buttonClass = outcome === 'allow' ? 'allow' : 'reject'
 const task = 'Create the file proof.txt in the current working directory, ' +
   'containing exactly the word hello and nothing else, then read it back.'
 
-/** Where the file must land: what the page said, unless overridden. */
-let proofDir = process.env.PROOF_DIR
-let proof = proofDir === undefined ? undefined : join(proofDir, 'proof.txt')
+/**
+ * Where the file must land. `PROOF_DIR` is a REQUEST, not an authority: the
+ * loop runs in whichever Workspace the host has open, and only the page knows
+ * which that is. It is kept as a plain string (never a joined path) because
+ * every use below happens after the page has answered.
+ */
+const requested = process.env.PROOF_DIR
+/** Filled in from the page's own note; `undefined` until it has been read. */
+let proofDir
+/** The file the run is expected to write. */
+let proof
 
 const executablePath = resolveChrome()
 const browser = await chromium.launch(executablePath === undefined ? {} : { executablePath })
@@ -113,9 +121,21 @@ try {
   const note = (await page.locator('.fl-start-note').textContent()) ?? ''
   console.log('target:', note)
   const fromNote = /—\s*(\S+)\s*$/.exec(note)?.[1]
-  proofDir ??= fromNote
-  proof = join(proofDir ?? '', 'proof.txt')
-  if (!existsSync(proofDir ?? '')) {
+  // The PAGE is the authority. A PROOF_DIR that disagrees with it was printed
+  // as a note and then ignored — twice, and the second time silently, because
+  // `proofDir ??= fromNote` only assigns when the left side is undefined and
+  // the env var was always defined. So the request is checked against the page
+  // and refused out loud when they differ.
+  if (fromNote === undefined) {
+    console.error('the page did not name a target; cannot say where the file lands')
+    process.exit(2)
+  }
+  if (requested !== undefined && requested !== fromNote) {
+    console.log(`note: PROOF_DIR (${requested}) is not where the page says the loop runs (${fromNote}); following the page`)
+  }
+  proofDir = fromNote
+  proof = join(proofDir, 'proof.txt')
+  if (!existsSync(proofDir)) {
     console.error(`the page named a target this machine does not have: ${proofDir}`)
     process.exit(2)
   }
