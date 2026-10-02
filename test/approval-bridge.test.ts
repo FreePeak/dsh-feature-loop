@@ -16,6 +16,7 @@ import { test } from 'node:test'
 import {
   APPROVAL_MODES,
   approvalModeFor,
+  approvalModeLabel,
   APPROVAL_OPTIONS,
   assertSettleAccepted,
   expiredOutcomeOf,
@@ -195,4 +196,33 @@ test('every posture classifies as ITSELF, so the page\'s select cannot rewrite w
     assert.equal(approvalModeFor(APPROVAL_MODES[name].policies), name,
       `${name} must classify as itself, or opening the page and pressing Save rewrites the file`)
   }
+})
+
+// A hand-edited file is usually a MIXTURE of the postures, and the page's hint
+// is one posture's copy. Measured 2026-10-03 with
+// `{write: always-approve, edit: auto, bash: auto}`: the write asked, the edit
+// and the shell command did not, and the page said "A write is reviewed when the
+// loop has no confidence to judge it" — a claim about `write`, while two of the
+// three write classes were never reviewed at all.
+
+test('a MIXED map is marked as one, so a posture\'s copy is never shown as its own', () => {
+  assert.equal(approvalModeLabel({ write: 'always-approve', edit: 'auto', bash: 'auto' }), ' — mixed with the fields below')
+  assert.equal(approvalModeLabel({ write: 'auto', edit: 'auto', bash: 'auto-if-confident' }), ' — mixed with the fields below')
+})
+
+test('each posture\'s OWN map carries no marker, so the page reads normally', () => {
+  for (const name of Object.keys(APPROVAL_MODES)) {
+    assert.equal(approvalModeLabel(APPROVAL_MODES[name].policies), '',
+      `${name} describes itself exactly and must not be marked mixed`)
+  }
+})
+
+test('a partial map is marked mixed, because the unset classes DEFAULT — not because it is a mixture', () => {
+  // `{write: auto}` alone leaves `edit` and `bash` on the gate's defaults, and
+  // `ReviewGate`\'s default for an unclassified tool is `always-approve`. Marking
+  // it "mixed" is the safe direction: it sends the reader to the fields rather
+  // than letting a posture name stand in for what they do not see.
+  assert.equal(approvalModeLabel({ write: 'auto' }), ' — mixed with the fields below')
+  assert.equal(approvalModeLabel({}), ' — mixed with the fields below')
+  assert.equal(approvalModeLabel(undefined), ' — mixed with the fields below')
 })

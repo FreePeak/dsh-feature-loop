@@ -18,7 +18,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import z from '@deepseek-ai/schemastery'
 import { DashboardApp } from './app.tsx'
 import type { DashboardSource } from './app.tsx'
-import { APPROVAL_MODES, approvalModeFor } from '../src/approval-bridge.ts'
+import { APPROVAL_MODES, approvalModeFor, approvalModeLabel } from '../src/approval-bridge.ts'
 
 import { assertSettleAccepted } from '../src/approval-bridge.ts'
 import type { ApprovalModeName, BridgeOutcome } from '../src/approval-bridge.ts'
@@ -215,6 +215,7 @@ function SettingsPanel({ host }: { host: Host }): React.ReactElement {
   // An absent map is the shipped default, which is the safe posture — so an
   // unset profile reads as "review at risky steps" rather than as nothing.
   const approvalMode = approvalModeFor(draft.gatePolicies as never)
+  const mixedWithFields = approvalModeLabel(draft.gatePolicies as never) !== ''
 
   return (
     <div className="fl-panel">
@@ -302,7 +303,16 @@ function SettingsPanel({ host }: { host: Host }): React.ReactElement {
         <h3 className="fl-section-title">Approval</h3>
         <Field
           label="When to stop and ask"
-          hint={APPROVAL_MODES[approvalMode].detail}
+          // The hint is the POSTURE's copy, and a hand-edited file is usually
+          // not one of the three postures — it is a mixture of them. So the
+          // option carries a marker when it does not describe the file exactly,
+            // and the hint says the fields are the authority. Measured 2026-10-03
+            // with `{write: always-approve, edit: auto, bash: auto}`: without
+            // this the page said a write is reviewed when the loop has no
+            // confidence to judge it, while two of the three write classes were
+            // never reviewed at all.
+          hint={(mixedWithFields ? 'Not one of the postures — the per-tool fields below are what runs. ' : '')
+            + APPROVAL_MODES[approvalMode].detail}
         >
           <select
             value={approvalMode}
