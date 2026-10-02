@@ -256,7 +256,16 @@ sed -i.bak -e "s/__DASHBOARD_PORT__/${DASH}/" -e "s/__GATE_MODE__/${GATE_MODE}/"
 rm -f "$PROFILE_DIR/cordis.patch.yml.bak"
 
 echo "==> install (pnpm 9 — a v11 re-resolve drops the peer wiring)"
-(cd "$PROFILE_DIR" && $PNPM install --no-frozen-lockfile >/dev/null)
+# `--prefer-offline` is the difference between a hang and an install when the
+# registry is slow or unreachable: every package the profile needs is already in
+# the local store from a previous profile, and pnpm otherwise holds the open
+# socket until its own fetch timeout. Measured 2026-10-02 with the registry
+# unreachable (TLS to registry.npmjs.org stalled after connect, github fine):
+# the install sat at 1.2s of CPU across 9 minutes with the process idle on five
+# half-open Cloudflare sockets — indistinguishable from a hang, because it WAS
+# one from the caller's side. The same install with --prefer-offline against the
+# warm store finished in 1.4s.
+(cd "$PROFILE_DIR" && $PNPM install --no-frozen-lockfile --prefer-offline >/dev/null)
 
 # The one-second check, and the only one that answers the question that
 # matters: did the plugin's peers RESOLVE? The lockfile's importer entry spells
