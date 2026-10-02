@@ -252,6 +252,16 @@ e2e-in-ui: ## Click Allow/Reject on the in-UI page against a RUNNING profile (DS
 	@test -n "$(DSH_URL)" || { echo "DSH_URL is required: paste the 'dsh web:' line from the server log"; exit 2; }
 	@node test/e2e-in-ui.mjs allow && node test/e2e-in-ui.mjs reject
 
+.PHONY: e2e-settings
+e2e-settings: ## Click the SETTINGS page in a real browser (DSH_URL=…; opt-in, not part of verify)
+	@test -n "$(DSH_URL)" || { echo "DSH_URL is required: paste the 'dsh web:' line from the server log"; exit 2; }
+	@node test/e2e-settings.mjs
+
+.PHONY: e2e-settings-gate
+e2e-settings-gate: ## e2e-settings plus a live refusal proving the saved gateMode applies (needs DSH_E2E_HOME/PROFILE/WORKSPACE)
+	@test -n "$(DSH_URL)" || { echo "DSH_URL is required: paste the 'dsh web:' line from the server log"; exit 2; }
+	@node test/e2e-settings.mjs --gate
+
 .PHONY: compose-check
 compose-check: ## Validate the compose file
 	@$(COMPOSE) config >/dev/null && echo "  compose config valid"

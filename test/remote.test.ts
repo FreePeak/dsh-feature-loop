@@ -74,6 +74,47 @@ test('a settings file with no reviewBudget leaves the row router untouched', asy
   })
 })
 
+// Every numeric setting is OPTIONAL, and every other validator in this repo
+// spells "not set" as `''`. The settings page sends exactly that for a field a
+// person never touched: `checkpointAtStep` is `undefined`, the form serialises
+// it as `''`, and the save was refused — measured in a real browser against the
+// real page, where pressing Save on an UNCHANGED panel answered
+// `save: checkpointAtStep must be a finite number, received ""` and wrote
+// nothing. The operator concludes the page is broken.
+
+test('a blank optional number means unset, not a typo', async () => {
+  await withConfigHome((_home, path) => {
+    assert.doesNotThrow(() => saveSettings({ checkpointAtStep: '' as never }, path))
+    const written = readSettings(path)
+    assert.equal(written.checkpointAtStep, undefined, 'an unset field must not be written')
+  })
+})
+
+test('an untouched panel saves cleanly — the whole point of a blank field', async () => {
+  await withConfigHome((_home, path) => {
+    // The exact payload the page sends with nothing edited: every field at its
+    // loaded value, and the one optional number as the empty string.
+    saveSettings({
+      judge: 'laya', judgeBaseURL: 'http://127.0.0.1:8092', systemOneModel: 'laya',
+      judgeThreshold: 2, reviewBudget: 0.1, gateMode: 'ask',
+      checkpointAtStep: '' as never,
+    }, path)
+    const written = readSettings(path)
+    assert.equal(written.gateMode, 'ask')
+    assert.equal(written.checkpointAtStep, undefined)
+  })
+})
+
+test('a REAL typo is still rejected — the blank case is not a hole', async () => {
+  await withConfigHome((_home, path) => {
+    assert.throws(
+      () => saveSettings({ checkpointAtStep: 'soon' as never }, path),
+      /must be a finite number/,
+      'a word where a number belongs is still a typo',
+    )
+  })
+})
+
 // The panel and the gate must never disagree about precedence. `buildStatus`
 // used to merge `{...rowConfig, ...settings}` on its own while `apply` consulted
 // the row alone — so a value could be rendered as effective and decide nothing.
