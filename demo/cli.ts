@@ -101,12 +101,12 @@ const USAGE = `dsh-feature-loop — run the loop against a repository
                       its working directory; exit 0 = done
   --goal <text>       what "done" means, observably
   --phase <name>      bugfix | feature | refactor             (default: bugfix)
-  --model <id>        full gateway model id                   (default: xiaomi/mimo-v2.5)
-  --provider <name>   route prefix when --model has none      (default: xiaomi)
+  --model <id>        full gateway model id                   (default: onegw/execution)
+  --provider <name>   route prefix when --model has none      (default: onegw)
   --budget <usd>      cost ceiling for the run                (default: 1.00)
   --max-steps <n>     step ceiling for the run                (default: 15)
   --judge <kind>      none | chat | laya                      (default: chat)
-  --judge-model <id>  model the chat judge uses               (default: xiaomi/mimo-v2.5)
+  --judge-model <id>  model the chat judge uses               (default: onegw/execution)
   --judge-base-url <u> System One provider URL (Laya/Jev/TypeSafe)
                       default: $SYSTEMONE_BASE_URL | http://127.0.0.1:8091
   --systemone-model <id> System One model alias               (default: laya;
@@ -140,12 +140,12 @@ function parseArgs(argv: string[]): Options | 'help' {
     verify: 'bash verify.sh',
     goal: '',
     phase: 'bugfix',
-    model: 'xiaomi/mimo-v2.5',
-    provider: 'xiaomi',
+    model: 'onegw/execution',
+    provider: 'onegw',
     budgetUSD: 1.0,
     maxSteps: 15,
     judge: 'chat',
-    judgeModel: 'xiaomi/mimo-v2.5',
+    judgeModel: 'onegw/execution',
     judgeBaseURL: process.env.SYSTEMONE_BASE_URL ?? 'http://127.0.0.1:8091',
     systemOneModel: process.env.SYSTEMONE_MODEL ?? 'laya',
     reviewBudget: 0.1,
@@ -200,7 +200,7 @@ function parseArgs(argv: string[]): Options | 'help' {
 /**
  * The demo's loop spec.
  *
- * The prices are the run's effective plan rates, not list prices: `mimo-v2.5`
+ * The prices are the run's effective plan rates, not list prices: the gateway
  * runs on a subscription token plan, so the marginal cost of a step is near
  * zero and the interesting ceiling is the *step* count. Both are configured
  * anyway, because a budget with no price table cannot price anything and would
@@ -209,12 +209,18 @@ function parseArgs(argv: string[]): Options | 'help' {
 /**
  * Resolve `--model` into the route the loop actually uses.
  *
- * `--model` is the full gateway id (`xiaomi/mimo-v2.5`). The route needs the two
- * halves separately so the price table can key on `provider/model` while the
- * runner re-joins them into the exact id the gateway expects — joining a full id
- * onto a provider would send `xiaomi/xiaomi/mimo-v2.5`, which is a different
- * model name. The banner and the spec both read this one function, so they
- * cannot disagree about what is being run.
+ * `--model` is the full route key (`onegw/execution`) — the shape every shipped
+ * deployment in this repo uses: cordis.patch.yml, docker/profile.patch.yml,
+ * scripts/make-profile.sh. The route needs the two halves separately so the
+ * price table can key on `provider/model` while the runner re-joins them into
+ * the exact id the gateway expects; joining a full id onto a provider would
+ * send `onegw/onegw/execution`, a different model name. The banner and the spec
+ * both read this one function, so they cannot disagree about what is running.
+ *
+ * `execution` is onegw's EXECUTION role alias, and the gateway serves it under
+ * the BARE id — a live `POST /v1/chat/completions {"model":"execution"}` returns
+ * 200 while `{"model":"onegw/execution"}` returns 404 — which is exactly why
+ * the split below exists.
  *
  * @param options - the parsed flags.
  * @returns the provider, the bare model, and the full id.
@@ -229,7 +235,7 @@ function effectiveRoute(options: Options): { provider: string, model: string, fu
 /**
  * The demo's loop spec.
  *
- * The prices are the run's effective plan rates, not list prices: `mimo-v2.5`
+ * The prices are the run's effective plan rates, not list prices: the gateway
  * runs on a subscription token plan, so the marginal cost of a step is near
  * zero and the interesting ceiling is the *step* count. Both are configured
  * anyway, because a budget with no price table cannot price anything and would

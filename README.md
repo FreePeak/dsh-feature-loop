@@ -49,7 +49,7 @@ build.
 | | |
 |---|---|
 | **Budget the loop** | Step and USD ceilings that stop the run — a limit, not an invoice |
-| **Cheap-first routing** | Model ladder by evidence, not by vibes (`opencode/deepseek-v4.1-flash` → `xai/grok-4.7`) |
+| **Cheap-first routing** | A model ladder resolved by evidence, not by vibes — onegw's `execution` role alias, the one route every shipped deployment and the demo run on |
 | **Loop hygiene** | Tool-cycle, error-cascade, budget trajectory, and related detectors |
 | **Fail-closed review gate** | Tiered by reversibility; low judge confidence → ask the human |
 | **HITL ops dashboard** | Workspaces, activity, grouped runs, Allow / Reject + optional feedback |

@@ -160,18 +160,28 @@
             # dashboard has already recorded the route, the step and the spend.
             # Nothing errors at boot and nothing errors at config load.
             #
-            # onegw's `execution` and `planning` are role aliases and the docs
-            # here tell you to declare them, but the Docker settings template
-            # lists concrete model ids instead, so that ladder could not resolve
-            # there. Both shipped deployments now use declared ids: the cheap
-            # flash model for the work, the expensive one for when it stalls.
-            # If you route through the aliases, declare them yourself first:
+            # The rung is onegw's `execution` alias — the gateway's own name for
+            # the model configured to EXECUTE work, so the loop follows whatever
+            # the account points that role at instead of a model id frozen into
+            # this file. Verified against the live gateway 2026-10-02: /v1/models
+            # lists `execution` and a live chat completion on it returns 200.
+            #
+            # `llm-pi-ai` resolves a rung against YOUR `models:` list, not against
+            # the gateway, so the alias has to be declared there —
+            # docker/settings.template.yaml does:
             #   llm-pi-ai: { providers: { onegw: { models: [{ id: execution, … }] } } }
+            #
+            # One rung, deliberately. This file once shipped two CONCRETE ids so
+            # the ladder could escalate, and every deployment that inherited them
+            # ran a model nobody here had tested; when `execution` itself was
+            # undeclared the whole thing died UNKNOWN_MODEL on step 1. A rung no
+            # deployment can resolve is not a ladder, it is a claim. Add a rung
+            # in the same edit that declares it and prices it, and
+            # scripts/check-ladder-models.mjs names whichever of the three you
+            # forgot.
             ladder:
               - provider: onegw
-                model: opencode/deepseek-v4.1-flash
-              - provider: onegw
-                model: xai/grok-4.7
+                model: execution
             stepsPerRung: 5
             escalateAfterFailures: 2
 
@@ -210,13 +220,10 @@
           # Estimates, labelled as such — a gateway plan's marginal rate is not
           # a published price. Replace them with your account's rates.
           prices:
-            onegw/opencode/deepseek-v4.1-flash:
+            onegw/execution:
               inputPerMTok: 0.30
               outputPerMTok: 1.20
               cacheReadPerMTok: 0.03
-            onegw/xai/grok-4.7:
-              inputPerMTok: 2.50
-              outputPerMTok: 10.00
           unpricedFallback:
             inputPerMTok: 0.30
             outputPerMTok: 1.20

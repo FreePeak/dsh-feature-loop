@@ -664,8 +664,13 @@ function spendSettledUsage(policy: FeatureLoopPolicy, agent: Agent | undefined):
   if (policy.budget === undefined) return
   const session = (agent as { readonly session?: SettledSession } | undefined)?.session
   if (session === undefined) return
+  // Always start from seq 0 on first drain. `session.seq` is the *next* seq
+  // (log length), so seeding the cursor there skips every already-settled
+  // `assistant/message` — including the one that just landed one tick earlier
+  // — and `costBudgetUSD` stays at zero forever. Re-pricing historical rows
+  // into a fresh policy is correct: the budget is also fresh.
   if (policy.pricedThroughSeq === undefined) {
-    policy.pricedThroughSeq = typeof session.seq === 'number' ? session.seq : 0
+    policy.pricedThroughSeq = 0
   }
   for (const event of session.snapshotEvents(policy.pricedThroughSeq)) {
     const seq = Number(event.seq)
@@ -753,6 +758,8 @@ interface TurnRecordInput {
   event: { turn: number, reasonKind: string }
   options: Parameters<typeof createPolicy>[0] & { dashboard?: DashboardConfig }
   policyFor: (agent: Agent | undefined) => FeatureLoopPolicy
+  /** Live agent lookup keyed by session id (`ctx.agents.get`). */
+  resolveAgent: (sessionId: string) => Agent | undefined
   state: DashboardState
   historyPath: string
 }
@@ -812,9 +819,9 @@ function outcomeOf(reasonKind: string, policy: FeatureLoopPolicy): RunOutcome {
  * @param input - the closed turn and everything the record is built from.
  */
 async function recordTurn(input: TurnRecordInput): Promise<void> {
-  const { session, event, options, policyFor, state, historyPath } = input
+  const { session, event, options, policyFor, resolveAgent, state, historyPath } = input
   const runlog = await import('./runlog.ts')
-  const agent = agentOfSession(session)
+  const agent = agentOfSession(session, resolveAgent)
   const policy = policyFor(agent)
   const snapshot = policy.budget?.snapshot()
   const spec = policy.spec ?? options.spec
@@ -855,24 +862,40 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
  * The agent behind a session, when the harness can resolve one.
  *
  * `session/event` hands the session, not the agent — but the per-agent policy
- * (budget, spec, history) is keyed by agent. Rather than importing the agents
- * service (a second service injection for one lookup), this reads the session's
- * owner structurally: the harness sets `session.owner`/`session.agentId`
- * depending on the release, and neither is stable enough to depend on. When
- * neither resolves, the record falls back to the agent-less policy — the same
- * fail-closed stance `policyFor` takes for agent-less calls: shared ceilings,
- * honestly labelled, rather than no record at all.
+ * (budget, spec, history) is keyed by agent. Resolution order:
  *
- * ponytail: O(n) scan over the policy map per turn is avoided by NOT caching
- * here at all — the lookup below is O(1) only when the harness exposes the
- * agent directly on the session. Ceiling: when it does not, every turn records
- * against the shared agent-less policy, so per-agent spend splits are lost and
- * concurrent agents' records share one budget's numbers. Upgrade path: inject
- * the `agents` service and resolve `session.id` through it (the
- * `goal-round-driver` precedent: `ctx.agents.get(session.id)`).
+ * 1. Structural fields some harness builds put on the session (`agent`, or
+ *    `owner` when it looks like an Agent with a `session` handle).
+ * 2. `ctx.agents.get(session.id)` — agent id === session id in DSH
+ *    (`AgentRegistry.get`), which this plugin already declares via
+ *    `inject = ['agents']`.
+ *
+ * When neither resolves, the record falls back to the agent-less policy — the
+ * same fail-closed stance `policyFor` takes for agent-less calls: shared
+ * ceilings, honestly labelled, rather than no record at all.
  */
-function agentOfSession(_session: unknown): Agent | undefined {
-  return undefined
+function agentOfSession(
+  session: unknown,
+  resolveAgent?: (sessionId: string) => Agent | undefined,
+): Agent | undefined {
+  if (session !== null && typeof session === 'object') {
+    const record = session as {
+      readonly agent?: unknown
+      readonly owner?: unknown
+    }
+    if (isAgentLike(record.agent)) return record.agent
+    if (isAgentLike(record.owner)) return record.owner
+  }
+  const id = sessionIdOf(session)
+  if (id === 'unknown-session' || resolveAgent === undefined) return undefined
+  return resolveAgent(id)
+}
+
+/** Structural: anything the registry would hand back has a session handle. */
+function isAgentLike(value: unknown): value is Agent {
+  if (value === null || typeof value !== 'object') return false
+  const session = (value as { readonly session?: unknown }).session
+  return session !== null && typeof session === 'object'
 }
 
 /**
@@ -1087,6 +1110,15 @@ export function apply(
     return policy
   }
 
+  // Agent id === session id in DSH (`AgentRegistry.get`). Structural: a test
+  // double without `agents` still mounts; live cordis always injects it.
+  const resolveAgent = (sessionId: string): Agent | undefined => {
+    const agents = (ctx as { agents?: { get?: (id: string) => Agent | undefined } }).agents
+    const get = agents?.get
+    if (typeof get !== 'function') return undefined
+    return get.call(agents, sessionId)
+  }
+
   // The dashboard is process-wide (one server, one feed), not per agent — it
   // lives here rather than in `createPolicy`, whose policies are per-run.
   // Enabled by default: omitting the block starts the page on 127.0.0.1:8100
@@ -1273,7 +1305,7 @@ export function apply(
       const key = `${sessionIdOf(session)}#${String(end.turn)}`
       if (recordedTurns.has(key)) return
       recordedTurns.add(key)
-      void recordTurn({ session, event: end, options, policyFor, state, historyPath: path })
+      void recordTurn({ session, event: end, options, policyFor, resolveAgent, state, historyPath: path })
         .catch((error: unknown) => {
           // A failed append must never fail the turn: the record is
           // evidence, not control. The feed line says so in the harness's
