@@ -533,6 +533,34 @@ reporting nonsense on the first run:
 
 A check that cannot fail is worse than no check, and this one did.
 
+### 15. The brief fix that the stale bundle had been hiding is now verified LIVE
+
+**Follows §14, and it closes the loop on that entry.**
+
+§14 established that `c57f2d8`'s fix — a brief that is off by default was
+rendering `unavailable` as a red line on **every approval card** — shipped
+without a rebuild, so the committed artefact never contained it. Re-running the
+in-UI check against a live profile AFTER the rebuild, twice, with the gate
+holding both times:
+
+```
+brief elements on the card: 0 (must be 0 — briefs are off by default)
+mentions "unavailable": false
+card: APPROVAL REQUIRED | asked 1:58:56 PM | write | RUN | session-7c3def3e-…
+allowed  → brief-proof.txt written
+```
+
+That is the assertion the code change was for, expressed the way the failure
+looked: **zero brief elements on a card whose deployment never enabled briefs.**
+The fix is not just committed, it is observed — which is the first time on this
+branch that a change I made to `web/app.tsx` has been verified in a browser
+rather than inferred from a green suite.
+
+It is also the second consecutive time the artefact, not the source, was the
+problem. Worth noting for whoever reads this file next: two of the fourteen
+entries here would not have been written at all if anyone had compared
+`assets/` against `web/` before writing a paragraph about it.
+
 ### 14. The staleness check had a documented ceiling that a commit walked straight through
 
 **Found 2026-10-02.** `test/assistant-ui.test.ts` compared the bundle's
