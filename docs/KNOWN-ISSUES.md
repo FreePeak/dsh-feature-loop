@@ -528,6 +528,42 @@ operator may not see is a better message, not a gate. The thing that actually
 keeps a typo from disarming the loop is `?? 'ask'` and `ask` refusing, and that
 is unchanged and was measured again in both directions (`ask` → denied, no file).
 
+### 1k. A hand-edited settings file can name a tool that does not exist — silently
+
+The settings page validates `gatePolicies` against the six known classes:
+
+```
+gatePolicies: unknown tool class "wrong_tool_name"; expected one of
+read, glob, grep, edit, write, bash
+```
+
+**A hand-edited `~/.config/dshloop/config.yaml` is not validated at all**, and
+that is the file this branch made authoritative. Measured 2026-10-03 on a
+generated profile, `gatePolicies: { wrong_tool_name: auto }`:
+
+| settings | what happened |
+|---|---|
+| `{ wrong_tool_name: auto }` | run **denied** the write, no file — silently |
+| `{ write: auto }` | run **wrote** the file, no approval |
+
+So the direction is fail-closed, which is the right direction and not the same
+thing as correct: `ReviewGate.check` reads `this.policies[tool]`, an unknown key
+is simply never looked up, and the run falls through to the defaults. The
+operator typed a setting, saw it saved, and it did nothing — with no message
+anywhere saying so.
+
+This is §1a's shape one level down: a value that is wrong in a place nothing
+looks at. The ladder check reads rungs from files; nothing reads the settings
+file's KEYS.
+
+**Not fixed here, deliberately.** The allowlist belongs where the file is read —
+`userSettings` in `remote.ts`, which is the one function every consumer now goes
+through (§1d) — and rejecting an unknown key there would make a typo a boot
+failure rather than a silent no-op. That is the right shape, and it is also a
+behaviour change on a file this branch only just made authoritative, so it
+belongs to whoever owns the settings contract rather than to a session closing a
+list. Recorded with the measurement so the decision is informed.
+
 ### 1. The stylesheet restyled the whole host UI
 
 **Observed:** after the dashboard was folded into the DSH UI, the host's `<body>`
