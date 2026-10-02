@@ -120,3 +120,35 @@ test('one slow tool call does not escalate the loop when the p95 sits inside bud
   const window = fullWindow()
   assert.equal(shouldEscalate(window, { p95BudgetMs: 500, minSamples: 20 }), false)
 })
+
+// Nearest-rank is `ceil(p / 100 * n) - 1`, and in IEEE doubles `p / 100 * n`
+// is not always that. Measured: 28/100*25 is 7.000000000000001, so the float
+// form's `ceil` is 8 and it returns the sample AFTER the one nearest-rank is
+// defined to return — silently, for every percentile whose rank lands on a
+// whole number. Multiply first: `ceil(p * n / 100)`.
+
+test('the rank is exact when p / 100 * n is a whole number in exact arithmetic', () => {
+  const window = new LatencyWindow(25)
+  for (let i = 1; i <= 25; i += 1) window.record(i * 10)
+
+  // 28th percentile of 25 samples, nearest-rank: rank 7 → the 7th fastest, 70.
+  assert.equal(window.percentile(28), 70)
+  // The float form computes 28/100*25 = 7.000000000000001, ceils to 8, and
+  // returns 80 — the sample nearest-rank never promises.
+  assert.notEqual(28 / 100 * 25, 7)
+  assert.equal(Math.ceil((28 / 100) * 25) - 1, 7, 'the float form is off by one here')
+  assert.equal(Math.ceil((28 * 25) / 100) - 1, 6, 'the integer form is the documented rank')
+  assert.equal(window.percentile(56), 140)
+})
+
+test('every whole-number rank in a 25-sample window returns the right sample', () => {
+  const window = new LatencyWindow(25)
+  for (let i = 1; i <= 25; i += 1) window.record(i * 10)
+  // p = 4k makes p*n/100 = k exactly for every k in 1..25, so nearest-rank's
+  // rank is k-1 and `sorted[k-1]` is the k-th recorded value, k*10. The float
+  // form rounds up to k on every one of them and returns (k+1)*10 instead.
+  for (let k = 1; k <= 25; k += 1) {
+    assert.equal(window.percentile(k * 4), k * 10, `p=${String(k * 4)}`)
+  }
+  assert.equal(window.percentile(0), 10, 'p=0 is clamped to the fastest sample, not off the front')
+})

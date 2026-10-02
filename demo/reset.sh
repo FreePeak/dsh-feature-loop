@@ -24,9 +24,16 @@ import sys
 path = sys.argv[1]
 src = open(path, encoding='utf-8').read()
 
-# The planted bug: floor instead of ceil-minus-one, which is wrong only when
-# p/100 * n lands on a whole number. That is what makes it subtle — p95 of 7
-# samples is correct, p95 of 20 silently returns the slowest sample.
+# The planted bug: floor instead of ceil-minus-one. Wrong whenever p*n/100 is a
+# whole number, which is what makes it subtle — p95 of 7 samples is right and
+# p95 of 20 silently returns the slowest sample.
+#
+# `floor` is the planted form, and it is deliberately not the ONLY wrong form:
+# `Math.ceil((p / 100) * n) - 1` is what the model produced once, and it is also
+# wrong, by one sample, on every whole-number rank — 28/100*25 is 7.000000000000001
+# in IEEE doubles, so its ceil is 8. The fix has to multiply first. Both wrong
+# forms are named in demo/test/latency-window.test.ts, which is why that file is
+# in the CI list: nothing else here would tell the two apart.
 BUGGY = '    const rank = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))'
 
 pattern = re.compile(r'^[ \t]*const rank = .*$', re.MULTILINE)

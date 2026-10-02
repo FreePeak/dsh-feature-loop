@@ -81,10 +81,6 @@ jobs:
       # same way the typecheck job lists its `src/` inputs — and a test that
       # gains a harness import (`test/plugin-approval.test.ts` already has one,
       # through `src/plugin.ts`) or a dependency import must leave this list,
-      # exactly as `src/plugin.ts` leaves the typecheck list. `test/dashboard.test.ts`,
-      # `test/assistant-ui.test.ts` and `test/explainer.test.ts` run locally via
-      # `make test`; `test/approval-bridge.test.ts`, `test/brief.test.ts`, and
-      # `test/questioner.test.ts` are pure and run here.
       # exactly as `src/plugin.ts` leaves the typecheck list. `test/dashboard.test.ts`
       # and the CSS pair run locally via `make test` — they import
       # `src/plugin.ts`, which the harness-free job cannot load.
@@ -156,54 +152,16 @@ jobs:
       #
       # KNOWN-ISSUES records the measurement and what was ruled out.
       - name: Run the test suite
-        run: node --experimental-strip-types --test \
-          test/agent-policy.test.ts test/approval-bridge.test.ts test/approvals.test.ts test/brief.test.ts \
-          test/budget.test.ts test/driver.test.ts test/envelope.test.ts test/evidence.test.ts \
-          test/explainer.test.ts test/judge.test.ts test/metrics.test.ts test/optimize.test.ts \
-          test/optimizer.test.ts test/patch-config.test.ts test/phase-budget.test.ts test/phases.test.ts \
-          test/pipeline-guard.test.ts test/pipeline.test.ts test/policy.test.ts test/questioner.test.ts \
-          test/refine.test.ts test/runlog.test.ts test/runner.test.ts test/sandbox.test.ts \
-          test/ship.test.ts test/start-target.test.ts test/tools.test.ts test/yolo.test.ts
-
-          test/agent-policy.test.ts test/approval-bridge.test.ts \
-          test/approvals.test.ts test/assistant-ui.test.ts test/brief.test.ts \
-          test/budget.test.ts test/envelope.test.ts test/explainer.test.ts \
-          test/judge.test.ts \
-          test/metrics.test.ts test/optimize.test.ts test/optimizer.test.ts \
-          test/questioner.test.ts \
-          test/policy.test.ts test/refine.test.ts test/runlog.test.ts \
-          test/runner.test.ts test/start-target.test.ts test/tools.test.ts
         run: |
           total=0
-          for f in \
-            test/agent-policy.test.ts test/approval-bridge.test.ts \
-            test/approvals.test.ts test/assistant-ui.test.ts test/brief.test.ts \
-            test/budget.test.ts test/envelope.test.ts test/explainer.test.ts \
-            test/judge.test.ts test/llm.test.ts test/metrics.test.ts \
-            test/optimize.test.ts \
-            test/optimizer.test.ts test/questioner.test.ts test/policy.test.ts \
-            test/refine.test.ts test/runlog.test.ts test/runner.test.ts \
-            test/start-target.test.ts test/tools.test.ts ; do
-            test/agent-policy.test.ts             test/approval-bridge.test.ts             test/approvals.test.ts \
-            test/assistant-ui.test.ts             test/brief.test.ts             test/budget.test.ts \
-            test/envelope.test.ts             test/evidence.test.ts             test/explainer.test.ts \
-            test/judge.test.ts             test/llm.test.ts             test/metrics.test.ts \
-            test/optimize.test.ts             test/optimizer.test.ts             test/phase-budget.test.ts \
-            test/phases.test.ts             test/pipeline.test.ts             test/policy.test.ts \
-            test/questioner.test.ts             test/refine.test.ts             test/runlog.test.ts \
-            test/runner.test.ts             test/sandbox.test.ts             test/ship.test.ts \
-            test/start-target.test.ts             test/tools.test.ts             test/yolo.test.ts ; do
-            echo "::group::$f"
-            out=$(node --experimental-strip-types --test "$f" 2>&1) || {
-              echo "$out"
-              echo "::error::$f FAILED"
-              exit 1
-            }
-            echo "$out"
-            echo "::endgroup::"
-            total=$((total + $(printf '%s\n' "$out" | sed -nE 's/^# pass ([0-9]+)$/\1/p')))
-          done
-          echo "== $total tests passed across 19 files" 
+            demo/test/latency-window.test.ts test/agent-policy.test.ts test/approval-bridge.test.ts test/approvals.test.ts \
+            test/assistant-ui.test.ts test/brief.test.ts test/budget.test.ts test/driver.test.ts \
+            test/envelope.test.ts test/evidence.test.ts test/explainer.test.ts test/judge.test.ts \
+            test/llm.test.ts test/metrics.test.ts test/optimize.test.ts test/optimizer.test.ts \
+            test/phase-budget.test.ts test/phases.test.ts test/pipeline.test.ts test/policy.test.ts \
+            test/questioner.test.ts test/refine.test.ts test/runlog.test.ts test/runner.test.ts \
+            test/sandbox.test.ts test/ship.test.ts test/start-target.test.ts test/tools.test.ts \
+            test/yolo.test.ts ; do
 
   typecheck:
     name: typecheck (harness-free src/ modules)
@@ -244,6 +202,13 @@ jobs:
       # the two harness-coupled modules are typechecked locally instead, against
       # the prebuilt packages from a harness checkout. Add a new pure module to
       # this list; a module that gains a harness import must leave it.
+      # `src/change-event.ts` looks harness-free — it imports nothing at all —
+      # but it is two `declare module` AUGMENTATIONS of `@deepseek-ai/cordis`
+      # and `@deepseek-ai/dsh-typert-protocol`, and a `tsc` run that has not
+      # installed those packages rejects an augmentation of a module it cannot
+      # resolve (TS2664). It is typechecked with `src/plugin.ts`, which imports
+      # the same two. A first draft of this change listed it anyway and CI went
+      # red on exactly that error.
       # src/brief.ts, src/approval-bridge.ts and src/explainer.ts are the pure
       # additions: `brief.ts` and `approval-bridge.ts` import nothing at all
       # (which is why their tests run in the no-install job above), and
@@ -264,18 +229,7 @@ jobs:
             src/refine.ts src/review.ts src/routing.ts src/runlog.ts src/runner.ts \
             src/sandbox.ts src/ship.ts src/signals.ts src/spec.ts src/tools.ts \
             src/watcher-ttl.ts src/yolo.ts
-            src/agent-policy.ts             src/approval-bridge.ts             src/approvals.ts \
-            src/brief.ts             src/budget.ts             src/dashboard-page.ts \
-            src/dashboard.ts             src/envelope.ts             src/evidence.ts \
-            src/explainer.ts             src/judge.ts             src/laya.ts \
-            src/llm.ts             src/messages.ts             src/metrics.ts \
-            src/optimize.ts             src/optimizer.ts             src/phase-budget.ts \
-            src/phases.ts             src/pipeline.ts             src/prompts.ts \
-            src/questioner.ts             src/refine.ts             src/review.ts \
-            src/routing.ts             src/runlog.ts             src/runner.ts \
-            src/sandbox.ts             src/ship.ts             src/signals.ts \
-            src/spec.ts             src/tools.ts             src/watcher-ttl.ts \
-            src/yolo.ts
+
       # The list is hand-maintained and has already drifted twice — see the
       # `change-event` note above — so this step recomputes it and fails on a
       # module that has fallen off. Rule: a module belongs in the list unless it
