@@ -831,6 +831,40 @@ vary") is backed by `make check`, which fails if the planted bug and the fix sto
 agreeing. That is the difference between an artefact and a claim: the artefact can
 age, the claim is checked.
 
+### 1p. A ceiling row that proved nothing about the ceiling
+
+**Observed 2026-10-03, re-running the four terminal paths the README's "Verified
+runs" table claims.**
+
+| Command | the table claimed | what it does |
+|---|---|---|
+| `demo/run.sh` | `goal-met` 6 of 15, $0.0039, 0 reviews | `goal-met` 6 of 15, $0.0047, **1 review** |
+| `demo/run.sh --max-steps 6` | **`budget-stop` 6 of 6** | **`goal-met` at 5 steps** |
+| `demo/run.sh --budget 0.000001` | `budget-stop` 2 of 15, $0.0004 | same |
+| `demo/run.sh --judge none` | `goal-met` 4 of 15, $0.0024 | `goal-met` 4 of 15, $0.0027 |
+
+The second row is the finding. It was captioned "(step ceiling)" and quoted
+`6 of 6` — which reads as the ceiling stopping the run at the sixth step. Re-run,
+the task **finishes in 5**, so the ceiling never bound and the row demonstrated
+nothing about the ceiling at all. `--max-steps 3` and `--max-steps 4` both stop
+(`budget-stop` at 3 of 3 and 4 of 4), which is the claim worth making.
+
+**Why this is the same class as §1o and not a smaller version of it.** "I ran it
+once and it stopped" is the weakest possible evidence that a limit works: a run
+that finishes *before* the ceiling looks identical to one the ceiling stopped
+until somebody reads the outcome word. The table had the outcome word in it, and
+it was wrong — which means the table was copied from an earlier session's output
+rather than re-read, exactly like the spliced transcript.
+
+**Fixed.** Every row is re-measured, the step-ceiling row is `--max-steps 4`
+(`budget-stop` 4 of 4, $0.0028), `demo/run.sh`'s own header comment matches, and
+the prose says why both ceiling rows were re-measured rather than assuming the
+old ones were close enough.
+
+**And the stale table in §11 is marked rather than deleted**, for the same reason
+every other entry here is: a reader who arrives at the old number needs to see
+that it was wrong and why, not to find a gap.
+
 ### 1. The stylesheet restyled the whole host UI
 
 **Observed:** after the dashboard was folded into the DSH UI, the host's `<body>`
@@ -1779,7 +1813,7 @@ the real model:
 | Command | Outcome | Steps | Cost |
 |---|---|---|---|
 | `bash demo/run.sh` | `goal-met` | 6 of 15 | $0.0039 |
-| `bash demo/run.sh --max-steps 6` | `budget-stop` (step ceiling) | 6 of 6 | $0.0031 |
+| `bash demo/run.sh --max-steps 6` | `budget-stop` (step ceiling) | 6 of 6 | $0.0031 | — **not reproducible**: re-run 2026-10-03, this reaches `goal-met` at 5 steps, so the ceiling never bound. Corrected to `--max-steps 4` -> `budget-stop` 4 of 4, $0.0028 (§1p) |
 | `bash demo/run.sh --budget 0.000001` | `budget-stop` (cost ceiling) | 2 of 15 | $0.0004 |
 | `bash demo/run.sh --judge none` | `goal-met` | 4 of 15 | $0.0024 |
 

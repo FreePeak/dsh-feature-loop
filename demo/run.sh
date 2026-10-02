@@ -2,7 +2,7 @@
 # The demo, in one command: reset the bug, then run the loop against it.
 #
 #   bash demo/run.sh                       # 14 steps, $1.00 ceiling
-#   bash demo/run.sh --max-steps 6         # watch the ceiling actually stop it
+#   bash demo/run.sh --max-steps 4         # watch the ceiling actually stop it
 #   bash demo/run.sh --budget 0.000001     # watch the cost ceiling fire
 #   bash demo/run.sh --judge none          # detectors only, no judge
 #

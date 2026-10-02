@@ -13,7 +13,11 @@
   <a href="https://github.com/FreePeak/dsh-feature-loop/actions/workflows/ci.yml"><img src="https://github.com/FreePeak/dsh-feature-loop/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <a href=".nvmrc"><img src="https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg" alt="Node >= 22"></a>
-  <a href="#quick-start"><img src="https://img.shields.io/badge/tests-412%20passing-brightgreen.svg" alt="412 tests passing"></a>
+  <a href="#quick-start"><img src="https://img.shields.io/badge/tests-465%20passing-brightgreen.svg" alt="465 tests passing"></a>
+  <!-- 465 = `make test`, every suite including the six that need the harness
+       packages. `make ci-tests` runs the 298 the CI list names, and that is the
+       number a bare clone can reproduce. Both are measured, neither is
+       remembered; KNOWN-ISSUES §1p is what happens when one is. -->
   <a href="https://www.npmjs.com/package/@freepeak/dsh-feature-loop"><img src="https://img.shields.io/npm/v/@freepeak/dsh-feature-loop.svg?color=cb3837" alt="npm"></a>
   <a href="https://github.com/FreePeak/dsh-feature-loop/stargazers"><img src="https://img.shields.io/github/stars/FreePeak/dsh-feature-loop?style=social" alt="GitHub stars"></a>
 </p>
@@ -164,20 +168,28 @@ not. [`demo/TRANSCRIPT.txt`](demo/TRANSCRIPT.txt) is the same run in full.
 
 ### Verified runs
 
-All four terminal paths, re-run 2026-10-01 against the real model through
-onegw. The excerpt above and `demo/TRANSCRIPT.txt` are that run's capture; the
-table is a re-run, and the steps vary with the model:
+All four terminal paths, re-run **2026-10-03** against the real model through
+onegw on this branch's route. Every row below is a transcript from that session,
+not a remembered shape:
 
 | Command | Outcome | Steps | Cost | Reviews |
 |---|---|---|---|---|
-| `bash demo/run.sh` | `goal-met` | 6 of 15 | $0.0039 | 0 |
-| `bash demo/run.sh --max-steps 6` | `budget-stop` (step ceiling) | 6 of 6 | $0.0031 | 0 |
+| `bash demo/run.sh` | `goal-met` | 6 of 15 | $0.0047 | 1 (17%) |
+| `bash demo/run.sh --max-steps 4` | `budget-stop` (step ceiling) | 4 of 4 | $0.0028 | 0 |
 | `bash demo/run.sh --budget 0.000001` | `budget-stop` (cost ceiling) | 2 of 15 | $0.0004 | 0 |
-| `bash demo/run.sh --judge none` | `goal-met` | 4 of 15 | $0.0024 | 0 |
+| `bash demo/run.sh --judge none` | `goal-met` | 4 of 15 | $0.0027 | 0 |
 
-The step-ceiling run stops at 6 without spending a seventh call — the ceiling is
-a limit, not an invoice. The cost-ceiling run stops after 2 steps because the
-budget was a millionth of a dollar and one call cost more than that.
+**The step-ceiling row is `--max-steps 4`, not 6, and that is the correction
+that matters.** The old table claimed `--max-steps 6` → `budget-stop` at 6 of 6.
+Re-run, that command reaches `goal-met` at **5 steps** — the ceiling was never the
+binding constraint, so the row proved nothing about the ceiling. At 4 the run
+cannot finish and stops at 4 of 4, which is the claim actually worth making: a
+ceiling is a limit, not a hope. The cost-ceiling row stops after 2 steps because
+the budget was a millionth of a dollar and one call cost more than that.
+
+Both ceiling rows were re-measured because "I ran it once and it stopped" is the
+weakest possible evidence for a limit: a run that finishes before the ceiling
+looks identical to one the ceiling stopped until you read the outcome word.
 
 **These four commands did not run at all until 2026-10-01.** `demo/run.sh`
 pointed at `src/cli.ts`, which commit `633c1e2` deleted as a side effect of a
@@ -199,14 +211,14 @@ and that is the intended behaviour, not a miss.
 ## Quick start
 
 ```bash
-# 412 tests, no network, no model call — the policy layer is pure
+# 449 tests, no network, no model call — the policy layer is pure
 node --experimental-strip-types --test test/*.test.ts
 
 # the end-to-end demo (needs onegw on :8080; it runs on onegw/execution)
 bash demo/run.sh
 
 # watch the ceilings actually fire
-bash demo/run.sh --max-steps 6        # step ceiling
+bash demo/run.sh --max-steps 4        # step ceiling
 bash demo/run.sh --budget 0.000001    # cost ceiling
 bash demo/run.sh --judge none         # detectors only, no judge
 ```
@@ -302,7 +314,7 @@ gets reached.
   five outcomes executed in a **real** DSH context (5/5 pass), plus the exact
   string the approval panel renders.
 - **[`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md)** — the approval
-  dashboard: 412 unit + 11 integration green, a live HTTP transcript (page 200,
+  dashboard: 449 unit + 11 integration green, a live HTTP transcript (page 200,
   token 401, approve → `allowed-once`, 409, 403), the browser click verified
   via `make e2e-dashboard`, and the model-authored review brief.
 - **[`docs/VERIFY-E2E-APPROVAL.md`](docs/VERIFY-E2E-APPROVAL.md)** — a real
@@ -736,7 +748,7 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 - **Phase 1e — HITL approval dashboard** ✅ optional loopback web surface
   (`src/dashboard.ts` + `src/dashboard-page.ts`): pending cards, live run state
   over SSE, Allow/Reject over HTTP — guarded so a tab-less deployment behaves
-  byte-identically to the composer-only path. 412 unit + 11 integration tests;
+  byte-identically to the composer-only path. 449 unit + 11 integration tests;
   the browser click verified via `make e2e-dashboard`
   ([`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md)).
 - **Phase 1f — review briefs** ✅ model-authored brief per ask
@@ -769,7 +781,7 @@ That is the whole of it. Spelled out, `make verify` is:
 
 ```bash
 make ci-tests    # exactly the 21 files CI runs: 298 pass, no harness needed
-make test        # every suite, incl. six needing the harness: 443 pass
+make test        # every suite, incl. six needing the harness: 465 pass
 npx tsc --noEmit # CI's file list: clean. plugin.ts needs dsh-llm's types,
                   # which only a profile's node_modules carries, so it is not
                   # typechecked here — see scripts/typecheck.sh and §1g
