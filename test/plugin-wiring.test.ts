@@ -557,3 +557,47 @@ const SPEC_OPTS: CreatePolicyOptions = {
   spec: SPEC,
   gatePolicies: { write: 'always-approve' },
 }
+
+// The judge is the one setting that is NOT a plain value: `judge: laya` in the
+// file is a STRING, and the plugin has to build a Judge object out of it.
+//
+// Reproduced live 2026-10-03 on a profile from make-profile.sh, with a settings
+// file the panel itself had written: the boot died on the first step with
+// `dsh: UNKNOWN: policy.judge.score is not a function`. The merge was spread
+// AFTER the constructed `judge:` in index.ts, so the string overwrote the Judge
+// and nothing failed until a step asked it for a score.
+//
+// So this drives `apply` — the CALL SITE — not `resolveJudge` alone. The first
+// version of this test called the resolver and passed against the live bug,
+// which is the same mistake in a new place: a test that exercises the helper
+// proves the helper works, not that the helper is reached correctly.
+
+test('apply builds a Judge from the settings file, not the string in it', async () => {
+  await withSettingsFile('judge: none\n', async () => {
+    const { apply: applyRow } = await import('../src/index.ts')
+    const { ctx, handler } = fakeCtx()
+    // The row asks for `laya`; the file says `none`. Either can win — what must
+    // never reach the policy is the STRING.
+    applyRow(ctx as never, {
+      spec: SPEC,
+      judge: 'laya',
+      judgeBaseURL: 'http://127.0.0.1:1',
+      gatePolicies: { write: 'auto' },
+      dashboard: { enabled: false },
+    } as never)
+    await handler('agent/pre-step')(
+      { agent: AGENT, messages: [], turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ kind: 'enter', messages: [] }),
+    )
+    // `proceed` is the gate's word for "delegate to the harness"; the harness
+    // then answers `allow`. Both together mean the judge was consulted (or not
+    // needed) and was callable. A string judge throws inside `next()` or inside
+    // the gate, which is the crash this test exists for.
+    let delegated = false
+    await handler('tools/pre-execute')(
+      { agent: AGENT, name: 'write', arguments: { path: 'a.ts' } },
+      async () => { delegated = true; return { kind: 'allow' } },
+    )
+    assert.equal(delegated, true, 'the call reached the harness, so no judge call threw')
+  })
+})
