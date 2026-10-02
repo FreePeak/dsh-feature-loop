@@ -287,6 +287,13 @@ profile: ## Create a DSH profile that actually runs the loop (NAME=… PORT=… 
 dashboard-bundle: ## Rebuild the vendored assistant-ui bundle into assets/ (commit the result)
 	@node web/build.mjs
 
+.PHONY: e2e-container
+e2e-container: ## Probe the CONTAINER's own gate: refused without an answerer, allowed with one (needs a running `make up`)
+	@test -n "$$(docker ps -q --filter 'name=^$(SERVICE)$$')" || { \
+	  echo "  no container named $(SERVICE) — start it with: make up"; exit 2; }
+	@docker cp test/probe-container.mjs $(SERVICE):/tmp/probe-container.mjs
+	@docker exec $(SERVICE) sh -lc 'cd /tmp && node probe-container.mjs'
+
 .PHONY: e2e-dashboard
 e2e-dashboard: ## Click the real dashboard page in a real browser (needs Playwright + Chromium; opt-in, not part of verify)
 	@node --experimental-strip-types test/e2e-dashboard.mjs allow && \

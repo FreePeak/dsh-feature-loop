@@ -420,8 +420,10 @@ gets reached.
   served a UI, and gated nothing), no `standalone: true` on the dashboard, no
   model route, and a ladder naming models the provider profile did not declare
   (so every run died `UNKNOWN_MODEL` on step 1). All fixed, and the container is
-  now gated and answered by a clicked button in both directions. Evidence:
-  [`docs/evidence/docker-20261001.md`](docs/evidence/docker-20261001.md).
+  now gated and answered by a clicked button in both directions — plus
+  `make e2e-container`, which drives a real model through the real gate INSIDE
+  the running container and asserts the disk and the durable session log.
+  Evidence: [`docs/evidence/docker-20261001.md`](docs/evidence/docker-20261001.md).
 
 ---
 

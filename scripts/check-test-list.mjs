@@ -46,6 +46,13 @@ const prose = ci.replace(/^\s*#.*$/gm, '')
 const runBlock = (prose.match(/- name: Run the test suite\n\s+run: [\s\S]*?(?=\n\s*- name:|\n\S)/) ?? [''])[0]
 const listed = new Set(runBlock.match(/test\/[a-z0-9-]+\.test\.ts/g) ?? [])
 
+// Only `*.test.ts`. The `test/*.mjs` files are opt-in PROBES, not suite
+// members: `e2e-dashboard` and `e2e-in-ui` need a browser, `probe-container`
+// needs a RUNNING container, and `capture-standalone-evidence` writes images.
+// Counting them here would be a false failure the first time one is added, and
+// the fix would be to widen the pattern — which is how a check starts passing
+// everything. They are named in EXCLUDED-adjacent prose in docker/README.md and
+// the Makefile instead, which is where a person looks for them.
 const onDisk = readdirSync(join(repo, 'test'))
   .filter(f => f.endsWith('.test.ts'))
   .map(f => `test/${f}`)
