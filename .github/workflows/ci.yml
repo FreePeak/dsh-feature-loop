@@ -105,6 +105,11 @@ jobs:
       # The same drift the typecheck job checks for: a new PURE test file is not
       # in this list, so it never runs in CI and nothing says so. The step after
       # this one fails on that.
+      # First, because every other check below is a claim ABOUT this job, and a
+      # claim nothing verifies is how a check gets committed and orphaned.
+      - name: CI still runs every check, and the no-install job still installs nothing
+        run: node scripts/check-ci-shape.mjs
+
       - name: The no-install test list is not stale
         run: node scripts/check-test-list.mjs
 

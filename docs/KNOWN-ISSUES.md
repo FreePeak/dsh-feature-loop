@@ -260,6 +260,32 @@ The seven matching cases are asserted inside the script, including both shipped
 false claims and both corrected labels — the defect class now has a test rather
 than a note.
 
+### A check CI stopped running is worse than no check — so CI's shape is checked too
+
+Five checks now each claim a place they run, and every one of those claims is a
+thing that can silently stop being true: a step gets deleted, a target gets
+narrowed, a job starts installing. The script still passes on every machine and
+protects nothing, and the failure is invisible because the script itself is
+fine.
+
+`scripts/check-ci-shape.mjs` closes that, and it is the FIRST step of the `test`
+job because every other check is a claim about that job:
+
+| claim | verified by |
+|---|---|
+| every `scripts/check-*.mjs` is invoked by `ci.yml` | deleting a step → fails, naming the script |
+| every one is also in `make check` | deleting a line → fails, "make check must not be quietly weaker than CI" |
+| every invocation names a file that exists | a typo in a step → fails, naming the missing file |
+| the `test` job installs nothing | adding `npm install` there → fails, with the reason that install is what the list is testing |
+
+The fourth one found its own bug on the first run. The job-extraction regex
+stopped at the first two-space `name:` line, and on this file that matched at a
+point past the end of the `test` job — so the check passed on a job that DID
+install. The job is now sliced by its own boundaries. That is the same lesson
+the other four checks taught, and it is the reason this one asserts the
+behaviour rather than the shape: a regex that silently examines nothing looks
+exactly like a regex that found nothing wrong.
+
 ### And it is wired, because a check nothing runs is a comment
 
 It is a step in the `test` job and a line in `make check`, which is the same
