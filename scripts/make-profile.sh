@@ -54,9 +54,10 @@ PROFILE_DIR="$HOME_DIR/profiles/$NAME"
 PNPM="npx -y pnpm@9.15.9"
 
 [ -f "$CLI" ] || { echo "error: harness checkout not found at $DSH" >&2; exit 1; }
-[ -d "$REPO/lib" ] || { echo "error: $REPO/lib is missing — run 'pnpm build' first" >&2; exit 1; }
 
 APP_BUNDLE=$([ "$APP" = web ] && echo "@deepseek-ai/dsh-web-app" || echo "@deepseek-ai/dsh-headless")
+# See the gateMode comment in the generated patch for why headless denies.
+GATE_MODE=$([ "$APP" = web ] && echo ask || echo deny)
 
 echo "==> profile $NAME ($APP app, web :$PORT, dashboard :$DASH)"
 mkdir -p "$PROFILE_DIR"
@@ -179,7 +180,25 @@ cat > "$PROFILE_DIR/cordis.patch.yml" <<'YAML'
       grep: auto
       edit: auto-if-confident
       write: always-approve
-    gateMode: ask
+    # `ask` on the WEB profile: the standalone dashboard is serving, a human
+    # opens it, and the gate asks.
+    #
+    # `deny` on the HEADLESS profile, and this is not a weakening - it is the
+    # only correct answer for it. `ask` fails CLOSED when no approval channel
+    # is mounted, and in `dsh headless` nothing ever mounts one: no dashboard
+    # page is opened and no browser polls /api/state, so every ask resolves "no
+    # answerer available". Measured 2026-10-02 with `ask` on the generated
+    # headless profile, against a real model:
+    #
+    #   Error: tool "write" requires approval, but no approval channel is
+    #   available
+    #
+    # The model then spent its remaining budget reasoning about whether Bash was
+    # a legitimate alternative, wrote nothing, and the run produced no work. With
+    # `deny` the same step is refused at once, with an honest reason - which is
+    # strictly better than a refusal the loop reports as a sandbox denial, and
+    # it is what the docs already recommend for unattended runs.
+    gateMode: __GATE_MODE__
     dashboard:
       enabled: true
       standalone: true
@@ -233,7 +252,7 @@ YAML
 # command substitutions (`execution` was expanding to a missing binary and
 # aborting the patch write). The dashboard port is the one value that must
 # expand — stamp it after the write.
-sed -i.bak -e "s/__DASHBOARD_PORT__/${DASH}/" "$PROFILE_DIR/cordis.patch.yml"
+sed -i.bak -e "s/__DASHBOARD_PORT__/${DASH}/" -e "s/__GATE_MODE__/${GATE_MODE}/" "$PROFILE_DIR/cordis.patch.yml"
 rm -f "$PROFILE_DIR/cordis.patch.yml.bak"
 
 echo "==> install (pnpm 9 — a v11 re-resolve drops the peer wiring)"
@@ -263,6 +282,35 @@ case "$PLUGIN_LINE" in
       echo "         fix: add pnpm.overrides pinning the harness packages (see" >&2
       echo "         scripts/make-profile.sh) and reinstall with pnpm 9." >&2 ;;
 esac
+
+# The peers RESOLVING is necessary and not sufficient: a peer can resolve and
+# the module still fail to import, and every one of those failures is a boot
+# WARNING the loader carries on past. Measured 2026-10-02 on a profile this
+# script generated: `peers resolved (10 harness packages)` printed, the row
+# composed, and every run was UNGATED — the log said
+# `feature-loop (@freepeak/dsh-feature-loop): failed to import` and the file
+# the model was asked to write appeared anyway, ungated.
+#
+# The cause was `lib/` missing from the installed copy: the plugin ships built
+# ESM in lib/ (package.json `files`), lib/ is .gitignore'd, and a `file:`
+# dependency installs whatever happens to be on disk. Build output absent at
+# install time is neither a plugin fault nor the operator's — so the script
+# BUILDS it, and then proves the import, because that is the check that turns
+# "the row composed" into "the module loads".
+#
+# The import runs from INSIDE the profile, not from the repo: the bundle's
+# `@deepseek-ai/*` peers resolve through the profile's node_modules, so
+# importing it from anywhere else fails with ERR_MODULE_NOT_FOUND for
+# `@deepseek-ai/schemastery` — which says nothing about where it actually runs.
+echo "==> build + import check (an unimportable plugin gates nothing)"
+( cd "$REPO" && npm run --silent build >/dev/null ) \
+  || { echo "error: the plugin did not build — lib/ is what a profile imports" >&2; exit 1; }
+( cd "$PROFILE_DIR" \
+    && node -e "import('@freepeak/dsh-feature-loop').then(() => console.log('   the plugin IMPORTS inside this profile'), e => { console.error('   import FAILED: ' + String(e.message).split('\\n')[0]); process.exit(1) })" ) \
+  || { echo "error: the plugin is installed but INERT — the row composes, the" >&2
+       echo "       client bundle is in the boot graph, and nothing is gated." >&2
+       echo "       fix: npm run build in the repo, then reinstall with pnpm 9." >&2
+       exit 1; }
 
 echo "==> compose check"
 node "$CLI" --profile "$NAME" --dump-config | grep -q "id: feature-loop" \
