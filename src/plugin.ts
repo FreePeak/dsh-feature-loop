@@ -309,11 +309,16 @@ export interface OptimizePolicyOptions {
    * intentionally not consumed by any hook.
    */
   loops?: number
-  /** Derive envelopes from run history before running. Accepted, not yet acted on. */
+  /**
+   * Derive envelopes from run history before running. Validated at load and
+   * **read by nothing** — a documented no-op. It was documented as one of the
+   * two keys that "drive the run-history recording", and the other one
+   * (`history`) does all of that on its own.
+   */
   derive?: boolean
   /** Run-history file the envelope and metrics are derived from. */
   history?: string
-  /** Judge backend for cross-pass scoring. Accepted, not yet acted on. */
+  /** Judge backend for cross-pass scoring. Validated at load; read by nothing. */
   judge?: 'none' | 'chat' | 'laya'
   /** Dollars a refinement may spend. Validated at load; intentionally not consumed by any hook. */
   totalBudgetUSD?: number

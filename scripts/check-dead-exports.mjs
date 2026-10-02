@@ -79,16 +79,17 @@ const DECLARATION = /^export (?:async )?(?:function|const|let|class|enum) (\w+)/
  *   FeatureLoopRemote         the harness discovers a remote service by
  *                              `markRemote(proto, ...)` at module load; nothing
  *                              imports the class, and nothing should.
- *   answerLive                a seam the remote's `answer()` delegates to, kept
- *                              exported so the browser-side answer path can be
- *                              driven without a socket.
  *   attachApprovalAnswerer    installed by `apply()`, and exported so a test or
  *                              an embedding host can mount the gate on a
  *                              context it built itself.
+ *
+ * `answerLive` WAS here and is not any more: it had exactly one caller, in the
+ * same file, so it became file-local. The allowlist is a record of deliberate
+ * exceptions, and an entry that is no longer an exception is one the check
+ * would keep excusing forever.
  */
 const BY_CONSTRUCTION = new Set([
   'FeatureLoopRemote',
-  'answerLive',
   'attachApprovalAnswerer',
 ])
 

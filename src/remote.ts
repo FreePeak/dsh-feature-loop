@@ -356,7 +356,14 @@ export async function probeJudge(
  * gone — a late click must read as "you were beaten", never as a fresh
  * authorisation.
  */
-export function answerLive(
+/**
+ * Settle one ask through the live-state seam, if one is mounted.
+ *
+ * Not exported: its only caller is `FeatureLoopRemote.answer` below, and a
+ * second caller would be a bug rather than a feature — the browser reaches this
+ * through the remote namespace, which is what `FeatureLoopRemote` is for.
+ */
+function answerLive(
   source: LiveSource | undefined,
   id: string,
   outcome: 'allowed-once' | 'rejected',
