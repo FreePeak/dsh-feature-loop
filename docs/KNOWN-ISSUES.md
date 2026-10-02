@@ -571,9 +571,23 @@ Verified live, both directions, against `~/.dsh/profiles/feature-loop`:
 | briefs off (the shipped row) | 0 | no |
 | `brief.enabled: true`, model returns a brief | 1 (the brief text) | no |
 
-The failed-brief line itself was not observed — the enabled run's model call
-succeeded — so that branch is covered by the reasoning and not by a screenshot.
-Stated rather than rounded up.
+**The failed-brief branch is then asserted, not left to the reasoning that
+produced the bug.** Reasoning got this wrong once already, so it does not get
+to be the regression test: `test/assistant-ui.test.ts` pins the decision as a
+table of `(briefState, briefsOn) → rendered`, covering all four cases —
+including `briefsOn: undefined`, the standalone loopback dashboard where
+`DashboardSource.status()` does not exist and the page must therefore keep
+rendering a failure rather than assume briefs are off.
+
+Two of the three branches are observed in a browser; the third is a table.
+That is what is claimed.
+
+**To observe the third in a browser** takes three edits, recorded so the next
+person does not have to re-derive them: briefs `enabled`; an unresolvable
+model id; and — because `resolveBriefExplainer` refuses to build an explainer
+without a gateway key — a dead judge endpoint, so the approval path runs
+without one. It needs the **web** profile: the headless twin has no web
+surface, which is what the attempt here ran into.
 
 **The lesson, and it is the sibling of §14's.** A fix that stops a false
 positive will happily create a false negative, and this one was verified only
