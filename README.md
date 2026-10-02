@@ -754,7 +754,7 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 ### Verifying the whole thing
 
 ```bash
-node --experimental-strip-types --test test/*.test.ts   # 402 pass
+node --experimental-strip-types --test test/*.test.ts   # 404 pass
 pnpm test:integration                                   # 9 pass, in the real harness
 tsc --noEmit                                            # clean
 bash demo/run.sh                                        # goal-met
