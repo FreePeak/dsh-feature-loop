@@ -74,6 +74,53 @@ test('a settings file with no reviewBudget leaves the row router untouched', asy
   })
 })
 
+// The panel and the gate must never disagree about precedence. `buildStatus`
+// used to merge `{...rowConfig, ...settings}` on its own while `apply` consulted
+// the row alone — so a value could be rendered as effective and decide nothing.
+// It now calls the same `userSettings`, which is what makes this a test rather
+// than a comment.
+
+/**
+ * The row-plus-settings projection the panel renders, synchronously.
+ *
+ * `buildStatus` is async because it may probe the judge endpoint; these two
+ * cases pass a judge of `none` so it never does, and the assertion is about the
+ * MERGE, not the probe.
+ */
+async function buildStatusConfig(rowConfig: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const status = await buildStatus(rowConfig, undefined, { reachable: false, detail: 'detectors only' })
+  return status.config
+}
+
+test('the panel shows exactly what the gate is built from', async () => {
+  await withConfigHome(async (_home, path) => {
+    saveSettings({ gateMode: 'deny', judgeThreshold: 2.5 }, path)
+    const shown = await buildStatusConfig({ gateMode: 'ask', judgeThreshold: 1, spec: { goal: 'x' } })
+    assert.equal(shown.gateMode, 'deny', 'the file wins, exactly as the gate sees it')
+    assert.deepEqual(
+      shown.router,
+      { judgeThreshold: 2.5 },
+      "the router key comes back nested, which is the row's own shape",
+    )
+    assert.equal(shown.judgeThreshold, 1, "the row's flat key is shown as the row spells it")
+    assert.deepEqual(shown.spec, { goal: 'x' }, "the row's own block survives")
+  })
+})
+
+test('a hand-edited spec in the settings file is not shown, because it is not applied', async () => {
+  await withConfigHome(async (_home, path) => {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, 'spec:\n  maxSteps: 1\ngateMode: deny\n')
+    const shown = await buildStatusConfig({ gateMode: 'ask', spec: { goal: 'x', maxSteps: 15 } })
+    assert.equal(shown.gateMode, 'deny')
+    assert.deepEqual(
+      shown.spec,
+      { goal: 'x', maxSteps: 15 },
+      'the row wins on a key the file cannot set — shown here, not applied',
+    )
+  })
+})
+
 // The settings file must reach the GATE, not only the status page. Before this
 // the page showed a value the running policy never consulted, and both the file
 // header and the page's notice said so — accurately, which is worse, because a
@@ -215,7 +262,7 @@ test('a malformed settings file reads as empty so the panel still renders', asyn
 
 test('buildStatus reports the row config when no settings file exists', async () => {
   await withConfigHome(async () => {
-    const status = await buildStatus({ judge: 'laya' }, {}, { reachable: true, detail: 'ok' })
+    const status = await buildStatus({ judge: 'laya' }, () => ({}), { reachable: true, detail: 'ok' })
     assert.equal(status.judge.kind, 'laya')
     assert.equal(status.enabled, false, 'no spec in the row means policies are off')
     assert.match(status.configPath, /dshloop\/config\.yaml$/)
@@ -224,7 +271,7 @@ test('buildStatus reports the row config when no settings file exists', async ()
 
 test('buildStatus marks the policies on when the row carries a spec', async () => {
   await withConfigHome(async () => {
-    const status = await buildStatus({ spec: { goal: 'x' } }, {}, { reachable: true, detail: '' })
+    const status = await buildStatus({ spec: { goal: 'x' } }, () => ({}), { reachable: true, detail: '' })
     assert.equal(status.enabled, true)
   })
 })
@@ -232,14 +279,14 @@ test('buildStatus marks the policies on when the row carries a spec', async () =
 test('the saved file wins over the row config for display', async () => {
   await withConfigHome(async (_home, path) => {
     saveSettings({ judgeThreshold: 0.9 }, path)
-    const status = await buildStatus({ judge: 'laya', judgeThreshold: 2 }, readSettings(path), { reachable: true, detail: '' })
+    const status = await buildStatus({ judge: 'laya', judgeThreshold: 2 }, () => readSettings(path), { reachable: true, detail: '' })
     assert.equal(status.config.judgeThreshold, 0.9)
   })
 })
 
 test('buildStatus does not probe an endpoint for a judge that has none', async () => {
   await withConfigHome(async () => {
-    const status = await buildStatus({ judge: 'none' }, {})
+    const status = await buildStatus({ judge: 'none' }, () => ({}))
     assert.equal(status.judge.detail, 'detectors only')
     assert.equal(status.judge.reachable, false)
   })
@@ -247,7 +294,7 @@ test('buildStatus does not probe an endpoint for a judge that has none', async (
 
 test('buildStatus labels a chat judge as reachable without a probe', async () => {
   await withConfigHome(async () => {
-    const status = await buildStatus({ judge: 'chat' }, {})
+    const status = await buildStatus({ judge: 'chat' }, () => ({}))
     assert.equal(status.judge.detail, 'metered chat judge')
   })
 })
