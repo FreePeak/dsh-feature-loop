@@ -179,6 +179,49 @@ allowlist into a pass-everything breaks the boundary case. The merge lives in
 `remote.ts` rather than `index.ts` precisely so those tests import no harness
 package and CI actually runs them.
 
+### 1e. `policy.judge.score is not a function` — a string where an object belongs
+
+**Observed:** a settings file naming `judge: laya` booted a generated profile
+clean and then died on the first step:
+
+```
+dsh: UNKNOWN: policy.judge.score is not a function
+```
+
+**Why:** the merge was spread into `apply`'s options **after** the constructed
+`judge:`. `judge: laya` in the file is a STRING; the policy wanted a `Judge`
+object; the spread put the string last, so it won. Nothing complains at load —
+the object is still a valid value for the config schema — and nothing complains
+until a step asks the judge for a score.
+
+This is the same class as 1a–1d one level over: **a value that is wrong in a
+place nothing looks at until it is looked at.** It is also the specific hazard
+of a shallow merge over a config that mixes scalars and objects: `spec`,
+`dashboard`, `optimize` and `judge` are the four non-scalars, and a spread does
+not know which is which.
+
+**Fix:** the judge is resolved FROM the merged config, and the options spread
+names the three keys that must keep their own values — `judge` (an object),
+`dashboard` and `optimize` (blocks the file may not touch). Three of them are
+still silently orderable in one spread, which is why they are named rather than
+left to a future edit.
+
+**The instructive part is the test.** The first version called `resolveJudge`
+directly, which is the function under suspicion — and it **passed against the
+live bug**. A test that exercises the helper proves the helper works, not that
+the helper is reached correctly. Rewritten to drive `apply`, it now fails when
+the spread is put back in its live position:
+
+```
+with the merge spread after `judge:` — the live crash:
+not ok 17 - apply builds a Judge from the settings file, not the string in it
+```
+
+That is the third time in this file that a test proved a function works while
+the wiring to it was broken. Counting call sites (8b211d1), reaching the last
+hop (1d), and driving the call site rather than the callee are three different
+checks, and this bug needed the third.
+
 ### 1. The stylesheet restyled the whole host UI
 
 **Observed:** after the dashboard was folded into the DSH UI, the host's `<body>`
