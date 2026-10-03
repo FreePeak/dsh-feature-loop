@@ -397,8 +397,12 @@ try {
   // The refusal text is asserted, not just the absence of the file: a turn that
   // died for an unrelated reason (no adapter, no key) also leaves no file, and
   // that is a different defect with the same symptom.
-  const refused = /requires approval, but no approval channel is available/.test(out)
-  if (!refused) throw new Error(`expected a refusal naming the approval channel:\n${out.slice(0, 900)}`)
+  //
+  // The sentence is the PLUGIN's, not the harness's (KNOWN-ISSUES §1be). The
+  // harness's own "no approval channel is available" reached the model as a
+  // sandbox objection; asserting it here would pin the confusing version.
+  const refused = /nobody is watching/.test(out)
+  if (!refused) throw new Error(`expected a refusal naming the absent watcher:\n${out.slice(0, 900)}`)
   if (existsSync(PROOF)) throw new Error(`the gate dispatched the write with no answerer; ${PROOF} exists`)
   log('   refused, no file  ✓')
 
