@@ -54,6 +54,7 @@ rather than a list of letters:
 | 1bl | The usability check had only ever asked one question |
 | 1bm | Five cards that said the same thing, and a lost run record hiding in plain sight |
 | 1bn | One gate, three tables, and nothing that compared them |
+| 1bo | The release workflow produced a tag and nothing else |
 
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
@@ -745,6 +746,46 @@ generator's own heredoc is the source of truth and was correct the whole time �
 the fix was to rewrite the file from the template, which took one command. Hand
 transcription of generated YAML is a fifth instance of the same mistake, and the
 same rule answers it: use the thing that generates it.
+
+### 1bo. The release workflow produced a tag and nothing else
+
+**Observed:** `.github/workflows/release.yml` computed a version, bumped
+`package.json`, pushed a commit, tagged, and created a GitHub release. It never
+ran `npm publish`. The package has therefore never been published, and the
+README's npm badge pointed at a version that does not exist.
+
+**Why nobody noticed:** every part of it works. The run is green, the tag
+appears, the GitHub release has generated notes. The failure is a *missing
+effect*, which is the one kind of bug that looks identical to success from every
+angle you would normally check — including a `gh run list` showing green.
+
+This is §1b's exact shape one level up: "peers resolved" reported as "your
+profile is ready". A step reporting done, for something it did not do.
+
+**Fix:** a publish step, guarded three ways because each guard answers a
+question this repo has already been bitten by:
+
+- `npm view …@$VERSION` first, so a retry after a mid-run failure does not E403
+  on a version that already exists. The tag is not the authority about npm; npm
+  is.
+- the TARBALL is inspected before publishing, not the working tree — `lib/` is
+  gitignored build output, and a clean-tree pack once shipped with zero `lib/`
+  entries (§1's own reason `prepack` exists). Checked on the artifact that
+  actually ships.
+- `--provenance` with `id-token: write`, because that is what ties the tarball
+  to this run; and `registry-url` on `setup-node`, because without it there is no
+  `.npmrc` and `npm publish` fails E401 on a package the run is ready for.
+
+**Verified, not assumed.** `actionlint` clean. The lib-entry guard measured in
+both directions: a real `npm pack` carries 21 entries and passes; a pack with
+`--ignore-scripts` (which is exactly the empty-lib shape, reached by bypassing
+`prepack`) carries 0 and the guard refuses. The first draft of the step also had
+a real bug caught before it ever ran — it read `$VERSION` under `set -u` with no
+`env:` carrying it, which fails on an unset variable rather than publishing the
+wrong one.
+
+**Not published.** The step needs `NPM_TOKEN` and an OIDC-enabled npm project;
+both are the maintainer's to create. Nothing here has run against the registry.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
