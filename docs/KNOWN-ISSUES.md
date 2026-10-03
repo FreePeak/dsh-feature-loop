@@ -55,6 +55,7 @@ rather than a list of letters:
 | 1bm | Five cards that said the same thing, and a lost run record hiding in plain sight |
 | 1bn | One gate, three tables, and nothing that compared them |
 | 1bo | The release workflow produced a tag and nothing else |
+| 1bp | An 87% success rate, computed from turns that did nothing |
 
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
@@ -786,6 +787,53 @@ wrong one.
 
 **Not published.** The step needs `NPM_TOKEN` and an OIDC-enabled npm project;
 both are the maintainer's to create. Nothing here has run against the registry.
+
+### 1bp. An 87% success rate, computed from turns that did nothing
+
+**Observed:** the Metrics roll-up over the run history committed on `main`
+reported:
+
+```
+runs 15,  goalMetRate 0.867,  meanQuality 0.846
+```
+
+Read that as "this loop succeeds 87% of the time" and it is a good number. It is
+not one. Of those 15 records, **13 had `steps: 0` and `costUSD: 0`**, and 12 of
+them said `goal-met`.
+
+**Why:** `outcomeOf` mapped the harness's `completed` straight to `goal-met`,
+with the ceiling as the only thing that could say otherwise. But `completed` means
+**the transport closed** — it does not mean the loop worked. The loop's own
+success check lives in the CLI runner, which is not in this path at all. So a
+turn that opened, did nothing, and closed was recorded as a success, and
+`summarize` counted it faithfully. Every other number in the roll-up was correct;
+this one was a claim about work that never happened.
+
+This is the sixth instance of this file's shape, and the first one where the
+*number* is the defect rather than the code: nothing crashed, nothing was
+silently skipped, and the arithmetic was exact.
+
+**Fix:** `outcomeOf` takes the step count, and a turn with no steps is
+`model-stop`. Measured on the same 15 records:
+
+| | goalMetRate |
+|---|---|
+| before | 0.867 |
+| after | 0.067 |
+
+**Verified both ways.** `a closed turn appends exactly one run record` now
+asserts `model-stop` for the zero-step turn and the comment says why; removing
+the guard fails it. And the other half is covered too — `a turn that ran steps
+keeps goal-met`, because a guard that turned real runs into failures would be
+worse than the bug.
+
+**Two things this found on the way, both recorded because they are the trap
+rather than the fix.** The test had to be written in `plugin-wiring.test.ts`
+because that is the only file with a priced-session fixture; moving it into
+`plugin-approval.test.ts` meant duplicating `settledSession` and `PRICED_MSG`,
+which is worse than putting the test where the fixture lives. And `ctx.agents`
+has to be wired BEFORE `apply` — the plugin resolves the session's agent when it
+records the turn, and the assignment silently did nothing when it came after.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 

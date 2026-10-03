@@ -325,8 +325,12 @@ test('a closed turn appends exactly one run record with metered numbers', async 
   assert.equal(record.costUSD, 0)
   assert.equal(record.maxSteps, 8)
   assert.equal(record.budgetUSD, 1)
-  // `completed` with no ceiling hit reads as goal-met in the harness sense.
-  assert.equal(record.outcome, 'goal-met')
+  // A turn that took no step is NOT goal-met, whatever the transport called it.
+  // `completed` means the transport closed; it does not mean the loop worked.
+  // Measured 2026-10-04: 13 of 15 records in the committed history were
+  // zero-step turns, 12 of them `goal-met`, which made `summarize` report an
+  // 87% goal-met rate over runs that had touched nothing.
+  assert.equal(record.outcome, 'model-stop')
   // Honestly absent, never guessed: no route priced, no latency timed.
   assert.deepEqual(record.byRoute, {})
   assert.deepEqual(record.stepLatencyMs, [])

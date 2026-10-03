@@ -876,10 +876,21 @@ interface TurnRecordInput {
  * @param policy - the agent's policy, for the budget verdict when present.
  * @returns the run outcome to record.
  */
-function outcomeOf(reasonKind: string, policy: FeatureLoopPolicy): RunOutcome {
+function outcomeOf(reasonKind: string, policy: FeatureLoopPolicy, steps: number): RunOutcome {
   if (reasonKind === 'aborted') return 'aborted'
   if (reasonKind === 'error') return 'error'
   if (reasonKind === 'blocked') return 'blocked'
+  // A turn that took no step is not a successful turn. `completed` here means
+  // the transport closed, and the loop's own success check lives in the CLI
+  // runner — so without this a turn that did nothing at all is recorded as
+  // `goal-met`, and the roll-ups read it as one.
+  //
+  // Measured 2026-10-04 on the committed history: 13 of 15 records had
+  // `steps: 0` and `costUSD: 0`, 12 of them `goal-met`. `summarize` reported
+  // `goalMetRate 0.867` — an 87% success rate computed almost entirely from
+  // turns that touched nothing. Every other number in that roll-up was
+  // correct; this one was a claim about work that never happened.
+  if (steps === 0) return 'model-stop'
   // `completed`, `max-tokens` and `interrupted` all say the transport closed
   // the turn without refusing it. Whether the loop *succeeded* is then a
   // question for the ceilings: a turn the harness calls completed that spent
@@ -931,7 +942,7 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
     pass: 1,
     passes: 1,
     taskKey: spec === undefined ? 'none' : runlog.taskKeyOf(spec.goal),
-    outcome: outcomeOf(event.reasonKind, policy),
+    outcome: outcomeOf(event.reasonKind, policy, steps),
     steps,
     maxSteps: spec?.maxSteps ?? 0,
     costUSD: snapshot?.spentUSD ?? 0,

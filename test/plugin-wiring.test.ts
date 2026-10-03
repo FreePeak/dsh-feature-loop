@@ -557,6 +557,54 @@ test('a THROWING ctx.agents still records the turn', async () => {
   assert.equal(JSON.parse(line!).runId, 'sess-throwing')
 })
 
+test('a turn that ran steps keeps goal-met when the transport completed', async () => {
+  // The other half of the zero-step rule: the guard must not turn a real run
+  // into a failure. This charges a priced assistant message first, so the record
+  // has steps to report.
+  const { mkdtempSync, readFileSync, existsSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-hist-steps-'))
+  const historyPath = join(dir, 'runs.jsonl')
+  const session = settledSession([PRICED_MSG])
+  const agent = { id: 'sess-steps', session }
+  const agents = new Map<string, typeof agent>([['sess-steps', agent]])
+  // `agents` must exist BEFORE `apply`: the plugin resolves the session's agent
+  // when it records the turn, and assigning it afterwards is too late.
+  const { ctx, handler } = fakeCtx()
+  Object.assign(ctx as object, { agents: { get: (id: string) => agents.get(id) } })
+  const dispose = apply(ctx as never, {
+    spec: {
+      ...SPEC,
+      maxSteps: 99,
+      costBudgetUSD: 5,
+      prices: { 'onegw/execution': { inputPerMTok: 0.3, outputPerMTok: 1.2 } },
+      controller: { ladder: [{ provider: 'onegw', model: 'execution' }] },
+    },
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+  })
+  // (payload, next) — two arguments, not six. The payload is ONE object; the
+  // neighbouring test's call is the shape to copy, which is why it is here.
+  const pre = handler('agent/pre-step')
+  await pre(
+    { agent, messages: [], turn: 1, step: 1, signal: new AbortController().signal },
+    async () => ({ kind: 'enter', messages: [] }),
+  )
+
+  const sessionHandler = handler('session/event') as unknown as (s: unknown, e: unknown) => unknown
+  sessionHandler({ id: 'sess-steps' }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline && !existsSync(historyPath)) {
+    await new Promise(resolve => { setTimeout(resolve, 10) })
+  }
+  const [line] = readFileSync(historyPath, 'utf8').trim().split('\n')
+  const record = JSON.parse(line!) as Record<string, unknown>
+  assert.ok(Number(record.steps) > 0, 'this turn did work, so it must have steps')
+  assert.equal(record.outcome, 'goal-met', 'a real completed turn is still goal-met')
+  dispose()
+})
+
 test('session/event records cost against the agent resolved from ctx.agents', async () => {
   // agentOfSession was a stub returning undefined, so turn records always
   // read the agent-less shared policy (fresh zero budget) even when the live
