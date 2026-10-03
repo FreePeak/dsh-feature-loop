@@ -495,28 +495,6 @@ and says plainly, right below, why not the glob and what the six failures mean.
 Verified by pasting the new README into a fresh clone and running its first
 command: green.
 
-**The same class of defect one layer down, in the demo's own run record.** Every
-pass `refine.ts` records wrote `byRoute: {}` next to a real `costUSD`, with a
-comment saying the loop result "does not carry" per-route spend. It did — the
-ledger that produces `spentUSD` was already carrying it, one call away in the
-same function. And the field is not decorative: `src/optimizer.ts` reads
-`byRoute` to choose the cheapest rung, so every demo-shaped run with spend was
-teaching the optimizer that every route is free. Proved on the wire:
-
-```
-$ bash demo/run.sh --judge none
-  outcome goal-met · 6 steps · $0.004824
-  record  byRoute {"onegw/execution": {"steps": 6, "usd": 0.00482385}}   # was {}
-```
-
-`LoopRunResult` now carries it, `refine.ts` reads it instead of a literal, and a
-test fails if `byRoute` goes back to empty beside a real `costUSD` (reverted the
-one-line change and watched it go red).
-
-**The pattern across all three:** a missing value is written down as a zero, and
-the zero is accepted because nothing reads it *at the moment it is written*. It
-is read later, by something that trusts it.
-
 ### 1bl. The usability check had only ever asked one question
 
 **Observed:** `test/e2e-in-ui.mjs` drove the real page against a task that
@@ -619,6 +597,23 @@ this was never a serialization bug, it was a record written from
 history now prints `routes: onegw/execution (12 steps)` where it previously
 would have printed `none recorded` for a history where every run spent money.
 Two runs and a wall-clock measurement, both directions.
+
+**Fixed, and it is one field.** `LoopRunResult` now carries `byRoute` from the
+same ledger that produces `spentUSD` — it always did, one call away in the same
+function — `refine.ts` records it instead of a literal `{}`, and a test fails if
+`byRoute` goes back to empty beside a real `costUSD`. Reverted the one-line
+change and watched it go red, then restored it. On the wire:
+
+```
+$ bash demo/run.sh --judge none
+  outcome goal-met · 6 steps · $0.004824
+  record  byRoute {"onegw/execution": {"steps": 6, "usd": 0.00482385}}   # was {}
+```
+
+The pattern worth naming, because it recurred three times in one round: a
+missing value is written down as a zero, and the zero is accepted because
+nothing reads it *at the moment it is written*. It is read later, by something
+that trusts it.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
