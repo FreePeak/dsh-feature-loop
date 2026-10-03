@@ -1083,11 +1083,34 @@ model, real browser, five asks settled, three files written):
 | `recordTurn` entered? | **yes** — its first statement printed a feed line |
 | run record written? | **no** — the history file is unchanged, and `metrics` is absent from `/api/state` |
 
-**Two candidate causes, not yet separated:**
+**What narrowed it, by reading the harness rather than by probing again.** Two
+facts, both from source:
 
-1. the append itself never completing (a settled promise that does nothing), and
-2. `turn/end` arriving only at run teardown, so the record lands after the run
-   has already reported.
+- `Session.append` dispatches `session/event` **synchronously**, inside the
+  append, and `invokeContainedSessionObservers` wraps each callback in
+  try/catch — so a throw before the first `await` would be swallowed with a
+  warning in the harness's own log. There is no such warning.
+- In a **web** run the turn stays open while the page sits idle. `Agent.turn()`
+  appends `turn/end` in its `finally`, after the step loop drains, and a web
+  session is not finished until the next message or teardown. So the record
+  lands when the *next* turn starts — not while the run is being watched.
+
+That second fact explains the live runs on its own, and it is consistent with the
+one run in which a `turn/end` *did* arrive during measurement. It is the reason
+no probe fired in the later runs: `turn/end` had not happened yet, so
+`recordTurn` was never entered — which is exactly what the feed shows.
+
+**Still not established:** whether the append completes once a turn does end. The
+measurement above stops at "the turn had not ended", and closing that gap needs a
+second turn in the same session, which the probe scripts do not send. Recorded as
+the open half rather than guessed.
+
+**What the fix is for, then, if not for this.** Both changes stand on their own
+and neither is cosmetic: a listener that a scope filter can drop is a silent
+failure, and a dynamic load that can never settle is a worse one. But the entry
+above is honest that neither is the cause of the missing record — which is what
+makes them worth keeping. A fix that does not fix the thing it is named after is
+either a different fix or a lie.
 
 **What this changes about the earlier entries.** §1bp through §1bv each read a
 figure off a file and found it wrong. That work stands on its own — the figures
