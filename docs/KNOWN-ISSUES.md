@@ -520,7 +520,7 @@ e2e-in-ui (allow): 5 × Allow once → 3 file(s) written, waits 66, 34, 30, 47, 
 e2e-in-ui (reject): 2 × Reject → no file written, waits 50, 48ms
 ```
 
-Two things fall out of that which no previous run could show:
+Three things fall out of that which no previous run could show:
 
 - **The page is not the slow part.** Every card was on screen in tens of
   milliseconds. The gaps the human feels are the 12–57 SECOND model steps
@@ -532,6 +532,21 @@ Two things fall out of that which no previous run could show:
   clicks through `bash` on autopilot has stopped reading the cards, which is
   the property the gate exists to have. The next thing to look at is the
   actuator table, not the approval flow.
+
+- **The cards could not be told apart.** Five asks, three of them `write`, and
+  every card read `write: irreversible is always approved by a human`. A person
+  cannot tell ask 3 from ask 4 without reading the run, and a gate whose cards
+  are indistinguishable trains the click that makes it worthless. `tools/pre-execute`
+  already receives the parsed arguments, so the path was in hand and discarded;
+  the reason now carries it (or the command, for `bash`). On the wire:
+
+  ```
+  REVIEW REQUESTED (policy): write: irreversible is always approved by a human
+  — write /private/tmp/hw/h5.txt.
+  ```
+
+  Deliberately not the file CONTENTS: that is what the human has not decided
+  about, and a diff on the card invites approving one nobody read.
 
 Also fixed while measuring: the `finally` block that cleans up the proof threw
 `ERR_INVALID_ARG_TYPE` when a run failed BEFORE the page had named its target,
