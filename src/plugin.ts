@@ -190,6 +190,12 @@ export interface FeatureLoopPolicy {
   /** The explainer that authors review briefs for dashboard asks. */
   explainer: Explainer
   /** The step history the detectors read. */
+  /**
+   * The detectors' output sink. Carried from {@link CreatePolicyOptions.onSignals}
+   * so `reviewStep` — which takes only the policy — can reach it. See that field
+   * for why it exists at all.
+   */
+  onSignals?: (signals: readonly ReviewSignal[], step: number) => void
   history: StepObservation[]
   /**
    * The tool call observed since the last step boundary, not yet committed to
@@ -363,6 +369,15 @@ export interface CreatePolicyOptions {
   /** Attention-router overrides: review budget and judge threshold. */
   router?: ConstructorParameters<typeof AttentionRouter>[0]
   /**
+   * Called with the detectors' output for every step. NOT for deployments — it
+   * exists because `error-cascade` (one of only two CRITICAL signals) had no
+   * reachable test: the signals live inside `prepareReview`'s return value and
+   * the dashboard state is internal, so the only test of it called
+   * `noteToolOutcomes` directly and proved nothing about the plugin path (§1r).
+   * An assertion that cannot see the value it names is the §1n shape.
+   */
+  onSignals?: (signals: readonly ReviewSignal[], step: number) => void
+  /**
    * How a review is expressed at the tool boundary. Defaults to `ask` so a
    * human can approve it in the Web UI; set `deny` for unattended runs.
    */
@@ -414,6 +429,7 @@ export function createPolicy(options: CreatePolicyOptions): FeatureLoopPolicy {
     judge: options.judge ?? NO_JUDGE,
     explainer: options.explainer ?? NO_EXPLAINER,
     history: [],
+    ...options.onSignals === undefined ? {} : { onSignals: options.onSignals },
     pending: undefined,
     lastConfidence: undefined,
   }
@@ -504,6 +520,8 @@ export async function reviewStep(
     spentUSD: snapshot?.spentUSD ?? 0,
     budgetRemaining: policy.router.budgetRemaining(),
   })
+
+  policy.onSignals?.(preparation.signals, step)
 
   // The judge answers about the *previous* step, because the current one has
   // not happened yet. An absent answer is not evidence of confidence, so it is
@@ -1090,7 +1108,10 @@ export const inject = ['agents']
  */
 export function apply(
   ctx: Context,
-  options: Parameters<typeof createPolicy>[0] & { dashboard?: DashboardConfig, rowConfig?: Record<string, unknown> } = {},
+  options: Parameters<typeof createPolicy>[0] & {
+    dashboard?: DashboardConfig
+    rowConfig?: Record<string, unknown>
+  } = {},
 ): () => void {
   const policies = new WeakMap<Agent, FeatureLoopPolicy>()
   const fresh = (): FeatureLoopPolicy => createPolicy(options)
@@ -1387,6 +1408,16 @@ export function apply(
   })
 
   // The outcome of a call that RAN — the only place `isError` exists.
+  //
+  // This one flag reaches BOTH consumers: `reviewStep` reads it as `failed`, which
+  // feeds the ladder (`recordFailure`) and the detectors (`error-cascade` reads
+  // the committed observation's `error`). `noteToolOutcomes` — the helper whose
+  // own doc says `error-cascade` "could never fire in the plugin path" — turns
+  // out to be UNNECESSARY once the flag is set here: the observation the helper
+  // would have marked is written from this same `pending` a step later, with the
+  // flag already carrying. Verified by removing both the helper call and this
+  // flip: the cascade test fails; with only the flip it passes. So the helper has
+  // no call site in src/ and is not given one (§1r).
   //
   // `policy.pending.error` used to be set in exactly one branch: the one where
   // the GATE blocks a call. So a `bash` that executed and exited 1 left it

@@ -204,10 +204,17 @@ test('noteToolOutcomes is a no-op with no outcomes and no history', () => {
   assert.equal(noteToolOutcomes(history({ tool: 'a' }), []), false)
 })
 
-test('error-cascade can fire in the plugin path now that errors are recorded', () => {
-  // The gap this closes: before, `StepObservation.error` was never populated, so
-  // three consecutive failing steps produced no signal at all and the gate ran
-  // on four detectors instead of six.
+test('error-cascade fires when the observations carry their errors', () => {
+  // This test proves the DETECTOR, not the plugin path: it builds the history
+  // itself and calls `noteToolOutcomes` directly. It said otherwise until
+  // 2026-10-03, and the claim was false in both directions — `error-cascade`
+  // could fire in the plugin path before §1q (once `pending.error` carries a
+  // failed call), and `noteToolOutcomes` is not what made it possible.
+  //
+  // The plugin-path proof is `test/plugin-wiring.test.ts`'s "error-cascade fires
+  // in the plugin path", which drives the real hooks and reads the signals off
+  // the `onSignals` sink. Two tests, two different subjects, and this one now
+  // says which is which.
   const steps = history(
     { tool: 'run_tests' },
     { tool: 'edit_file' },

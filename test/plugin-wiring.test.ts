@@ -699,3 +699,52 @@ test('a tool that RAN and FAILED climbs the ladder; one that succeeded does not'
 
   dispose()
 })
+
+test('error-cascade fires in the plugin path: three failed CALLS raise the critical signal', async () => {
+  // `noteToolOutcomes` exists for exactly this and its own doc says the flag "can
+  // only be filled in afterwards" because the observation is committed before
+  // the tools run. It was called from NOTHING in src/ — so the detector that
+  // raises `error-cascade`, one of only two CRITICAL signals, could never fire
+  // in a DSH deployment, while its own unit test passed by calling the helper
+  // directly (§1r).
+  //
+  // The signals are read back off the dashboard state the plugin writes, which
+  // is the only surface that carries them: `prepareReview`'s return value is not
+  // exposed to a test the way `reviewStep`'s is.
+  const seen: { signals: readonly { kind: string, severity?: string }[] }[] = []
+  const { ctx, handler, dispose } = mount({
+    spec: SPEC,
+    gatePolicies: { bash: 'auto', read: 'auto', glob: 'auto', grep: 'auto', edit: 'auto', write: 'always-approve' },
+    onSignals: (signals: readonly { kind: string, severity?: string }[]) => {
+      seen.push({ signals })
+    },
+  })
+  const agent = AGENT
+
+  // Four failed steps: the observation for step N is committed at step N+1, so
+  // three failures need four steps before the third is committed — which is
+  // precisely the "one step late" the helper's doc warns about.
+  for (let step = 1; step <= 5; step += 1) {
+    await handler('tools/pre-execute')(
+      { agent, name: 'bash', arguments: { command: 'false' } },
+      async () => ({ kind: 'allow' }),
+    )
+    await handler('tools/post-execute')(
+      { agent, name: 'bash', call: { id: `x-${String(step)}` } },
+      { isError: true, error: { message: 'exit 1' }, content: [] },
+      async () => undefined,
+    )
+    await handler('agent/pre-step')(
+      { agent, messages: [], turn: 1, step: step + 1, signal: new AbortController().signal },
+      async () => ({ kind: 'enter', messages: [] }),
+    )
+  }
+
+  const raised = seen.flatMap(s => s.signals).filter(sig => sig.kind === 'error-cascade')
+  assert.ok(raised.length > 0,
+    `error-cascade must fire on three consecutive failed CALLS; the plugin recorded ${JSON.stringify(seen.map(s => s.signals.map(x => x.kind)))}`)
+  assert.equal(raised[0]?.severity, 'critical',
+    'it is one of only two CRITICAL signals — a run that is visibly failing must be able to stop one')
+
+  dispose()
+})
