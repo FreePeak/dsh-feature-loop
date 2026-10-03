@@ -211,8 +211,8 @@ and that is the intended behaviour, not a miss.
 ## Quick start
 
 ```bash
-# 454 tests, no network, no model call — the policy layer is pure
-node --experimental-strip-types --test test/*.test.ts
+# the tests that run with no harness, no network and no model call
+make ci-tests                       # exactly what CI runs; green on a clean clone
 
 # the end-to-end demo (needs onegw on :8080; it runs on onegw/execution)
 bash demo/run.sh
@@ -222,6 +222,20 @@ bash demo/run.sh --max-steps 4        # step ceiling
 bash demo/run.sh --budget 0.000001    # cost ceiling
 bash demo/run.sh --judge none         # detectors only, no judge
 ```
+
+**Not `node --test test/*.test.ts`.** That glob includes the six suites that
+import `src/plugin.ts`, which reaches four `@deepseek-ai/*` packages the plugin
+declares as OPTIONAL peers — so on a clean clone it reports
+
+```
+# fail 6
+```
+
+and the six failures are `ERR_MODULE_NOT_FOUND: Cannot find package
+'@deepseek-ai/dsh-llm'`, which reads like a broken repo and is a missing
+toolchain. `make ci-tests` runs the twenty-one files that need none of it. The
+rest run with `make verify` against a harness checkout. Measured 2026-10-03 on a
+fresh `git clone`: the glob 373 tests / 6 failing, `make ci-tests` green.
 
 `demo/run.sh` resets the planted bug first, so every run has real work to do.
 

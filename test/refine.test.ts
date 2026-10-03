@@ -44,6 +44,7 @@ function passResult(overrides: Partial<LoopRunResult> & { scores?: number[] } = 
     outcome: 'model-stop',
     steps: 4,
     spentUSD: 0.1,
+    byRoute: {},
     reviews: 0,
     reviewFraction: 0,
     signals: [],
@@ -223,6 +224,26 @@ test('each pass appends one run record with the pass number and scores', async (
   assert.deepEqual(records[0]!.judgeScores, [1])
   assert.equal(records[1]!.outcome, 'goal-met')
   assert.equal(records[1]!.qualityScore, 3)
+})
+
+test('a pass that spent money records it per route, not as an empty map', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'refine-byRoute-'))
+  const historyPath = join(dir, 'runs.jsonl')
+  const spent = passResult({
+    outcome: 'goal-met',
+    scores: [3],
+    spentUSD: 0.2,
+    byRoute: { 'onegw/execution': { steps: 4, usd: 0.2 } },
+  })
+  const { runFn } = scriptedPasses([spent])
+  await runRefined(options({ loops: 3, totalBudgetUSD: 10, historyPath, taskKey: 'task-1', runFn }))
+  const [line] = readFileSync(historyPath, 'utf8').trim().split('\n')
+  const record = JSON.parse(line!) as { costUSD: number, byRoute: Record<string, { steps: number, usd: number }> }
+  // The optimizer chooses a rung by reading exactly this field: an empty map
+  // beside a real costUSD tells it every route is free, which is what every
+  // demo-shaped run recorded until the ledger was read instead of a literal.
+  assert.equal(record.costUSD, 0.2)
+  assert.deepEqual(record.byRoute, { 'onegw/execution': { steps: 4, usd: 0.2 } })
 })
 
 test('no history file is written without both historyPath and taskKey', async () => {
