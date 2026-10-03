@@ -775,9 +775,33 @@ export function gateForTool(
   // The mode decides *how* the human is asked, never *whether* the call is
   // questioned: both branches stop the call, and `ask` still fails closed if no
   // approval channel answers.
-  return policy.gateMode === 'deny'
-    ? { kind: 'deny', reason }
-    : { kind: 'ask', reason }
+  if (policy.gateMode === 'deny') return { kind: 'deny', reason }
+
+  // `ask` with nobody to ask, refused HERE rather than by the harness.
+  //
+  // The harness's own fail-closed is correct and its message is
+  //   tool "write" requires approval, but no approval channel is available
+  // which a run reports as "the sandbox denied it" — the model is told the
+  // filesystem objected, which is a different fact and sends it looking for a
+  // narrower tool. Measured 2026-10-03 on a headless profile: the model spent
+  // its remaining budget reasoning about whether Bash was a legitimate
+  // alternative and then produced no work.
+  //
+  // This plugin can see the answerer directly: the dashboard registers a
+  // watcher when a page opens or polls /api/state (approvals.ts), and
+  // `ask` with no watcher cannot be answered by anything — not the harness, not
+  // the composer, not the standalone page. So the refusal is ours, it carries
+  // the reason a human would give, and it costs nothing when a page IS open:
+  // the watcher is a TTL-kept fact, not a prediction.
+  if (!watcherActive()) {
+    return {
+      kind: 'deny',
+      reason: `${reason} — nobody is watching: this run has no open dashboard or `
+        + 'composer, so no human can answer an approval. Open the Feature Loop page '
+        + `or set gateMode: deny to refuse up front.`,
+    }
+  }
+  return { kind: 'ask', reason }
 }
 
 /**

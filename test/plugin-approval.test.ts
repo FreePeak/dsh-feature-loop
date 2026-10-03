@@ -32,6 +32,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 
 import { apply, isTurnEnd } from '../src/plugin.ts'
+import { clearWatcher, noteWatcher } from '../src/approvals.ts'
 import type { CreatePolicyOptions } from '../src/plugin.ts'
 
 /** The decision the plugin hands back, narrowed to what this file reads. */
@@ -114,11 +115,19 @@ const ALLOW: Decision = { kind: 'allow' }
 async function call(
   options: CreatePolicyOptions,
   exec: { agent?: unknown, name: string, arguments?: unknown } = { agent: AGENT, name: 'write_file' },
+  watched: boolean = true,
 ): Promise<{ decision: Decision, delegated: boolean }> {
   const { ctx, handler } = fakeCtx()
   // The dashboard is on by default and binds 127.0.0.1:8100 — one live server
   // per `apply`. The gate tests never read the page, so disable it here and
   // keep the one shared port for the tests that actually need a socket.
+  //
+  // `watched` is the DEFAULT every gate test needs: `gateMode: ask` now
+  // refuses up front when no front end is watching (see gateForTool), which is
+  // the point of the change — so a test asserting an `ask` has to be a test
+  // where somebody could answer it.
+  if (watched) noteWatcher()
+  else clearWatcher()
   const dispose = apply(ctx as never, { ...options, dashboard: { enabled: false } })
   let delegated = false
   const decision = await handler('tools/pre-execute')(
@@ -129,7 +138,10 @@ async function call(
   return { decision, delegated }
 }
 
-test('a gate-raised review is returned as an ask, not a deny', async () => {
+// The watcher is process-global state with a TTL, so it leaks between tests
+// unless each one states what it means. `clearWatcher` first, always.
+test('a gate-raised review is returned as an ask when a front end is watching', async () => {
+  clearWatcher()
   const { decision } = await call({ spec: SPEC })
   assert.equal(decision.kind, 'ask')
 })
