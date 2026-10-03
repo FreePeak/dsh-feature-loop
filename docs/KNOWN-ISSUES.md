@@ -57,6 +57,7 @@ rather than a list of letters:
 | 1bo | The release workflow produced a tag and nothing else |
 | 1bp | An 87% success rate, computed from turns that did nothing |
 | 1bq | Two rates that were one number |
+| 1br | A typical run costs $0.00 and takes 0 steps |
 
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
@@ -868,6 +869,48 @@ Measured on the committed history, after both this and §1bp:
 ```
 goalMet 0.067,  firstPass undefined
 ```
+
+### 1br. A typical run costs $0.00 and takes 0 steps
+
+**Observed:** the third figure from the same committed history, and the same
+question §1bp and §1bq each asked of one number. Once §1bp stopped calling the
+13 no-op turns successes, the axes still counted them:
+
+```
+runs 15,  steps.p50 0,  cost.perRun.p50 0,  goalMetCost $0.00048
+```
+
+`steps.p50 = 0` reads as *a typical run takes no steps*. What it meant was *most
+of the recorded runs never ran at all*.
+
+**Why:** every axis was computed over `records` — all 15 closed turns — and a
+turn that took no step contributes a zero to steps, cost and wall-time. That is
+correct arithmetic over a population that is mostly non-runs, and it describes
+the population rather than the loop. `goalMetCost` was the same bug once more:
+the mean of the `goal-met` set, which was 13 zero-cost no-ops plus 2 real runs,
+so the "price of success" read **$0.00048** when the two runs that actually
+succeeded averaged **$0.0056** — a tenth of the truth.
+
+**Fix:** the cost/speed axes are computed over `ran` (records with `steps > 0`),
+`goalMetCost` over `ranMet` (met *and* ran), and `measuredRuns` is reported
+beside `runs` so the narrowing is visible rather than silent. After:
+
+```
+runs 15,  measuredRuns 2
+steps p50 8 / p95 10
+cost perRun p50 $0.00496 / p95 $0.00623
+goalMetCost $0.00623
+```
+
+**Verified.** One test builds the 13-no-op history and asserts every figure above;
+removing the filter fails it. And when nothing ran at all, `goalMetCost` is
+`undefined` — a price of success is not invented from zero-cost non-runs.
+
+**The trap in my own first assertion, recorded because it is the same one three
+entries running.** At n=2, `percentile` returns the *lower* of the two values,
+so `p50 > 0.004` failed against a correct `0.004`. The code was right and the
+test's expectation was wrong — which is the failure mode this file keeps
+documenting, wearing a different hat.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
