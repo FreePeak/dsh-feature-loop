@@ -72,10 +72,57 @@ help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN {FS = ":.*?## "}; {printf "    \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 	@echo
-	@echo "  variables: HOST_PORT=$(HOST_PORT)  DASHBOARD_PORT=$(DASHBOARD_PORT)  SERVICE=$(SERVICE)  VOLUME=$(VOLUME)"
-	@echo "             DSH_HARNESS=$(DSH_HARNESS)"
+	@echo "  variables: PROFILE=$(PROFILE)  HOST_PORT=$(HOST_PORT)  DASHBOARD_PORT=$(DASHBOARD_PORT)"
+	@echo "             SERVICE=$(SERVICE)  VOLUME=$(VOLUME)  DSH_HARNESS=$(DSH_HARNESS)"
 	@echo
 	@echo "  protected ports (never touched by these targets): $(PROTECTED_PORTS)"
+
+# ── install into a local DSH profile ─────────────────────────────────────────
+#
+# The failure this target exists to prevent: a profile that pulls in nothing else
+# from the harness installs this plugin, composes it, shows it in the boot graph,
+# and then does nothing at all — no gate, no review, no approval. The harness
+# packages are OPTIONAL peers and this repo's .npmrc disables peer
+# auto-installation, so they simply do not resolve, and the import fails at load
+# in a way that is easy to miss. The README warns about it twice; this target
+# makes it impossible to install without noticing.
+#
+# The check is pnpm's virtual-store key: a resolved peer appears under a
+# mangled name like `_@deepseek-ai+c_...`, an unresolved one under its real name.
+PROFILE ?= fl
+.PHONY: install
+install: ## Build, add to a DSH profile, and verify the plugin is NOT inert
+	@echo "==> building"
+	@$(MAKE) --no-print-directory build
+	@echo "==> checking the harness peers resolve"
+	@for pkg in dsh-llm dsh-typert-protocol; do \
+	  if [ ! -d "node_modules/@deepseek-ai/$$pkg" ]; then \
+	    echo "  ! @deepseek-ai/$$pkg is absent from node_modules."; \
+	    echo "    The plugin would install INERT: it composes, appears in the boot"; \
+	    echo "    graph, and does nothing. Depend on a harness bundle (Agent Teams'"; \
+	    echo "    profile bundle is the usual one) so the peers resolve. See"; \
+	    echo "    docs/KNOWN-ISSUES.md §4."; exit 1; \
+	  fi; \
+	done
+	@echo "  peers resolve"
+	@echo "==> adding to profile '$(PROFILE)'"
+	@dsh plugin --profile $(PROFILE) add -w file:$(CURDIR)
+	@echo "==> verifying composition"
+	@if dsh --profile $(PROFILE) --dump-config 2>/dev/null | grep -q 'feature-loop'; then \
+	  echo "  the 'feature-loop' row composed"; \
+	else \
+	  echo "  ! no 'feature-loop' row in --dump-config — the plugin is not composed."; \
+	  echo "    Check the patch row in cordis.patch.yml and the profile's bundles."; exit 1; \
+	fi
+	@echo
+	@echo "  installed into profile '$(PROFILE)'"
+	@echo "  start it:  dsh --profile $(PROFILE) web"
+	@echo "  then open the Feature Loop page and describe a goal."
+
+.PHONY: uninstall
+uninstall: ## Remove the plugin from a DSH profile
+	@dsh plugin --profile $(PROFILE) remove @freepeak/dsh-feature-loop 2>/dev/null \
+	  || echo "  nothing to remove from '$(PROFILE)'"
 
 # ── container lifecycle ────────────────────────────────────────────────────
 .PHONY: build
@@ -231,8 +278,10 @@ typecheck: ## Typecheck src/ (mirrors the CI file list)
 
 # The harness-free import closure, exactly as CI lists it.
 CI_FILES := src/agent-policy.ts src/budget.ts src/dashboard.ts \
-            src/dashboard-page.ts src/envelope.ts src/explainer.ts src/judge.ts src/laya.ts \
-            src/llm.ts src/messages.ts src/metrics.ts src/optimize.ts src/optimizer.ts \
+            src/dashboard-page.ts src/envelope.ts src/evidence.ts src/explainer.ts \
+            src/judge.ts src/laya.ts src/llm.ts src/messages.ts src/metrics.ts \
+            src/optimize.ts src/optimizer.ts src/phases.ts src/phase-budget.ts \
+            src/pipeline.ts src/sandbox.ts src/ship.ts src/yolo.ts \
             src/brief.ts src/approval-bridge.ts src/prompts.ts src/questioner.ts \
             src/refine.ts src/review.ts src/routing.ts src/runlog.ts \
             src/runner.ts src/signals.ts src/spec.ts src/tools.ts

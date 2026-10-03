@@ -189,6 +189,58 @@
             outputPerMTok: 1.20
             cacheReadPerMTok: 0.03
 
+        # ── the 0→1 pipeline ────────────────────────────────────────────────
+        # research → PRD → implement → test → ship, each phase with its own
+        # budget carved out of `spec.costBudgetUSD` and its own observable exit
+        # gate. Requires a `spec` above: a pipeline with no run budget has
+        # nothing to carve, and refuses to load rather than running nothing.
+        #
+        # Shipped DISABLED, so adding the block costs nothing and can be
+        # reviewed before it does anything. Flip `enabled: true` to get the
+        # five-phase run.
+        #
+        # Set `testCommand` to YOUR project's test runner. There is no default on
+        # purpose: the test phase's exit gate is that command's exit code, and a
+        # guessed command would report success for a project whose tests were
+        # never run.
+        pipeline:
+          enabled: false
+          # testCommand: npm test
+          runsDir: .feature-loop/runs
+          # Per-phase ceilings. Absolute USD amounts, not fractions, so they do
+          # not drift when `costBudgetUSD` changes. Omit to use the book's
+          # default shares (research 10%, prd 10%, implement 35%, test 15%,
+          # ship 20%, plus a 10% buffer reserved for the terminal report).
+          #
+          # phaseMaxSpendUSD:
+          #   research: 0.10
+          #   implement: 0.35
+          phaseMaxSteps:
+            research: 8
+            prd: 6
+            implement: 40
+            test: 30
+            ship: 10
+          # A step ceiling is only reached by SPENDING steps; a loop that is slow
+          # rather than busy never spends its way to one. These fire regardless
+          # of the loop's internal state.
+          phaseTimeoutMs: 900000     # 15min per phase
+          timeoutMs: 5400000         # 90min for the whole run
+
+        # YOLO is the other half of the 0→1 story, and is OFF here.
+        #
+        #   ask   the Web UI prompts you (default — supervised)
+        #   deny  refuse outright, for unattended CI
+        #   auto  YOLO: never prompts. Reads, writes inside the run's worktree,
+        #         pushing its own branch and opening a PR are allowed; pushing a
+        #         protected branch, force-push, merge, publish, deploy and
+        #         touching a credential are DENIED.
+        #
+        # `auto` refuses to work without a worktree, because containment with
+        # nothing to contain against is not containment. `make install` creates
+        # one via src/sandbox.ts before you flip this.
+        # gateMode: ask
+
     # The Feature Loop sidebar page's host service (`ctx.remote.featureLoop.*`).
     # Separate row for the same reason dsh-mux has one: the client bundle mounts
     # its own remote contribution, and a single row cannot both declare the
