@@ -274,6 +274,53 @@ This also bites a WEB profile whose dashboard port is taken: the page on the
 other port is the one answering, and the port you are looking at is dead. If
 you hand-edit a row, `grep gateMode` it after any `EADDRINUSE`.
 
+### Driving the STANDALONE dashboard by hand (the one surface no script covers)
+
+The in-UI page is inside the harness, on the harness's origin. The standalone
+dashboard is a **second origin on its own port with its own token**, and it is
+the only surface where a wiring bug can hide — a click there reaches a different
+server than the one the harness is serving. Nothing automates it yet, so here is
+the procedure, verified 2026-10-03 against the generated `webring` profile.
+
+**Order matters, and it is not a race.** KNOWN-ISSUES §1be: `gateMode: ask` is
+refused *by the plugin* when no front end is watching, so an ask raised before the
+dashboard is open never becomes a card. Open the dashboard **first** and confirm
+it is watching — otherwise you will wait for a card that was never going to
+appear, and the run will report a refusal with no page to click.
+
+```bash
+# 1. the server is already up; copy BOTH token lines out of its log
+#    feature-loop dashboard: http://127.0.0.1:8100/?token=…
+#    dsh web: http://127.0.0.1:4188/?token=…
+
+# 2. open the dashboard in a browser and leave the tab open. Confirm:
+curl -s "http://127.0.0.1:8100/api/state?token=$TOK" | grep -o '"watching":[a-z]*'
+#    -> "watching":true
+
+# 3. in the harness page: Feature Loop -> type the task -> Start loop
+
+# 4. the card appears on the dashboard tab. Read the card's CALL id before
+#    clicking — the thread keeps every ask this dashboard has seen, and an allow
+#    is granted PER CALL, so clicking a stale card settles a different one.
+```
+
+Verified both directions on a live run:
+
+```
+APPROVAL REQUIRED | asked … | write | … | REVIEW REQUESTED (policy): write:
+  irreversible is always approved by a human.
+Allow once  -> the file exists, containing hello
+Reject      -> no file
+```
+
+**Why this is not a script yet.** Writing one took seven attempts and three of
+the failures were mine, not the plugin's: a stale `bash` card clicked instead of
+the write, a Reject half that passed because the Allow half's file was still on
+disk, and an argument off-by-one that read the dashboard URL as a tool filter.
+Each was fixable and each was instructive, but a check that needs that much
+care to aim is a check whose green result means less than its red one. It is
+left as a procedure until it can be written once and trusted.
+
 ### Doing it by hand instead
 
 If you would rather build it manually, the files are:
