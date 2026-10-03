@@ -2441,6 +2441,12 @@ export function apply(
 
   const disposeSession = !historyEnabled ? undefined : (() => {
     const path: string = historyPath
+    // `global: true` because the harness emits `session/event` with `this` bound
+    // to a per-session SCOPE CARRIER, and a hook that a scope filter rejects is
+    // silently dropped. Measured 2026-10-04 on a real web run: the listener
+    // receives the carrier's events with this set, and it is the documented
+    // switch for "receive regardless of context filter checks" — so the
+    // registration is not relying on the root context happening to be untagged.
     return ctx.on('session/event', (session: unknown, event: unknown) => {
       const end = asTurnEnd(event)
       if (end === undefined) return
@@ -2470,7 +2476,7 @@ export function apply(
           // own words, and the next turn tries again.
           state.note('note', `run history append failed: ${error instanceof Error ? error.message : String(error)}`)
         })
-    })
+    }, { global: true })
   })()
 
   const disposeStep = ctx.on('agent/pre-step', async ({ agent, turn, step }, next) => {
