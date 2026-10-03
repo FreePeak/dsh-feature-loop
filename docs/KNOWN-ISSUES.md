@@ -52,6 +52,7 @@ rather than a list of letters:
 | 1bj | The check that guards §1t could not see a third of the file |
 | 1bk | `byRoute: {}` beside a real `costUSD` taught the optimizer every route was free |
 | 1bl | The usability check had only ever asked one question |
+| 1bm | Five cards that said the same thing, and a lost run record hiding in plain sight |
 
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
@@ -613,6 +614,73 @@ The pattern worth naming, because it recurred three times in one round: a
 missing value is written down as a zero, and the zero is accepted because
 nothing reads it *at the moment it is written*. It is read later, by something
 that trusts it.
+
+### 1bm. Five cards that said the same thing, and a lost run record hiding in plain sight
+
+**Observed:** one live run against the generated web profile, five asks, three
+files — and every card began the same way:
+
+```
+REVIEW REQUESTED (policy): write: irreversible is always approved by a human.
+```
+
+Three of them were `write`, about three different files, and the card named
+none of them. A person cannot tell ask 3 from ask 4 without reading the run.
+
+The same run's feed also carried one line that had nothing to do with the
+task:
+
+```
+run history append failed: cannot get property "agents" without inject
+```
+
+**Why the first one:** `tools/pre-execute` receives the call's PARSED ARGUMENTS
+— this file stores their key for the step record two lines above the gate call —
+and `gateForTool(policy, toolName)` threw them away before deciding. The fact a
+reviewer needs was in hand and discarded.
+
+**Why the second one:** `ctx.agents` is a cordis PROXY, and reading it on a
+fiber where `AgentRegistry` has not mounted THROWS rather than returning
+undefined. `resolveAgent` read `(ctx as { agents?: … }).agents` — a type that
+promised `undefined` and delivered an exception — so one missing service cost a
+whole turn record. The plugin's own catch printed the failure rather than
+swallowing it, which is how it was found; but "visible, not fatal" is the wrong
+posture when the visible thing is the history itself.
+
+**Fix:** `subjectOf(toolName, args)` names the call from `file_path` / `path` /
+`filePath` / `command`, or adds nothing. It is deliberately narrow: never the
+file's contents, never a multi-line string, never over 120 characters — a card
+should not quote back the thing nobody has decided about. `resolveAgent` is a
+`try`/`catch`, because "no agent found" is already a supported answer (the
+agent-less policy) and a throwing getter is that same answer with noise on it.
+
+**Verified, live, both directions.** After the fix, five asks, five distinct
+cards, and the three files written:
+
+```
+bash  — bash pwd && ls -la . notes 2>&1
+write — write /private/tmp/tarp-work/notes/first.md
+write — write /private/tmp/tarp-work/notes/second.md
+write — write /private/tmp/tarp-work/notes/third.md
+bash  — bash ls -l notes && wc -c notes/*.md
+```
+
+`e2e-in-ui (allow): 5 × Allow once → 3 file(s) written`. Reject direction: three
+rejects, zero files. And `history append failures: 0` on both runs, where the
+run before this change carried one.
+
+The regression test was proven to bite: removing only the `try`/`catch` fails
+`a THROWING ctx.agents still records the turn`, restoring it passes. The subject
+is covered the same way — six assertions, including that two writes produce two
+different cards and that the file's contents never reach one.
+
+**A cost worth naming:** `pnpm install --frozen-lockfile --prefer-offline` is
+the only reinstall that works on this machine right now. `--offline` alone fails
+`ERR_PNPM_NO_OFFLINE_META` on `@deepseek-ai/dsh-agent@0.2.0-rc.2`, and plain
+`pnpm install` sits on a TLS handshake for minutes and exits on a network
+timeout. Recorded here because "my rebuild did not reach the profile" is the
+exact class of bug this file keeps re-finding, and this time the answer was a
+flag rather than a rebuild.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
