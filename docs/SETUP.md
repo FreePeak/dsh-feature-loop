@@ -359,9 +359,20 @@ $EDITOR cordis.patch.yml
       sensor: ["repo files", "test output"]
 
       controller:
+        # Two rungs, so `MODEL ESCALATION` below is reachable at all: with one
+        # rung the ladder cannot move and the notice never prints, which is why
+        # this block shows two where the shipped `cordis.patch.yml` shows one.
+        #
+        # The ids are onegw's, and they must exist in your provider's `models:`
+        # list — llm-pi-ai resolves a rung against that list, not against the
+        # gateway, so an id it serves but nobody declared dies UNKNOWN_MODEL on
+        # step 1 (verified 2026-10-02: `deepseek-flash` and `deepseek-v4-pro`
+        # are 404 on this account's gateway AND absent from `/v1/models`, so
+        # the pair below was a copy from an older harness build and could not
+        # have run here).
         ladder:
-          - { provider: deepseek-official, model: deepseek-flash }     # cheap
-          - { provider: deepseek-official, model: deepseek-v4-pro }    # escalated
+          - { provider: onegw, model: execution }      # cheap
+          - { provider: onegw, model: planning }       # escalated
         stepsPerRung: 5
         escalateAfterFailures: 2
 
@@ -541,7 +552,7 @@ This is the whole payoff — the policies are visible in the transcript:
 | `[review] ASK HUMAN via policy — edit: reversible-write needs a confidence estimate and none was available — asking rather than guessing` | Why it asked. This is **fail-closed**: no judge ⇒ no evidence of confidence ⇒ ask. (The tail is part of the real message; shortened versions in older notes were wrong.) |
 | `[review] ASK HUMAN via signal` | A critical detector fired (`error-cascade`, `tool-cycle`). Critical signals are never rate-limited. |
 | A step count that stops at your ceiling | `maxSteps` fired as a **limit, not an invoice** — it stops *before* the expensive call. |
-| `MODEL ESCALATION` in a notice | The ladder moved up a rung on evidence. |
+| `MODEL ESCALATION` in a notice | The ladder moved up a rung on evidence. It needs **two consecutive failed steps** (`escalateAfterFailures: 2`) on a two-rung ladder — with the shipped one-rung `cordis.patch.yml` this notice cannot appear, so a run that never shows it is not misconfigured. |
 | `spawn_teammate`, `send_message`, `team_task_*` | Agent Teams is live. |
 
 ### Before you expect a prompt: pick the `workspace-write` preset

@@ -2456,11 +2456,33 @@ export function apply(
     },
   )
 
+
+  // The outcome of a call that RAN — the only place `isError` exists.
+  //
+  // `policy.pending.error` used to be set in exactly one branch: the one where
+  // the GATE blocks a call. So a `bash` that executed and exited 1 left it
+  // `false`, `reviewStep` read the step as a success, and in a DSH deployment
+  // the ladder climbed ONLY when the gate stopped the loop — never when the work
+  // failed. `error-cascade` never counted a visibly failing run either. Measured
+  // 2026-10-02 on a two-rung profile with the gate open for `bash`: two runs of
+  // `cat /nonexistent` never produced a MODEL ESCALATION notice (§1q).
+  const disposeResults = ctx.on(
+    'tools/post-execute',
+    (exec: { agent?: Agent }, result: { isError?: boolean }, next: () => Promise<unknown>) => {
+      if (result.isError === true) {
+        const policy = policyFor(exec.agent)
+        if (policy.pending !== undefined) policy.pending.error = true
+      }
+      return next()
+    },
+  )
+
   return () => {
     disposeStep()
     disposeRequest()
     disposeTurnStopping()
     disposeTools()
+    disposeResults()
     disposeSession?.()
     disposeApproval?.()
     if (dashboard !== undefined) void dashboard.stop()

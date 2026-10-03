@@ -59,7 +59,15 @@ function fakeCtx(): { ctx: unknown, handler: (event: string) => Handler } {
 const SPEC: NonNullable<CreatePolicyOptions['spec']> = {
   goal: 'Ship the fix with a passing test.',
   sensor: ['test output'],
-  controller: { ladder: [{ model: 'cheap' }, { model: 'pricy' }] },
+  // `escalateAfterFailures` is set on purpose: `ModelLadder.recordFailure`
+  // returns early when it is undefined, so this SPEC's ladder could only ever
+  // climb on `stepsPerRung`. The other ladder tests here set `stepsPerRung: 99`
+  // for the same reason — one signal at a time, so a test cannot pass for the
+  // wrong one.
+  controller: {
+    ladder: [{ model: 'cheap' }, { model: 'pricy' }],
+    escalateAfterFailures: 2,
+  },
   actuator: { write_file: 'irreversible', read_file: 'read' },
   feedback: 'the suite passes',
   termination: { successCommand: 'npm test', guards: ['no-progress'] },
@@ -600,4 +608,94 @@ test('apply builds a Judge from the settings file, not the string in it', async 
     )
     assert.equal(delegated, true, 'the call reached the harness, so no judge call threw')
   })
+})
+
+// ── a call that RAN and failed ──────────────────────────────────────────────
+
+test('a tool that RAN and FAILED climbs the ladder; one that succeeded does not', async () => {
+  // The regression for §1q, driven end to end because the policy map is the
+  // plugin's own and there is no accessor for it.
+  //
+  // Before `tools/post-execute` was subscribed, `policy.pending.error` was set in
+  // exactly one branch — the one where the GATE blocks a call. A `bash` that
+  // executed and exited 1 therefore left `error: false`, `reviewStep` read the
+  // step as a success, and the ladder climbed only when the gate stopped the
+  // loop. `error-cascade` never counted a visibly failing run either.
+  //
+  // The route for a step is decided on `agent/pre-step` (that is where
+  // `reviewStep` runs and where the previous step's outcome is committed);
+  // `agent/request` only reports the route already decided. Both are driven,
+  // in that order, because that is the order the harness uses.
+  // `bash` is deliberately OPEN in the gate. `SPEC`'s actuator does not name it,
+  // so it resolves `irreversible` and the gate would BLOCK the call — and a
+  // blocked call sets `pending.error` on its own, which makes this test pass
+  // while measuring the gate instead of the listener. That is not a hypothetical:
+  // the first version of this test did exactly that and passed with the flip
+  // removed. An assertion that survives the removal of the thing it names is not
+  // an assertion.
+  const { ctx, handler, dispose } = mount({
+    spec: SPEC,
+    gatePolicies: { bash: 'auto', read: 'auto', glob: 'auto', grep: 'auto', edit: 'auto', write: 'always-approve' },
+  })
+  const agent = AGENT
+  const routes: string[] = []
+
+  const step = async (isError: boolean): Promise<void> => {
+    await handler('tools/pre-execute')(
+      { agent, name: 'bash', arguments: { command: 'true' } },
+      async () => ({ kind: 'allow' }),
+    )
+    await handler('tools/post-execute')(
+      { agent, name: 'bash', call: { id: `c-${String(routes.length)}` } },
+      { isError, error: { message: 'exit 1' }, content: [] },
+      async () => undefined,
+    )
+    const next = routes.length + 2
+    await handler('agent/pre-step')(
+      { agent, messages: [], turn: 1, step: next, signal: new AbortController().signal },
+      async () => ({ kind: 'enter', messages: [] }),
+    )
+    const routed = await handler('agent/request')(
+      { agent, step: next },
+      async () => ({ kind: 'ok', messages: [] }),
+    )
+    const model = (routed as { model?: string }).model
+    routes.push(typeof model === 'string' ? model : 'none')
+  }
+
+  await step(true)
+  await step(true)
+  assert.deepEqual(routes, ['cheap', 'pricy'],
+    'two consecutive FAILED calls move the ladder, which is what escalateAfterFailures: 2 means')
+
+  // And the control: a call that SUCCEEDS must not count as a failure, or every
+  // ordinary step would climb. The ladder is also sticky, so this asserts it does
+  // not climb BACK.
+  const control: string[] = []
+  for (const isError of [false, false]) {
+    await handler('tools/pre-execute')(
+      { agent, name: 'bash', arguments: { command: 'true' } },
+      async () => ({ kind: 'allow' }),
+    )
+    await handler('tools/post-execute')(
+      { agent, name: 'bash', call: { id: `k-${String(control.length)}` } },
+      { isError, content: [] },
+      async () => undefined,
+    )
+    const next = control.length + 2
+    await handler('agent/pre-step')(
+      { agent, messages: [], turn: 1, step: next, signal: new AbortController().signal },
+      async () => ({ kind: 'enter', messages: [] }),
+    )
+    const routed = await handler('agent/request')(
+      { agent, step: next },
+      async () => ({ kind: 'ok', messages: [] }),
+    )
+    const model = (routed as { model?: string }).model
+    control.push(typeof model === 'string' ? model : 'none')
+  }
+  assert.deepEqual(control, ['pricy', 'pricy'],
+    'success never climbs the ladder, and the ladder never moves back down')
+
+  dispose()
 })

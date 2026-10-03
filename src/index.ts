@@ -19,9 +19,6 @@ import type { GatePolicy } from './review.ts'
 import type { DashboardConfig } from './dashboard.ts'
 import { parseOptimizeConfig, parsePipelineConfig } from './spec.ts'
 import type { OptimizeConfig, PipelineConfig } from './spec.ts'
-=======
- parseOptimizeConfig } from './spec.ts'
-import type { OptimizeConfig } from './spec.ts'
 import { mergeRowAndSettings, userSettings } from './remote.ts'
 
 export {

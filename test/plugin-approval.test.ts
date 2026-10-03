@@ -193,6 +193,11 @@ test('the handler is registered on the harness tool-boundary event', async () =>
   // listener there can queue the next phase's instructions. It must come after
   // `agent/pre-step` — the hot path — and before `tools/pre-execute`, which
   // answers a different event entirely and so has no ordering relationship.
+  // `tools/post-execute` is the SECOND tool hook and not an extra feature: it is
+  // the only event that reports whether a call that RAN succeeded, and without
+  // it a failed command is indistinguishable from a successful one at the step
+  // boundary (§1q). So a list of tool events that names only `pre-execute` is a
+  // statement about a plugin that cannot see a failure.
   assert.deepEqual(registered(), [
     'approval/request',
     'session/event',
@@ -200,6 +205,7 @@ test('the handler is registered on the harness tool-boundary event', async () =>
     'agent/request',
     'agent/turn-stopping',
     'tools/pre-execute',
+    'tools/post-execute',
   ])
   dispose()
 })
