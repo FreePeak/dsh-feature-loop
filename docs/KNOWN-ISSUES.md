@@ -234,6 +234,41 @@ asks a gateway.
 **Verified:** both halves proven to fire by restoring each default in turn —
 `src/plugin.ts` and `cordis.patch.yml` each exit 1 naming the file and the id.
 
+### 1bd. Eight profiles were running bytes nobody could name
+
+**Observed:** every installed profile on this machine carried a `client.js`
+that matched no build in any checkout. Two of them installed a worktree that
+no longer exists.
+
+**Why:** a `file:` dependency is installed, not watched. `pnpm` copies (or
+hardlinks) the package at install time, so a rebuild in the source tree, a
+commit, and a branch switch all leave the profile serving the bytes it was
+installed with. Nothing errors, the row composes, the gate works — on the
+wrong build. Measured on this machine: `flheadless` and `flui` installed
+`.worktrees/fix-message-ownership`, which does not exist and never will again;
+the profile is running the last bytes that tree ever produced and a reinstall
+would only fail.
+
+**Fix:** `check-ladder-models.mjs` now compares each profile's installed
+`client.js` against the tree that profile DECLARES it installs — not against
+whichever checkout the reader is standing in, which would report a profile
+pinned to another branch as stale for the crime of being pinned. Two cases,
+different severities: a hash mismatch is reported and a reinstall fixes it; a
+`file:` spec pointing at a tree that is gone is an ERROR, because reinstalling
+cannot fix that. All six affected profiles repaired on the spot.
+
+**The measurement that changed the design.** pnpm **hardlinks** a `file:`
+dependency out of its store, so a profile's `client.js` and the source tree's
+can be the same inode (`nlink 9`, verified). Content comparison cannot see a
+difference between two names for one file — and that is not a defect, there is
+nothing to report. The check therefore exempts the same-inode case explicitly
+rather than comparing hashes that are equal by construction. `lib/` cannot
+serve as the signal instead: tsdown's chunk names are content-hashed
+(`approvals-05MIOAcj.mjs`) and change on every build.
+
+Proven to fire by rebuilding the SOURCE tree under an installed profile and
+watching the check exit 1 naming it.
+
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
 **Observed:** `bash scripts/make-profile.sh webz --port 4596` printed
