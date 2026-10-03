@@ -954,6 +954,47 @@ assertion that survives the removal of the thing it names is not an assertion.**
 A passing test proves the code works; a test that fails when you break the code
 proves the test does.
 
+### 1r. A helper whose doc claimed a detector was impossible, tested by the helper itself
+
+§1q fixed the ladder. The same flag also feeds `error-cascade` — one of only two
+**critical** signals — and that turned out to need nothing more. Which left
+`noteToolOutcomes` in a strange state:
+
+- its own doc said `error-cascade` "could never fire in the plugin path, and the
+  gate would silently run on four detectors instead of six";
+- **nothing in `src/` called it**;
+- its only test, `'error-cascade can fire in the plugin path now that errors are
+  recorded'`, built the history itself and called the helper directly — so it
+  proved the DETECTOR and claimed the PLUGIN PATH.
+
+Both claims were false, in opposite directions. `error-cascade` could fire in the
+plugin path before §1q, because `policy.pending.error` reaches the committed
+observation through `reviewStep`; and this helper is not what made it possible.
+
+**Measured, both ways** — removing the helper call AND the `pending` flip fails the
+cascade test; with only the flip it passes. So the helper was left uncalled and its
+doc corrected, rather than wired in to make an export look used. Wiring a call that
+changes nothing is the same defect as dead code wearing a call site.
+
+**The real gap was the test seam, not the helper.** The signals live inside
+`prepareReview`'s return value, so there was no way for a test to read what the
+plugin path actually detected. `CreatePolicyOptions.onSignals` is now an optional
+sink — not for deployments, documented as such — and
+`test/plugin-wiring.test.ts` drives the real hooks and reads the real signals:
+
+```
+error-cascade fires in the plugin path: three failed CALLS raise the critical signal
+```
+
+Four failed steps, because the observation for step N is committed at N+1 — which
+is the "one step late" the old helper's doc warned about, now visible as a fact
+about the ordering rather than a gap.
+
+The old test keeps its coverage and loses its claim: it is named for what it
+proves (the detector), and the plugin-path proof is named as the other test. **A
+test that names the wrong subject is worse than one that names none**, because it
+discharges the obligation to prove that subject.
+
 ### 1. The stylesheet restyled the whole host UI
 
 **Observed:** after the dashboard was folded into the DSH UI, the host's `<body>`
