@@ -133,6 +133,23 @@ approved by a human.`, Allow once produced the file, Reject did not. The two
 `docs/evidence/in-ui-*.png` frames were re-taken against that run, because the
 committed ones came from a boot where nothing was gated.
 
+**And the same defect one layer out, in the tarball.** `package.json` `files`
+ships `lib/`, `lib/` is `.gitignore`d, and every entry in `exports` points at
+`./lib/*.mjs` — so `npm pack` on a clean tree produced a tarball with 14 files
+and **zero** `lib/` entries. Fixed with `prepack: npm run build` (`prepack`, not
+`prepare`: prepare also runs on `npm install` in a consumer's tree, where there
+are no sources to build from).
+
+It had stayed invisible because the release workflow only tags and creates a
+GitHub release — it does not publish to npm, so no install had ever consumed
+the artifact. Verified end to end the way a consumer would: `npm pack` on this
+branch, install the **tarball** into a fresh profile with pnpm 9, then a real
+`dsh headless` run — `IMPORT OK`, no import warning, and `REVIEW REQUESTED
+(policy): write: irreversible is always approved by a human.` with the file
+absent. Deleting `lib/` from that same installed tarball reproduces
+`Cannot find module .../lib/index.mjs`, which is the proof the `prepack` is
+what carried it.
+
 ### 1bb. The headless profile asked a question nobody was there to answer
 
 **Observed:** against the hand-built `~/.dsh/profiles/feature-loop-headless`
