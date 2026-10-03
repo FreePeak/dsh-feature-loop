@@ -16,8 +16,8 @@ import z from '@deepseek-ai/schemastery'
 import { apply as applyFeatureLoop, resolveJudge } from './plugin.ts'
 import type { CreatePolicyOptions, FeatureLoopPolicy } from './plugin.ts'
 import type { DashboardConfig } from './dashboard.ts'
-import { parseOptimizeConfig } from './spec.ts'
-import type { OptimizeConfig } from './spec.ts'
+import { parseOptimizeConfig, parsePipelineConfig } from './spec.ts'
+import type { OptimizeConfig, PipelineConfig } from './spec.ts'
 
 export {
   apply as applyListeners,
@@ -114,6 +114,17 @@ export interface Config {
    * `runRefined`), not to a step waterfall. See `OptimizePolicyOptions`.
    */
   optimize?: OptimizeConfig
+  /**
+   * The 0→1 pipeline: turn the loop into the five-phase research → PRD →
+   * implement → test → ship run. Omitted or `enabled: false` means today's
+   * bounded loop, exactly.
+   *
+   * Requires a `spec`, because the pipeline carves `spec.costBudgetUSD` into
+   * per-phase budgets and has nothing to carve without one. Set
+   * `pipeline.testCommand` or the test phase can never pass its own exit gate —
+   * it fails closed rather than guessing which runner your project uses.
+   */
+  pipeline?: PipelineConfig
 }
 
 /**
@@ -135,6 +146,7 @@ export const Config: z<Config> = z.object({
   gateMode: z.union([z.const('ask'), z.const('deny')]),
   dashboard: z.any(),
   optimize: z.any(),
+  pipeline: z.any(),
   judge: z.string(),
   judgeBaseURL: z.string(),
   systemOneModel: z.string(),
@@ -157,6 +169,19 @@ export function apply(ctx: Context, config: Config = {}): (() => void) | void {
   // start. The parsed block is forwarded so the plugin can record history and
   // feed the dashboard's Metrics panel from it.
   const optimize = config.optimize === undefined ? undefined : parseOptimizeConfig(config.optimize)
+  // The pipeline block gets the same treatment, plus one check of its own: a
+  // pipeline with no spec has no run budget to carve into phase budgets, and
+  // silently ignoring it would produce a plugin that loads, appears in the boot
+  // graph, and runs no phases — the inert-install failure mode this repo has
+  // already been bitten by once.
+  const pipeline = config.pipeline === undefined ? undefined : parsePipelineConfig(config.pipeline)
+  if (pipeline?.enabled === true && config.spec === undefined) {
+    throw new TypeError(
+      'pipeline.enabled is true but no spec was configured: the pipeline carves spec.costBudgetUSD into '
+      + 'per-phase budgets, so a pipeline with no spec would load and run nothing. Either add a spec, or set '
+      + 'pipeline.enabled: false.',
+    )
+  }
   // Same rule for the judge: a `chat` judge with no key is a loud load-time
   // error, not a judge that quietly never runs. `laya` and `none` never throw.
   const { judge } = resolveJudge({
@@ -178,6 +203,7 @@ export function apply(ctx: Context, config: Config = {}): (() => void) | void {
     gateMode: config.gateMode,
     dashboard: config.dashboard,
     optimize,
+    pipeline,
     router: {
       ...(config.reviewBudget === undefined ? {} : { reviewBudget: config.reviewBudget }),
       ...(config.judgeThreshold === undefined ? {} : { judgeThreshold: config.judgeThreshold }),

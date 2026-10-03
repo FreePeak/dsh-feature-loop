@@ -53,6 +53,12 @@ declare module '@deepseek-ai/dsh-llm' {
 import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
 import { LoopBudget } from './budget.ts'
 import type { BudgetSnapshot, UsageReading } from './budget.ts'
+import { PhaseAllocator } from './phase-budget.ts'
+import { PIPELINE_PHASE_NAMES } from './spec.ts'
+import type { PipelineConfig } from './spec.ts'
+import { isTerminal, startPipeline } from './pipeline.ts'
+import type { PipelineRun } from './pipeline.ts'
+import type { PipelinePhase } from './phases.ts'
 import { ModelLadder, routeLabel } from './routing.ts'
 import { AttentionRouter, ReviewGate, judgeQuestion } from './review.ts'
 import type { GatePolicy } from './review.ts'
@@ -203,6 +209,32 @@ export interface FeatureLoopPolicy {
    * `@deepseek-ai/dsh-tools`.
    */
   gateMode: GateMode
+  /**
+   * The 0→1 pipeline's position and per-phase budget, when one is configured.
+   *
+   * Separate from `budget` on purpose. `budget` answers "can the run afford
+   * another step"; this answers "can *this phase*". A run whose research phase
+   * spent the implementation budget passes the run-level check at every single
+   * step, because the run total only ever goes up — which is why the two are
+   * kept apart rather than folded into one number.
+   *
+   * Absent means the pipeline is off and the plugin behaves exactly as it did
+   * before this existed: a bounded loop with no phases.
+   */
+  pipeline?: PipelineRuntime
+}
+
+/**
+ * One run's place in the pipeline, and the ceilings that bound it.
+ *
+ * Held on the policy the way `budget` and `history` are — one per agent — so a
+ * policy object is still the whole of "what this loop is allowed to do".
+ */
+export interface PipelineRuntime {
+  /** The state machine. `transition()` is the only thing that moves it. */
+  run: PipelineRun
+  /** Per-phase ceilings carved out of the run budget. */
+  budget: PhaseAllocator
 }
 
 /**
@@ -351,6 +383,18 @@ export interface CreatePolicyOptions {
    * {@link OptimizePolicyOptions} for why `loops` is carried but not consumed.
    */
   optimize?: OptimizePolicyOptions
+  /**
+   * The 0→1 pipeline block. Ignored unless `enabled` — a deployment that adds
+   * the block to its patch row before deciding on ceilings gets today's
+   * behaviour, not a five-phase run it did not ask for.
+   *
+   * Requires a `spec`: the pipeline carves the run budget into phase budgets,
+   * and with no run budget there is nothing to carve. Silently ignoring the
+   * block here would produce a plugin that loaded, appeared in the boot graph,
+   * and ran no phases — the inert-install failure this repo has already been
+   * bitten by once.
+   */
+  pipeline?: PipelineConfig & { enabled?: boolean }
 }
 
 /**
@@ -382,6 +426,13 @@ export function createPolicy(options: CreatePolicyOptions): FeatureLoopPolicy {
       undefined,
       options.confidenceThreshold,
     )
+  // The pipeline needs a run budget to carve phase budgets out of. With no
+  // spec it is not built, and `apply()` refuses the combination at load — see
+  // `parsePipelineConfig`'s caller — so this branch is the only way a
+  // half-configured pipeline can exist, and it degrades to "no pipeline".
+  const pipeline = spec === undefined || options.pipeline?.enabled !== true
+    ? undefined
+    : buildPipelineRuntime(spec, options.pipeline)
   return {
     spec,
     budget,
@@ -395,7 +446,43 @@ export function createPolicy(options: CreatePolicyOptions): FeatureLoopPolicy {
     history: [],
     pending: undefined,
     lastConfidence: undefined,
+    pipeline,
   }
+}
+
+/**
+ * Build the phase budget and the state machine for one run.
+ *
+ * @param spec - the configured loop spec, which carries the run ceilings.
+ * @param config - the validated `pipeline:` block.
+ * @returns the runtime the policy holds.
+ * @throws Error when the block names a phase the pipeline does not have — a
+ *   typo here would otherwise be a ceiling that is never consulted, which is the
+ *   same class of defect as the spend metering gap this package once had.
+ */
+function buildPipelineRuntime(spec: LoopSpec, config: PipelineConfig & { enabled?: boolean }): PipelineRuntime {
+  const perPhase = config.phaseMaxSpendUSD ?? {}
+  for (const key of Object.keys(perPhase)) {
+    if (!PIPELINE_PHASE_NAMES.includes(key as (typeof PIPELINE_PHASE_NAMES)[number])) {
+      throw new Error(
+        `dsh-feature-loop: pipeline.phaseMaxSpendUSD names "${key}", which is not a phase. `
+        + `Expected one of ${PIPELINE_PHASE_NAMES.join(', ')}.`,
+      )
+    }
+  }
+  const run = startPipeline()
+  const budget = new PhaseAllocator({
+    runBudgetUSD: spec.costBudgetUSD,
+    runMaxSteps: spec.maxSteps,
+    maxSteps: config.phaseMaxSteps as Partial<Record<PipelinePhase, number>> | undefined,
+    phaseTimeoutMs: config.phaseTimeoutMs,
+    timeoutMs: config.timeoutMs,
+  })
+  // The run starts at `research`, so the first phase's clock starts now rather
+  // than at the first step — a pipeline that sat idle for a minute must not
+  // spend a minute of the research phase's wall clock.
+  budget.enterPhase(run.state as PipelinePhase)
+  return { run, budget }
 }
 
 /**
@@ -665,10 +752,62 @@ function spendSettledUsage(policy: FeatureLoopPolicy, agent: Agent | undefined):
       // the throw fails does not swallow the attempt's usage; the next drain
       // retries it and fails again until the price table is fixed. Loud and
       // retried beats silent and lost.
-      policy.budget.spend(provider, model, data.usage)
+      const stepUSD = policy.budget.spend(provider, model, data.usage)
+      // Price the same attempt into the phase that earned it. Both meters read
+      // the same drain, so they cannot disagree about what a step cost: the run
+      // total is the sum of the phase totals, not a second opinion.
+      //
+      // Attribution to the phase current *now* is exact because the drain runs
+      // before the guard and before any phase transition in this handler: an
+      // attempt is always priced against the phase it actually ran in.
+      if (policy.pipeline !== undefined) {
+        policy.pipeline.budget.spend(policy.pipeline.run.state as PipelinePhase, stepUSD)
+      }
     }
     if (advanced) policy.pricedThroughSeq = seq + 1
   }
+}
+
+/**
+ * Refuse a step the pipeline's own ceilings already rule out, before it is paid
+ * for.
+ *
+ * Three outcomes, in the order they are checked, and the order matters: a run
+ * that has *ended* is not waiting on a budget, so its state is asked before its
+ * money.
+ *
+ * 1. **Terminal state.** `done`, `stopped` and `blocked` have no outgoing edges,
+ *    so a turn still running after one is reached is a caller bug rather than a
+ *    budget question — and reporting it as "budget exceeded" would hide it.
+ * 2. **The pre-call guard**, which stops new work at the guard fraction and so
+ *    reserves the buffer for the terminal report.
+ * 3. **The phase's own ceiling**, which stops a phase that has spent its share
+ *    even when the run is barely touched.
+ *
+ * @param policy - the agent's policies.
+ * @returns a `reject` decision when the step must not run, or `undefined` to
+ *   proceed. `undefined` rather than an `allow` because `PreStepDecision` has no
+ *   `allow` member — proceeding means calling `next()`, which the caller does
+ *   when nothing is returned.
+ */
+function pipelinePreCallGuard(policy: FeatureLoopPolicy): PreStepDecision | undefined {
+  const pipeline = policy.pipeline
+  if (pipeline === undefined) return undefined
+  const { run, budget } = pipeline
+  if (isTerminal(run.state)) {
+    return {
+      kind: 'reject',
+      reason: `the 0→1 pipeline already reached "${run.state}" — this turn is over; start a new one`,
+    } as PreStepDecision
+  }
+  const guard = budget.verdict(run.state as PipelinePhase)
+  if (guard.kind === 'stop') {
+    return {
+      kind: 'reject',
+      reason: `${guard.reason}. Stop starting new work and report what you completed, what remains, and the next action.`,
+    } as PreStepDecision
+  }
+  return undefined
 }
 
 /**
@@ -1258,9 +1397,30 @@ export function apply(
     // previous attempt cost is a verdict one step late, and one step late is
     // exactly how a cost ceiling arrives after the money is gone.
     spendSettledUsage(policy, agent)
+
+    // The pre-call guard, BEFORE `next()`.
+    //
+    // `next()` is where the model call happens, so anything computed after it
+    // is a verdict on money already spent — which is exactly how this handler
+    // behaved before: the ceiling for step N was evaluated after step N had been
+    // paid for. The book is blunt about the order ("check remaining budget
+    // BEFORE each LLM call — not after. Set the alert threshold at 90% of
+    // budget, not 100%", p34), and the reason for the 90% is that the last 10%
+    // pays for the terminal report.
+    //
+    // Deliberately cheap and deliberately early: a wall-clock check plus integer
+    // comparisons, so it costs nothing on the hot path and cannot itself be the
+    // reason a step is slow.
+    const pipelineGuard = pipelinePreCallGuard(policy)
+    if (pipelineGuard !== undefined) return pipelineGuard
+
     const base = await next()
     if (base.kind === 'reject') return base
     const { decision, notices, signals, judgeScore, budget } = await reviewStep(policy, step)
+    // The step ran, so it counts against the phase's own step ceiling. Counted
+    // after `next()` because a step that was rejected upstream never happened,
+    // and counting it would spend budget on work the loop did not do.
+    policy.pipeline?.budget.countStep(policy.pipeline.run.state as PipelinePhase)
     const runId = recordAgentMeta(state, agent)
     state.recordStep(runId, {
       step,
