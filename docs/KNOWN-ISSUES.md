@@ -90,6 +90,19 @@ run that died on step 1: `404 unknown provider onegw`.
    the route key verbatim.
 
 **Fix:** one tested route, `onegw/execution`, in `cordis.patch.yml`,
+
+Also measured on the wire, the two refusals are NOT equal in cost. Same
+profile, same build, same one-line task:
+
+| mode | the model did |
+|---|---|
+| `ask`, nobody watching | read the plugin sentence and **stopped in one step** |
+| `deny` | read the bare review text and **retried** the write with |
+| | `sandbox_permissions: workspace-write` before stopping |
+
+So naming the true reason is also the cheaper refusal: it does not spend a
+second call re-asking a gate that has already answered. This is the reason
+the message carries what to do about it, not only what happened.
 `docker/profile.patch.yml`, `docker/settings.template.yaml`,
 `scripts/make-profile.sh` and the demo — with `execution` declared in every
 `models:` list so the alias resolves, each price table rekeyed to match, and
@@ -268,54 +281,6 @@ serve as the signal instead: tsdown's chunk names are content-hashed
 
 Proven to fire by rebuilding the SOURCE tree under an installed profile and
 watching the check exit 1 naming it.
-
-### 1be. `ask` with nobody watching blamed the sandbox
-
-**Observed:** `gateMode: ask` on a headless profile produced the harness's own
-fail-closed —
-
-```
-Error: tool "write" requires approval, but no approval channel is available
-```
-
-— which a run reports to the model as a *sandbox* denial. The model then spent
-its remaining budget reasoning about whether `Bash` was a legitimate
-alternative and produced no work. The refusal is correct; the message is about
-a different fact.
-
-**Why:** `gateMode: ask` was fixed in §1bb by making the generated profiles say
-`deny` for headless, which is right for that case and does nothing for the case
-that remains — a deployment that leaves `ask` on, or a WEB profile whose
-dashboard is not open. The harness cannot say more: it does not know whether a
-dashboard page or a composer is attached, only that no answer came back.
-
-This plugin can. `approvals.ts` already keeps a watcher TTL, stamped when the
-standalone page opens, when `/api/state` is polled, and when the in-UI page
-polls the host remote — so "could anybody answer this?" is a fact rather than a
-prediction.
-
-**Fix:** `gateForTool` refuses up front when no front end is watching, with the
-review reason AND what is actually true AND what to do about it:
-
-```
-REVIEW REQUESTED (policy): write: irreversible is always approved by a human.
-— nobody is watching: this run has no open dashboard or composer, so no human
-can answer an approval. Open the Feature Loop page or set gateMode: deny to
-refuse up front.
-```
-
-Nothing is weakened: both branches already stopped the call, and the watcher's
-TTL means a page that closed seconds ago is still treated as watching, so a
-brief page reload never costs a run its ask.
-
-**Verified:** unit-level, both directions — an ask with a watcher is still an
-`ask`, an ask without one is a `deny` carrying the new message. And on a real
-`dsh headless` run against a profile deliberately set back to `ask`: the model
-received the new text verbatim (`there is nobody to answer the gate`) instead
-of the sandbox message. Writing that test also found a real harness trap — the
-watcher is process-global with a TTL, so the new case passed alone and failed
-in the suite until both `mount` helpers stated `noteWatcher()`/`clearWatcher()`
-explicitly rather than inheriting whatever the previous test left.
 
 ### 1be. The harness's fail-closed told the model the wrong thing
 
