@@ -353,6 +353,42 @@ test ran first — and one of them **passed when run alone** and failed in the
 suite. Both test helpers now state the watcher explicitly (`noteWatcher()` or
 `clearWatcher()`) rather than inheriting it.
 
+### 1bf. The settings page's claim was true, and I checked it anyway
+
+**Observed:** none. That is the point of this entry.
+
+§1be changed what the gate does when nobody is watching. The settings page
+claims — in the file header, in its notice, and in `userSettings`'s own doc —
+that the settings file WINS over the patch row on the nine keys it owns. That
+claim was written in an earlier round and never exercised against a running
+harness, and this repo has a long record of a claim reading like a feature
+because nothing ever ran it.
+
+**Measured, with the generated profile's row deliberately set to `deny` and
+the settings file set to each value in turn:**
+
+| settings file | the run did |
+|---|---|
+| `gateMode: deny` | denied with the plain gate reason |
+| `gateMode: ask` | refused by §1be — "nobody is watching … refuse up front" |
+| no settings file | denied with the plain gate reason (the row wins) |
+
+So the precedence is real, in the direction documented, and the row still wins
+where the file is silent. Recorded because the measurement is what makes the
+claim true *now*, and because `--dump-config` cannot answer it: that command
+prints the PATCH TREE, which never contains the settings file at all — the
+merge happens at plugin load, inside `apply`. Three earlier greps of
+`--dump-config` said the opposite of the truth and looked convincing.
+
+**The trap worth naming:** the first version of this probe put the settings
+file in `~/.config/dshloop/` while the profile booted with a different
+`XDG_CONFIG_HOME` in a previous shell, so the first two runs read the REAL
+file while I believed they read the probe — and `settings=ask` still looked
+like the row winning, because the message I was grepping for is the model's
+paraphrase of the refusal rather than the refusal itself. The model reports
+"approval policy: ask, no answerer", not "nobody is watching". Grepping for my
+own wording proved nothing; the table above greps for behaviour.
+
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
 **Observed:** `bash scripts/make-profile.sh webz --port 4596` printed
