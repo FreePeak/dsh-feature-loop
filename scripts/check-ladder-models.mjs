@@ -340,6 +340,48 @@ function localProfiles() {
     .map(e => join(root, e.name))
 }
 
+/**
+ * A HEADLESS profile that still says `gateMode: ask` gates nothing and says so.
+ *
+ * Measured 2026-10-03 against `~/.dsh/profiles/feature-loop-headless`, a
+ * profile the docs tell people to build by hand:
+ *
+ *   Error: tool "write" requires approval, but no approval channel is
+ *   available
+ *
+ * `ask` needs a MOUNTED ANSWERER. `dsh headless` mounts none: no dashboard
+ * page is opened, no browser polls `/api/state`, so every ask resolves "no
+ * answerer available" and the gate fails closed — which is correct behaviour
+ * and leaves the run with nowhere to go. The generated profile is right
+ * (`make-profile.sh` stamps `deny` for `--headless`); the hand-built one is
+ * what people actually boot, and it is a directory nobody revisits.
+ *
+ * The same trap has a second door: a WEB profile whose dashboard port is
+ * already taken also has no answerer on the port you are looking at.
+ *
+ * Which app a profile boots is in its own `package.json` — the harness reads
+ * it from there, so this reads it from there rather than guessing from the
+ * profile's NAME.
+ *
+ * ponytail: one string plus one comparison per profile. The alternative —
+ * refusing to check at all, because a profile is not the shipped config — is
+ * how `flsdk` and `headless` drifted in the first place; the ladder half of
+ * this same script already made that argument for them.
+ */
+function bundlesOf(dir) {
+  try {
+    const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
+    return pkg?.dsh?.profile?.bundles ?? []
+  } catch {
+    return []
+  }
+}
+
+/** `true` when the profile boots a headless app (so nobody can answer a gate). */
+function isHeadless(dir) {
+  return bundlesOf(dir).some(b => /dsh-headless\b/.test(b))
+}
+
 const profiles = localProfiles()
 for (const dir of profiles) {
   const file = join(dir, 'cordis.patch.yml')
@@ -350,7 +392,17 @@ for (const dir of profiles) {
   const ids = declaredModels(text)
   const prices = priceKeys(text)
   const label = `profile ${basename(dir)}`
-  // A profile that declares NO models of its own has no `llm-pi-ai` row, so it
+  if (isHeadless(dir) && /gateMode:\s*ask\b/.test(text)) {
+    console.error(
+      `${label}: a HEADLESS profile with gateMode: ask — nothing can answer it.\n` +
+      '  dsh headless opens no dashboard page and nothing polls /api/state, so\n' +
+      '  every ask resolves "no approval channel is available" and the run\n' +
+      '  produces no work. Measured 2026-10-03 against this exact profile.\n' +
+      '  fix: gateMode: deny here — refuse at once, with a reason. A WEB\n' +
+      '       profile keeps ask, and its dashboard port must be free.',
+    )
+    failed = true
+  }
   // resolves through the harness's own default provider — where these rungs are
   // unreachable for a reason this check cannot see and should not claim. Report
   // it as a skip, not a failure: the honest statement is "this file does not

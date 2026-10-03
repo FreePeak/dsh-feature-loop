@@ -154,6 +154,19 @@ line it changes.
 with the file absent and no error, and the web profile still asks and still gets
 answered.
 
+**And the check that keeps it from coming back.** `scripts/check-ladder-models.mjs`
+— the script that already reads every local profile, because two of them were
+still carrying dead rungs — now also reads each profile's `package.json` and
+fails a headless profile that still says `gateMode: ask`. On this machine it
+named `flheadless` and `flproof`, both of which had the defect and neither of
+which anything had looked at since they were created. Proven to fire by putting
+`ask` back and watching it exit 1.
+
+Which app a profile boots is read from the `dsh.profile.bundles` the harness
+itself reads, not guessed from the profile's name — `flproof` says nothing about
+being headless, and `feature-loop-headless` would say something that could be a
+typo.
+
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
 **Observed:** `bash scripts/make-profile.sh webz --port 4596` printed
