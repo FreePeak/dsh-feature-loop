@@ -51,7 +51,28 @@ DSH="${DSH_HARNESS:-$HOME/work/harvey/freepeak/deepseek-harness}"
 CLI="$DSH/apps/cli/lib/bin.js"
 HOME_DIR="${DSH_HOME:-$HOME/.dsh}"
 PROFILE_DIR="$HOME_DIR/profiles/$NAME"
-PNPM="npx -y pnpm@9.15.9"
+# pnpm 9 specifically: the lockfile it writes is a v9 one, and pnpm 11 silently
+# re-resolves a v9 lockfile and drops the peer wiring — which is §1b's entire
+# subject, so the version is not negotiable. Resolved off PATH or the npx cache
+# first, and only fetched when neither has it: `npx -y pnpm@9.15.9` hits the
+# REGISTRY on every cold call, and with the registry slow the profile script dies
+# on `ETIMEDOUT` after `--prefer-offline` has already done the work it was
+# supposed to do. Measured 2026-10-03 twice on this box.
+# `command -v pnpm` alone is a TRAP here: this box has pnpm 11 on PATH, which is
+# exactly the version this script exists to avoid, and a version check that only
+# ran on the PATH hit would fall through to the npx fetch on every machine where
+# the wrong pnpm is installed. So: every candidate, PATH first or not, is asked
+# what version it is.
+PNPM=""
+for candidate in "$(command -v pnpm 2>/dev/null || true)" \
+                 $(ls -1 "$HOME"/.npm/_npx/*/node_modules/.bin/pnpm 2>/dev/null); do
+  if [ -x "$candidate" ] && [ "$("$candidate" --version 2>/dev/null)" = "9.15.9" ]; then
+    PNPM="$candidate"
+    break
+  fi
+done
+[ -n "$PNPM" ] || PNPM="npx -y pnpm@9.15.9"
+echo "==> pnpm: $PNPM"
 
 [ -f "$CLI" ] || { echo "error: harness checkout not found at $DSH" >&2; exit 1; }
 
@@ -272,6 +293,17 @@ echo "==> install (pnpm 9 — a v11 re-resolve drops the peer wiring)"
 # half-open Cloudflare sockets — indistinguishable from a hang, because it WAS
 # one from the caller's side. The same install with --prefer-offline against the
 # warm store finished in 1.4s.
+# `--no-frozen-lockfile` is required, not preferred: the tarball specifier moves
+# whenever the source tree moves, and a frozen lockfile refuses a specifier it
+# has not seen before — which is every new profile.
+#
+# Nothing here can make a slow registry fast. Measured 2026-10-03: with the
+# registry timing out, the one dependency `--prefer-offline` cannot serve is
+# `@deepseek-ai/dsh-experimental-agent-team-profile`, whose metadata is not in
+# the local cache. Copying it in from a profile that already resolved it does NOT
+# help — pnpm re-resolves from package.json and prunes the copy, then asks the
+# registry anyway. The honest fix is a reachable registry, so the failure is
+# reported as what it is instead of as a hang.
 (cd "$PROFILE_DIR" && $PNPM install --no-frozen-lockfile --prefer-offline >/dev/null)
 
 # The one-second check, and the only one that answers the question that
