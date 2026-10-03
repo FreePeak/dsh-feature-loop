@@ -1577,7 +1577,16 @@ export function resolveJudge(config: JudgeConfig): { judge: Judge, label: string
       + 'Use judge: laya for a local judge that needs no key, or judge: none for detectors only.',
     )
   }
-  const model = config.judgeModel ?? 'xiaomi/mimo-v2.5'
+  // `execution`, onegw's EXECUTION role alias — the same route every ladder in
+  // this repo names, and the only one verified against the live gateway
+  // (2026-10-03: POST /v1/chat/completions {"model":"execution"} -> 200).
+  // It used to be `xiaomi/mimo-v2.5`, a concrete id this repo does not
+  // declare anywhere and no shipped config mentions: a deployment that set
+  // `judge: chat` without also setting `judgeModel` was asking a model no
+  // test had ever run, which is the same "resolves but was never tested"
+  // shape §1a records for the ladder — one rung over, and invisible because
+  // nothing reads a judge's model except the judge itself.
+  const model = config.judgeModel ?? 'execution'
   return {
     judge: createChatJudge({
       llm: createOnegwClient({

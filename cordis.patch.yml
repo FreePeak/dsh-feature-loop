@@ -112,7 +112,10 @@
         #   answerTimeoutMs: 600000   # ask fails closed to `unavailable` after this
         #   brief:              # model-authored review brief per ask (plain prose);
         #     enabled: false    #   off by default — the brief never blocks the ask
-        #     model: xiaomi/mimo-v2.5  # required when enabled: the model to ask
+        #     model: execution       # required when enabled: the model to ask.
+        #                          # `execution` is onegw's EXECUTION role alias
+        #                          # and the wire id is BARE — `onegw/execution`
+        #                          # is a 404. Verified 2026-10-03.
         #     maxTokens: 1024   # cap on the brief's own output
         #     timeoutMs: 15000  # per-brief deadline; expiry = no brief, never a hang
         # ────────────────────────────────────────────────────────────────────
