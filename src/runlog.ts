@@ -63,9 +63,25 @@ export interface RunRecord {
   byRoute: Readonly<Record<string, { steps: number; usd: number }>>
   /** Per-step latency, the speed axis. Empty when the transport timed nothing. */
   stepLatencyMs: number[]
-  wallMs: number
-  /** Whether `stepLatencyMs` measures the whole round trip or just the model call. */
-  latencyKind: LatencyKind
+  /**
+   * Wall-clock ms for the run. `undefined` when nothing was timed.
+   *
+   * It was `0` — and `0` is a reading, not an absence. Measured 2026-10-04 on
+   * the committed history: every record reported `wallMs: 0`, so the panel
+   * showed "0 ms per run" for runs that took minutes. §1bs is the same defect in
+   * a field that DID have a source; this one has none on the harness path, so
+   * the fix is the type: an unmeasured run says so instead of saying zero.
+   */
+  wallMs?: number
+  /**
+   * Whether `stepLatencyMs` measures the whole round trip or just the model
+   * call. `undefined` when nothing was timed.
+   *
+   * It was always `'round-trip'` on the harness path — a declared MEASUREMENT
+   * KIND for a measurement that was never taken, which `summarize` then
+   * reported as though it had been.
+   */
+  latencyKind?: LatencyKind
   signals: readonly { kind: string; severity: string }[]
   /** Every judge score for the run, 0–3. */
   judgeScores: readonly number[]

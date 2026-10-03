@@ -79,14 +79,46 @@ test('latencyKind is the common measured kind, mixed when records disagree', () 
     summarize([record({ latencyKind: 'model' }), record()]).speed.latencyKind,
     'mixed',
   )
-  // A record that timed nothing declares nothing: it cannot make the kind "mixed".
+  // A record that timed nothing declares nothing: it cannot make the kind
+  // "mixed" — and when NOTHING was timed the kind is absent rather than a
+  // guess. `undefined` is not `'round-trip'`: the old default declared a
+  // MEASUREMENT KIND for a run that never took one (§1bt).
   assert.equal(
     summarize([
       record({ stepLatencyMs: [], latencyKind: 'model' }),
       record({ stepLatencyMs: [] }),
     ]).speed.latencyKind,
-    'round-trip',
+    undefined,
   )
+  assert.equal(
+    summarize([
+      record({ stepLatencyMs: [10], latencyKind: 'model' }),
+      record({ stepLatencyMs: [] }),
+    ]).speed.latencyKind,
+    'model',
+    'and one timed record is enough to name the kind',
+  )
+})
+
+test('an unmeasured run does not put a zero in the wall-clock axis', () => {
+  // §1bs found `reviewFraction` hardcoded to 0 where a count existed. These two
+  // have NO source on the harness path — the plugin never times anything — so
+  // the honest shape is an absent field, and an absent field must not enter the
+  // distribution as a zero.
+  const unmeasured = [
+    record({ outcome: 'goal-met', steps: 4, wallMs: undefined, latencyKind: undefined, stepLatencyMs: [] }),
+    record({ outcome: 'goal-met', steps: 6, wallMs: 1500, latencyKind: 'model', stepLatencyMs: [120] }),
+  ]
+  const s = summarize(unmeasured, unmeasured)
+  assert.equal(s.measuredRuns, 2, 'both runs stepped')
+  assert.equal(s.speed.wallMs.p50, 1500, 'only the timed run contributes')
+  assert.equal(s.speed.latencyKind, 'model', 'and one timed run names the kind')
+  assert.equal(s.speed.latencyMs.p50, 120)
+
+  const none = [record({ outcome: 'model-stop', steps: 2, wallMs: undefined, stepLatencyMs: [] })]
+  const n = summarize(none, none)
+  assert.equal(n.speed.wallMs.p50, 0, 'no run was timed')
+  assert.equal(n.speed.latencyKind, undefined, 'so no kind is declared either')
 })
 
 test('goalMetRate counts goal-met outcomes; firstPassRate only first-pass successes', () => {
@@ -243,7 +275,9 @@ test('an empty record list summarizes to zeros without throwing', () => {
   assert.equal(s.cost.goalMetCost, undefined)
   assert.equal(s.speed.steps.p50, 0)
   assert.equal(s.speed.steps.baseline, undefined, 'no goal-met runs, no baseline')
-  assert.equal(s.speed.latencyKind, 'round-trip')
+  // Nothing was timed, so no kind is declared. This used to be 'round-trip':
+  // a measurement kind asserted for a measurement that never happened.
+  assert.equal(s.speed.latencyKind, undefined)
   assert.equal(s.alerts.length, 0)
 })
 
