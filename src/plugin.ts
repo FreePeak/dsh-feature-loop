@@ -1654,16 +1654,21 @@ function pipelinePreCallGuard(policy: FeatureLoopPolicy): PreStepDecision | unde
  * @param event - the appended event, exactly as recorded.
  * @returns the turn number and the reason kind, or `undefined`.
  */
-function asTurnEnd(event: unknown): { turn: number, reasonKind: string } | undefined {
+function asTurnEnd(event: unknown): { turn: number, reasonKind: string, time: number } | undefined {
   if (event === null || typeof event !== 'object') return undefined
-  const record = event as { readonly type?: unknown, readonly data?: unknown }
+  const record = event as { readonly type?: unknown, readonly data?: unknown, readonly time?: unknown }
   if (record.type !== 'turn/end') return undefined
   if (record.data === null || typeof record.data !== 'object') return undefined
   const data = record.data as { readonly turn?: unknown, readonly reason?: unknown }
   if (typeof data.turn !== 'number' || !Number.isFinite(data.turn)) return undefined
   const reason = data.reason as { readonly kind?: unknown } | null | undefined
   if (reason === null || typeof reason !== 'object' || typeof reason.kind !== 'string') return undefined
-  return { turn: data.turn, reasonKind: reason.kind }
+  // `SessionEvent.time` is Unix epoch ms on EVERY event, stamped by the
+  // harness's clock. It is the plugin path's own stopwatch: §1bu made the
+  // runner carry a real `wallMs`, and this is the same measurement here, from
+  // data the harness already writes rather than one the plugin never started.
+  const time = typeof record.time === 'number' && Number.isFinite(record.time) ? record.time : undefined
+  return { turn: data.turn, reasonKind: reason.kind, ...(time === undefined ? {} : { time }) }
 }
 
 /**
@@ -1678,7 +1683,7 @@ function sessionIdOf(session: unknown): string {
 }
 
 /** Use {@link asTurnEnd} — the structural narrow on the `turn/end` payload. */
-export function isTurnEnd(event: unknown): { turn: number, reasonKind: string } | undefined {
+export function isTurnEnd(event: unknown): { turn: number, reasonKind: string, time?: number } | undefined {
   return asTurnEnd(event)
 }
 
@@ -1692,7 +1697,15 @@ export function isTurnEnd(event: unknown): { turn: number, reasonKind: string } 
  */
 interface TurnRecordInput {
   session: unknown
-  event: { turn: number, reasonKind: string }
+  /** The closed turn: its number, why it ended, and the harness's own `time`. */
+  event: { turn: number, reasonKind: string, time?: number }
+  /**
+   * When the turn opened, from `turn/start` in the session log.
+   *
+   * `undefined` when the log does not say — and then the record says so
+   * (`wallMs` absent) rather than reporting a zero for a run that took minutes.
+   */
+  openedAt?: number
   options: Parameters<typeof createPolicy>[0] & { dashboard?: DashboardConfig }
   policyFor: (agent: Agent | undefined) => FeatureLoopPolicy
   /** Live agent lookup keyed by session id (`ctx.agents.get`). */
@@ -1774,8 +1787,44 @@ function outcomeOf(reasonKind: string, policy: FeatureLoopPolicy, steps: number)
  *
  * @param input - the closed turn and everything the record is built from.
  */
+/**
+ * When this turn opened, from the session's own log.
+ *
+ * `turn/start` and `turn/end` are both logged and both carry `time` (Unix epoch
+ * ms, stamped by the harness), so their difference IS the run's wall clock —
+ * the plugin path's equivalent of the runner's `performance.now()` span (§1bu).
+ * Structural like every other session read here: a session without `eventAt`
+ * yields `undefined`, and an unmeasured run says so rather than reporting `0`.
+ *
+ * Bounded backward walk, because this runs on every closed turn and a turn is
+ * short: a full scan of a long session per turn is a cost the measurement does
+ * not justify.
+ *
+ * @param session - the session that closed the turn.
+ * @param turn - the 1-based turn number.
+ * @returns Unix epoch ms, or `undefined` when the log does not say.
+ */
+function turnStartTime(session: unknown, turn: number): number | undefined {
+  const typed = session as {
+    readonly seq?: unknown
+    readonly eventAt?: (seq: unknown) => { readonly type?: unknown, readonly data?: unknown, readonly time?: unknown } | undefined
+  } | null | undefined
+  const at = typed?.eventAt
+  const seq = typed?.seq
+  if (typeof at !== 'function' || typeof seq !== 'number') return undefined
+  for (let cursor = seq - 1; cursor >= 0 && cursor >= seq - 200; cursor -= 1) {
+    const event = at(cursor)
+    if (event === undefined || event === null || typeof event !== 'object') continue
+    if (event.type !== 'turn/start') continue
+    const data = event.data as { readonly turn?: unknown } | null | undefined
+    if (data === null || typeof data !== 'object' || data.turn !== turn) continue
+    return typeof event.time === 'number' && Number.isFinite(event.time) ? event.time : undefined
+  }
+  return undefined
+}
+
 async function recordTurn(input: TurnRecordInput): Promise<void> {
-  const { session, event, options, policyFor, resolveAgent, state, historyPath } = input
+  const { session, event, openedAt, options, policyFor, resolveAgent, state, historyPath } = input
   const runlog = await import('./runlog.ts')
   const agent = agentOfSession(session, resolveAgent)
   const policy = policyFor(agent)
@@ -1785,9 +1834,9 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
   const steps = snapshot?.steps ?? 0
   const runId = sessionIdOf(session)
   const record: RunRecord = {
-    runId,
-    startedAt: now,
-    endedAt: now,
+    runId: sessionIdOf(session),
+    startedAt: openedAt ?? now,
+    endedAt: event.time ?? now,
     pass: 1,
     passes: 1,
     taskKey: spec === undefined ? 'none' : runlog.taskKeyOf(spec.goal),
@@ -1803,7 +1852,14 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
     // `'round-trip'` were a run that took minutes reporting "0 ms, round trip".
     // `summarize` reads both, so the absence has to be in the record.
     stepLatencyMs: [],
-    wallMs: undefined,
+    // The harness's own clock: the `turn/start` and `turn/end` events this
+    // record is written from. So the plugin path reports a REAL wall clock
+    // rather than an absence (§1bt made it optional; §1bu gave the runner one,
+    // and this is the same measurement for the harness path). Per-step latency
+    // stays absent: the plugin has no seam around a model call, only the turn
+    // boundary — and `latencyKind` stays absent because nothing was timed at
+    // that resolution.
+    wallMs: openedAt === undefined || event.time === undefined ? undefined : event.time - openedAt,
     latencyKind: undefined,
     signals: policy.history.length === 0 ? [] : policy.history.map(() => ({ kind: 'detector', severity: 'info' })),
     judgeScores: [],
@@ -2398,7 +2454,16 @@ export function apply(
       // there, and the next turn re-entered a phase that was already done.
       const turnAgent = agentOfSession(session, resolveAgent)
       if (turnAgent !== undefined) advanceIfGated(policyFor(turnAgent), turnAgent)
-      void recordTurn({ session, event: end, options, policyFor, resolveAgent, state, historyPath: path })
+      void recordTurn({
+        session,
+        event: end,
+        openedAt: turnStartTime(session, end.turn),
+        options,
+        policyFor,
+        resolveAgent,
+        state,
+        historyPath: path,
+      })
         .catch((error: unknown) => {
           // A failed append must never fail the turn: the record is
           // evidence, not control. The feed line says so in the harness's

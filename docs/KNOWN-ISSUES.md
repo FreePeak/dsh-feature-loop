@@ -78,6 +78,7 @@ rather than a list of letters:
 | 1bs | The human-escalation alert that could never fire |
 | 1bt | Zero milliseconds, round-trip |
 | 1bu | The speed axis, empty since the day it was written |
+| 1bv | The plugin path's wall clock, hiding in the event it was already reading |
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
 
@@ -1047,6 +1048,39 @@ That is the first record in this repo's history with a populated speed axis, and
 it previously reported 0. Two tests, each failing if its half is reverted: one
 drives `runLoop` end to end and asserts the samples are real durations, one
 asserts the record carries them.
+
+### 1bv. The plugin path's wall clock, hiding in the event it was already reading
+
+**Observed:** §1bt made `wallMs` optional with the note "this path has no seam
+that times a step". §1bu gave the *runner* a real one. The plugin path was
+assumed to have none — and it does not need one, because it is not missing data,
+it was **not reading what it already had**.
+
+Every `SessionEvent` carries `time` (Unix epoch ms, stamped by the harness), and
+`turn/start` and `turn/end` are both logged. `recordTurn` receives the
+`turn/end` event and was reading its `type` and `data`, and writing
+`wallMs: undefined`.
+
+**Fix.** `asTurnEnd` also returns the event's `time`; `turnStartTime` walks back
+through the session log for this turn's `turn/start`; the record reports
+`event.time - openedAt`, and its `startedAt`/`endedAt` are now the harness's
+times rather than "the moment we wrote the file".
+
+**Verified.** Two tests, and the second is the one that matters: a turn whose
+`turn/start` is **not** in the log must report `wallMs: undefined`, not `0`.
+That is §1bt's exact defect, so the guard against reintroducing it is asserted
+directly. Reverting `openedAt` to the listener's default fails the first test;
+reverting `wallMs` to `0` fails **three**.
+
+**Still absent, deliberately.** `stepLatencyMs` and `latencyKind`: the plugin has
+no seam around a model call — only the turn boundary — so there is no honest
+per-step sample, and `latencyKind` would be a label for a resolution that does not
+exist. `undefined` on both is the finding from §1bt, not a leftover.
+
+**The turn, not the loop.** Worth being precise about what this measures: a
+`turn` is one harness turn, so a loop run of many steps reports the span of the
+turn it closed. That is what the field has always meant on this path (one record
+per closed turn) and it is the duration a reader of the record is asking about.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
