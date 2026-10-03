@@ -84,8 +84,15 @@ export interface MetricsSummary {
   quality: {
     /** Share of runs that ended `goal-met`. */
     goalMetRate: number
-    /** Share of *all* runs that met their goal on pass 1 — the fraction the loop got right without buying a retry. */
-    firstPassRate: number
+    /**
+     * Share of runs that met their goal on pass 1 — the fraction the loop got
+     * right without buying a retry.
+     *
+     * `undefined` when no record reports a pass number above 1, because in that
+     * case the number would be a copy of {@link goalMetRate} wearing a
+     * different name.
+     */
+    firstPassRate?: number
     /** Mean of every judge score flattened across runs. Absent when no judge ran. */
     meanJudge?: number
     /** Mean of `qualityScore` over the runs that asked for one. Absent when none did — not scored is not zero. */
@@ -261,7 +268,20 @@ export function summarize(
     speed: { steps: stepsAxis, latencyMs: latencyAxis, wallMs: wallAxis, latencyKind },
     quality: {
       goalMetRate: runs > 0 ? met.length / runs : 0,
-      firstPassRate: runs > 0 ? met.filter(r => r.pass === 1).length / runs : 0,
+      // `undefined` when every record is pass 1, because then this is the SAME
+      // set as `met` and the panel shows two numbers a reader takes as
+      // independent evidence of "the loop gets it right without a retry".
+      //
+      // Every record the plugin writes carries `pass: 1` — `recordTurn`
+      // hardcodes it, and a pass-2 record comes only from the CLI's
+      // `runRefined`, which is not on this path. Measured 2026-10-04 on the
+      // committed history: goalMetRate 0.867, firstPassRate 0.867, 15 records
+      // all pass === 1. Absent is the honest shape; a rate over a denominator of
+      // zero distinct passes has no meaning, and `undefined` is
+      // distinguishable from a real 0.
+      firstPassRate: records.some(r => r.pass > 1)
+        ? met.filter(r => r.pass === 1).length / runs
+        : undefined,
       meanJudge: judges.length > 0 ? mean(judges) : undefined,
       meanQuality: qualities.length > 0 ? mean(qualities) : undefined,
       reviewFraction,
