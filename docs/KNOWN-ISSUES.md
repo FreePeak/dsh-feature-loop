@@ -400,6 +400,42 @@ reading it would spend an hour adding dependencies that cannot resolve.
 works, names the two measured conflicts, and says what the CI list covers
 instead.
 
+### 1bh. A green integration run was partly a property of this machine
+
+**Observed:** `make verify` in a fresh `git clone` of this branch fails the
+integration step outright, while the same command in the worktree has passed 11/11
+all session:
+
+```
+Could not resolve "@deepseek-ai/dsh-llm" imported by
+"@freepeak/dsh-feature-loop"
+ Test Files  1 failed (1)
+      Tests  no tests
+```
+
+**Why:** the staged spec imports `src/plugin.ts` by ABSOLUTE path, and Vite
+resolves that file's own bare specifiers from the DIRECTORY WALK above the
+plugin — not from the harness checkout where the spec is staged. The plugin
+declares all five harness packages as OPTIONAL peers and `.npmrc` sets
+`auto-install-peers=false`, so a clean install never provides them. A worktree
+inherits them by walking up into the MAIN checkout's `node_modules`, which on this
+machine is a symlink into a hand-built profile
+(`~/.dsh-flt-4100/profiles/flt4100/…`). A clone under `/tmp` has no such parent.
+
+So every "11/11 integration green" this session was partly true because of a
+directory that happens to exist on one laptop. The suite is real and it does
+pass; the *claim* was doing more work than the evidence supported.
+
+**Fix:** `test/integration/run.sh` now resolves the package the way Node and
+Vite do — `createRequire(resolve('src/plugin.ts')).resolve('@deepseek-ai/dsh-llm')`
+— and exits 2 with the reason when it cannot, instead of letting Vite report
+"no tests ran". The walk crosses the worktree boundary on purpose: this file
+lives in `.worktrees/exec-rung/`, whose own `node_modules` carries no harness
+package, and the real one resolves two directories up.
+
+Verified both ways: the worktree still runs 11/11, and the clone now stops at
+the precondition with a sentence naming the missing package.
+
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
 **Observed:** `bash scripts/make-profile.sh webz --port 4596` printed

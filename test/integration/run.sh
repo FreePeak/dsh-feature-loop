@@ -40,6 +40,47 @@ sed \
   -e "s#from '\.\./\.\./src/approvals\.ts'#from '$HERE/../../src/approvals.ts'#" \
   "$HERE/plugin-in-dsh.spec.ts" > "$STAGED"
 
+# The staged spec imports src/plugin.ts by ABSOLUTE path, and Vite resolves that
+# file's own bare specifiers (`@deepseek-ai/dsh-llm`, `@deepseek-ai/dsh-tools`,
+# `@deepseek-ai/cordis`) from the DIRECTORY WALK above the plugin — not from the
+# harness, which is where the spec itself lives.
+#
+# That is why this check passes in a git worktree of this repo and fails in a
+# clone of it, which is the same defect in two guises. The plugin declares all
+# five harness packages as OPTIONAL peers and `.npmrc` sets
+# `auto-install-peers=false`, so a clean install never provides them; a worktree
+# inherits them by walking up into the MAIN checkout's node_modules, which on this
+# machine is a symlink into a hand-built profile
+# (`~/.dsh-flt-4100/profiles/flt4100/...`). Measured 2026-10-03:
+#
+#   worktree  -> 11/11 pass
+#   clone     -> `Could not resolve "@deepseek-ai/dsh-llm" imported by
+#                "@freepeak/dsh-feature-loop"` — no tests run at all
+#
+# A green integration run was therefore partly a property of this machine, not of
+# the code. Say so before the run rather than after it, because "no tests ran" and
+# "11 passed" print very differently and only one of them means anything.
+# Checked the way Node and Vite actually resolve it — the directory walk from
+# src/plugin.ts, not a literal `node_modules` next to it. The walk crosses the
+# worktree boundary: this file lives in `.worktrees/exec-rung/`, whose own
+# node_modules carries NO harness package, and the package resolves from the
+# MAIN checkout two directories up.
+peers=$(cd "$HERE/../.." && node -e "
+  const { createRequire } = require('node:module')
+  const path = require('node:path')
+  const r = createRequire(path.resolve('src/plugin.ts'))
+  try { process.stdout.write(path.dirname(path.dirname(r.resolve('@deepseek-ai/dsh-llm')))) }
+  catch { process.exit(1) }
+" 2>/dev/null) || peers=""
+if [ -z "$peers" ]; then
+  echo "note: the harness packages are not installed under this repo." >&2
+  echo "      The plugin declares them as OPTIONAL peers, so a clean install" >&2
+  echo "      does not provide them and this spec cannot resolve src/plugin.ts." >&2
+  echo "      fix: run this from a checkout where they resolve, or point" >&2
+  echo "           DSH_HARNESS at a harness whose node_modules has them." >&2
+  exit 2
+fi
+
 echo "harness: $HARNESS"
 echo "staged:  $STAGED"
 echo
