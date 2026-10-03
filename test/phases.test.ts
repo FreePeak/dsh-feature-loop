@@ -7,6 +7,7 @@
  */
 
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { describe, it } from 'node:test'
 
 import {
@@ -15,6 +16,8 @@ import {
   PIPELINE_PHASES,
   evaluateGate,
   nextPhase,
+  phaseFraction,
+  phaseRail,
   pipelinePhaseOf,
   renderRules,
   testAttemptsRemain,
@@ -180,6 +183,53 @@ describe('command gates', () => {
   it('passes on exit 0', () => {
     const result = evaluateGate(gate, obs({ phase: 'test', verify: { command: 'npm test', exitCode: 0, output: 'ok' } }))
     assert.equal(result.pass, true)
+  })
+})
+
+describe('the phase rail', () => {
+  it('renders nothing for a run with no pipeline, rather than five empty stages', () => {
+    // A rail that is always present and always empty teaches its reader to
+    // ignore it — the same failure the tool-dominance floor prevents on the
+    // policy side.
+    assert.deepEqual(phaseRail({}), [])
+    assert.deepEqual(phaseRail({ phase: 'research' }), [], 'a phase name without an index is not a position')
+  })
+
+  it('marks everything below the current phase done and above it pending', () => {
+    const rail = phaseRail({ phase: 'implement', phaseIndex: 2 })
+    assert.deepEqual(rail.map(r => r.state), ['done', 'done', 'current', 'pending', 'pending'])
+    assert.deepEqual(rail.map(r => r.name), [...PHASE_ORDER])
+  })
+
+  it('puts the first phase at the start with nothing done', () => {
+    const rail = phaseRail({ phase: 'research', phaseIndex: 0 })
+    assert.equal(rail[0]?.state, 'current')
+    assert.deepEqual(rail.slice(1).map(r => r.state), ['pending', 'pending', 'pending', 'pending'])
+  })
+
+  it('puts the last phase at the end with four done', () => {
+    const rail = phaseRail({ phase: 'ship', phaseIndex: 4 })
+    assert.equal(rail.at(-1)?.state, 'current')
+    assert.deepEqual(rail.slice(0, 4).map(r => r.state), ['done', 'done', 'done', 'done'])
+  })
+
+  it('reports a fraction only when both sides are known', () => {
+    assert.equal(phaseFraction({ phaseSpentUSD: 0.05, phaseBudgetUSD: 0.2 }), 0.25)
+    assert.equal(phaseFraction({ phaseSpentUSD: 0.05 }), undefined)
+    assert.equal(phaseFraction({ phaseBudgetUSD: 0.2 }), undefined)
+    assert.equal(phaseFraction({}), undefined)
+  })
+
+  it('never divides by a zero budget', () => {
+    assert.equal(phaseFraction({ phaseSpentUSD: 0.05, phaseBudgetUSD: 0 }), undefined)
+  })
+
+  it('does not import dashboard.ts, which would drag node:http into the page', () => {
+    // The failure this shape prevents is real: a value import from
+    // dashboard.ts breaks the browser bundle build outright, because that module
+    // opens a loopback HTTP server.
+    const source = readFileSync(new URL('../src/phases.ts', import.meta.url), 'utf8')
+    assert.doesNotMatch(source, /from '\.\/dashboard\.ts'/)
   })
 })
 

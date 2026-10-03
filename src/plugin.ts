@@ -58,6 +58,7 @@ import { PIPELINE_PHASE_NAMES } from './spec.ts'
 import type { PipelineConfig } from './spec.ts'
 import { isTerminal, startPipeline } from './pipeline.ts'
 import type { PipelineRun } from './pipeline.ts'
+import { PHASE_ORDER } from './phases.ts'
 import type { PipelinePhase } from './phases.ts'
 import { ModelLadder, routeLabel } from './routing.ts'
 import { AttentionRouter, ReviewGate, judgeQuestion } from './review.ts'
@@ -773,6 +774,48 @@ export function gateEnforce(
   return decision.kind === 'deny'
     ? { kind: 'deny', reason: `YOLO ENVELOPE — ${decision.reason}` }
     : { kind: 'proceed' }
+}
+
+/**
+ * Project the run's current phase onto the dashboard row.
+ *
+ * A no-op for a policy with no pipeline, which is what keeps the rail off the
+ * page entirely for an ordinary bounded loop rather than showing five stages
+ * that will never change.
+ *
+ * The phase's own spend is published beside the run's total because the two
+ * answer different questions, and the rail's meter reads the phase's: "can this
+ * phase afford another step" is the question a five-phase run actually stalls
+ * on, because the run total only ever goes up.
+ *
+ * `evidenceDir` and `prUrl` are deliberately NOT published here. Neither is
+ * known until the run has produced them — the bundle path depends on the run's
+ * id and the URL arrives at the very end — and a rail that shows a link to a
+ * directory that does not exist yet is worse than one that shows the link once
+ * there is something behind it.
+ *
+ * @param state - the dashboard state to write.
+ * @param runId - the run's row.
+ * @param policy - the agent's policies.
+ * @param armed - whether the kill switch is set.
+ */
+export function publishPhase(state: DashboardState, runId: string, policy: FeatureLoopPolicy, armed: boolean): void {
+  const pipeline = policy.pipeline
+  if (pipeline === undefined) return
+  const phase = pipeline.run.state
+  // `done`, `stopped` and `blocked` are pipeline STATES, not phases. Reporting
+  // one as a rail position would render a stage that is not in the spine.
+  if ((PHASE_ORDER as readonly string[]).includes(phase)) {
+    const usage = pipeline.budget.usage(phase as PipelinePhase)
+    state.recordPhase(runId, {
+      phase,
+      phaseIndex: PHASE_ORDER.indexOf(phase as PipelinePhase),
+      phaseCount: PHASE_ORDER.length,
+      phaseSpentUSD: usage.spentUSD,
+      phaseBudgetUSD: usage.maxSpendUSD,
+    })
+  }
+  state.recordStopArmed(runId, armed)
 }
 
 /** The kill switch's reason line, phrased for the tool boundary. */
@@ -1547,6 +1590,10 @@ export function apply(
     // and counting it would spend budget on work the loop did not do.
     policy.pipeline?.budget.countStep(policy.pipeline.run.state as PipelinePhase)
     const runId = recordAgentMeta(state, agent)
+    // Publish the phase alongside the step. One call, so the page can never show
+    // a step count for a phase it has already moved past — the two update
+    // together or not at all.
+    publishPhase(state, runId, policy, stopArmed(policy))
     state.recordStep(runId, {
       step,
       ...policy.spec === undefined ? {} : { maxSteps: policy.spec.maxSteps },

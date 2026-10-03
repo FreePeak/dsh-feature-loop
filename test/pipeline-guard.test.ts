@@ -21,8 +21,10 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { apply } from '../src/plugin.ts'
+import { apply, createPolicy, publishPhase } from '../src/plugin.ts'
 import type { CreatePolicyOptions } from '../src/plugin.ts'
+import { DashboardState } from '../src/dashboard.ts'
+import { PHASE_ORDER, phaseFraction, phaseRail } from '../src/phases.ts'
 
 /** A spec with tiny ceilings, so a test never has to spend real money to reach one. */
 const SPEC = {
@@ -214,5 +216,47 @@ describe('a pipeline enabled with no spec', () => {
     // With no spec there is no budget, so the plugin loads inert rather than
     // throwing here — index.ts is the layer that rejects the combination.
     dispose?.()
+  })
+})
+
+describe('the dashboard sees the phase', () => {
+  it('publishes the current phase and its own spend beside the run total', () => {
+    // The rail's meter reads the PHASE's fraction, not the run's: the run total
+    // only ever goes up, so it can never show that one phase is eating the run.
+    const policy = createPolicy({ spec: SPEC, pipeline: { enabled: true } })
+    const state = new DashboardState()
+    publishPhase(state, 'run-a', policy, false)
+
+    const run = state.snapshot().runs.find(r => r.runId === 'run-a')
+    assert.equal(run?.phase, 'research', 'a fresh run is in its first phase')
+    assert.equal(run?.phaseIndex, 0)
+    assert.equal(run?.phaseCount, 5)
+    assert.equal(run?.phaseBudgetUSD, 0.1, 'a $1 run gives research 10%')
+    assert.equal(run?.phaseSpentUSD, 0)
+    assert.equal(phaseFraction(run!), 0)
+  })
+
+  it('serves no rail at all for a deployment with no pipeline', () => {
+    // `publishPhase` returns before touching the state when there is no
+    // pipeline, so the run row is never created — the page has nothing to render
+    // a rail from, rather than a row with five empty stages sitting on it.
+    const policy = createPolicy({ spec: SPEC })
+    const state = new DashboardState()
+    publishPhase(state, 'run-b', policy, false)
+    const run = state.snapshot().runs.find(r => r.runId === 'run-b')
+    assert.equal(run, undefined, 'an ordinary bounded loop must not publish phase state at all')
+    assert.deepEqual(phaseRail({}), [], 'and the projection agrees: no rail, not an empty one')
+  })
+
+  it('does not render a rail position for a terminal state', () => {
+    // `stopped` is a pipeline state, not a phase; rendering it as a rail stage
+    // would show a position that is not in the spine.
+    const policy = createPolicy({ spec: SPEC, pipeline: { enabled: true } })
+    policy.pipeline!.run.state = 'stopped'
+    const state = new DashboardState()
+    publishPhase(state, 'run-c', policy, false)
+    const run = state.snapshot().runs.find(r => r.runId === 'run-c')
+    assert.equal(run?.phase, undefined)
+    assert.equal(run?.phaseIndex, undefined)
   })
 })

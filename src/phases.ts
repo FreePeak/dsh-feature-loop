@@ -401,3 +401,69 @@ export function evaluateGate(gate: ExitGate, obs: PhaseObservation): GateResult 
 export function testAttemptsRemain(attempts: number): boolean {
   return attempts < PIPELINE_BUDGET.maxTestAttempts
 }
+
+/**
+ * One stage of the phase rail, as the page renders it.
+ */
+export interface PhaseRailStage {
+  name: string
+  /** 0-based position in the spine. */
+  index: number
+  /** `current`, `done` for a lower index, or `pending` for a higher one. */
+  state: 'current' | 'done' | 'pending'
+}
+
+/**
+ * The minimum a run must carry to be projected onto the rail.
+ *
+ * Declared structurally, and with this module importing nothing from
+ * `dashboard.ts`, for a reason with teeth: `dashboard.ts` opens `node:http`, so
+ * a value import from it drags the whole loopback server into the browser
+ * bundle — which fails the build outright, and if it did not would put a server
+ * in a page running under `default-src 'none'`. The page needs two numbers, not
+ * a type identity.
+ */
+export interface RailProjection {
+  phase?: string
+  phaseIndex?: number
+  phaseSpentUSD?: number
+  phaseBudgetUSD?: number
+}
+
+/**
+ * Project a run onto the five-stage rail.
+ *
+ * Returns an empty list for a run with no pipeline, so the page renders no rail
+ * at all rather than five empty stages — a rail that is always present and
+ * always empty teaches its reader to ignore it, which is the same failure the
+ * `tool-dominance` floor exists to prevent on the policy side.
+ *
+ * @param run - the run to project.
+ * @param order - the phase spine, in order. Defaults to the pipeline's own.
+ * @returns one stage per phase, in spine order; empty when there is no pipeline.
+ */
+export function phaseRail(run: RailProjection, order: readonly PipelinePhase[] = PHASE_ORDER): PhaseRailStage[] {
+  const { phaseIndex } = run
+  if (phaseIndex === undefined) return []
+  return order.map((name, index) => ({
+    name,
+    index,
+    state: index < phaseIndex ? 'done' : index === phaseIndex ? 'current' : 'pending',
+  }))
+}
+
+/**
+ * What the current phase has spent, as a fraction of its own ceiling.
+ *
+ * `undefined` when nothing is known, so the page prints "not measured" rather
+ * than a confident 0% for a phase that has not started spending — the rule
+ * `metrics.ts` already follows for an empty history.
+ *
+ * @param run - the run to read.
+ * @returns spent / budget, or `undefined` when either side is absent.
+ */
+export function phaseFraction(run: RailProjection): number | undefined {
+  const { phaseSpentUSD, phaseBudgetUSD } = run
+  if (phaseSpentUSD === undefined || phaseBudgetUSD === undefined || phaseBudgetUSD <= 0) return undefined
+  return phaseSpentUSD / phaseBudgetUSD
+}

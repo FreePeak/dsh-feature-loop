@@ -1116,6 +1116,90 @@ details.help {
   margin-bottom: 0;
   box-shadow: 0 1px 0 var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.06));
 }
+
+/* The 0→1 phase rail.
+ *
+ * Five dots on a line, with the current one filled. Deliberately not a
+ * progress bar: the interesting question is not "how far along" but "which
+ * phase is spending the money", so the meter below the rail shows THIS phase's
+ * share of its own ceiling rather than the run's.
+ *
+ * Every rule is anchored to `.phase-rail` — a bare `.phase` or `.phase-name`
+ * would ride into the harness's own DOM, which is exactly what
+ * test/css-scope.test.ts exists to prevent.
+ */
+.phase-rail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.phase {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.phase-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent;
+}
+.phase-done .phase-dot {
+  background: var(--muted);
+}
+.phase-current {
+  color: var(--text);
+  font-weight: 650;
+}
+.phase-current .phase-dot {
+  background: var(--accent);
+  border-color: var(--accent);
+  /* A current phase the loop is spending against. Reduced-motion honoured
+     because the rail lives in a page that is open for minutes at a time. */
+  animation: phase-pulse 2s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .phase-current .phase-dot { animation: none; }
+}
+@keyframes phase-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.phase-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-left: auto;
+  min-width: 160px;
+}
+.phase-meter .k {
+  color: var(--muted);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.phase-meter .v {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.phase-link {
+  color: var(--accent);
+  font-size: 11.5px;
+  text-decoration: none;
+}
+.phase-link:hover { text-decoration: underline; }
+.phase-evidence {
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
 .run-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
