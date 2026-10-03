@@ -825,3 +825,58 @@ test('four of the six detectors reach the plugin path, and the fifth is unreacha
   assert.equal(seen.has('quality-drop'), false,
     'quality-drop is unreachable in the plugin path — asserted as a FACT so it cannot drift silently')
 })
+
+test('the budget SIGNAL fires in the plugin path once a step is priced past 80%', async () => {
+  // §1i listed `budget` as "reachable on demand" — in PROSE, with no
+  // plugin-path test behind it, which is §1n's shape: a claim in a table that
+  // reads like a measurement. This is that measurement.
+  //
+  // The threshold is deliberately generous and the spend is real, so the ONLY
+  // thing that can produce `budget:critical` is `snapshot.spentUSD` reaching
+  // `prepareReview` through the plugin's own `reviewStep` — which is the path
+  // §1i says exists.
+  const seen = new Set<string>()
+  const { handler, dispose } = mount({
+    spec: {
+      ...SPEC,
+      maxSteps: 99,
+      // $15 against $12 spent = exactly 0.8, so the signal fires WITHOUT the
+      // ceiling rejecting first. A $10 ceiling rejects at step 1 and no signal is
+      // ever produced — which is what the first version of this test measured,
+      // and it reads as "unreachable" rather than "the ceiling got there first".
+      costBudgetUSD: 15,
+      prices: { 'onegw/execution': { inputPerMTok: 0.3, outputPerMTok: 1.2 } },
+      controller: { ladder: [{ provider: 'onegw', model: 'execution' }] },
+    },
+    onSignals: (signals: readonly { kind: string }[]) => { for (const s of signals) seen.add(s.kind) },
+  })
+
+  // The numbers are the whole subtlety, and two of them are the OPPOSITE of
+  // what the first draft had:
+  //
+  //   40 attempts x $0.30 = $12 spent.
+  //   against a $10 ceiling that is 120% -> the CEILING rejects at step 1, and
+  //     the run never reaches `reviewStep`, so NO signal is produced at all. That
+  //     is the first version of this test, and it read as "budget is
+  //     unreachable" — which is why the ceiling must sit ABOVE the signal.
+  //   against a $15 ceiling that is 80% exactly -> the signal fires and the run
+  //     continues.
+  //
+  // And each step needs its OWN settled attempt, because `spendSettledUsage`
+  // advances `pricedThroughSeq` past whatever it prices: one session with one
+  // `assistant/message` is priced once and never again, which is the dedupe
+  // working, not the meter stalling.
+  //
+  // Reuse the file's own settled-session fixture rather than stubbing `spentUSD`:
+  // a stubbed number would prove the arithmetic and not the wiring.
+  const agent = {
+    session: settledSession(Array.from({ length: 40 }, (_, i) => ({ ...PRICED_MSG, seq: i }))),
+  }
+  for (let step = 1; step <= 40; step += 1) {
+    await preStep(handler, step, agent)
+  }
+  dispose()
+
+  assert.ok(seen.has('budget'),
+    `the budget signal must reach the plugin path once the meter moves; saw ${[...seen].sort().join(', ') || '(none)'}`)
+})
