@@ -50,6 +50,7 @@ rather than a list of letters:
 | 1bh | A green integration run was partly a property of this machine |
 | 1bi | The README's first command failed on a fresh clone |
 | 1bj | The check that guards §1t could not see a third of the file |
+| 1bk | `byRoute: {}` beside a real `costUSD` taught the optimizer every route was free |
 
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
@@ -531,6 +532,33 @@ check that gets believed. Renumbering `§1bi` to `§1bh` — the §1t failure �
 exits 1 naming both sections. Repointing an index row at a letter with no
 section exits 1. And the count it prints went from 21 to 29, which is the
 number it should have been saying all along.
+
+### 1bk. `byRoute: {}` beside a real `costUSD` taught the optimizer every route was free
+
+**Observed:** the two observations the handoff left open, both closed by
+measurement rather than by reading:
+
+| open question | measured |
+|---|---|
+| `demo/run.sh --judge none` timed out with exit 124 | **it completes.** `goal-met · 6 steps · $0.0042`, `judgeScores: []`, six `[judge] unavailable (no judge configured)` lines. Nothing hangs. |
+| run records carried spend but empty `byRoute` | **real, and 27 of 29 records had it** — 25 of them with `costUSD > 0`. |
+
+**Why the second one matters:** `routeSummary` in `src/optimizer.ts` reads
+`record.byRoute` and nothing else, and the optimizer state is a PROMPT the judge
+reads to choose a rung. `stepsByRoute.size === 0` returns the string
+`none recorded` — so a deployment with twenty-five spending runs handed the
+optimizer `none recorded`, which is not "we have no data", it is "no route has
+ever cost anything". The field was missing, not the value.
+
+The three records that DO carry `byRoute` are the three written after the
+ledger was read instead of a literal, which is the shape of the whole finding:
+this was never a serialization bug, it was a record written from
+`byRoute: {}` at the call site.
+
+**Verified, not asserted.** `buildOptimizerState` over the real 29-record
+history now prints `routes: onegw/execution (12 steps)` where it previously
+would have printed `none recorded` for a history where every run spent money.
+Two runs and a wall-clock measurement, both directions.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
