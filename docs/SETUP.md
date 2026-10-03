@@ -255,6 +255,25 @@ Pointing both at one port is a specific and confusing failure: the second boot
 logs `EADDRINUSE`, the gate fails closed with `no approval channel is
 available`, and a perfectly good dashboard sits open on the *other* port.
 
+**And `gateMode` follows the app, because `ask` only works with a page.**
+`make-profile.sh` stamps `ask` for `--web` and `deny` for `--headless`.
+Measured 2026-10-03 against the hand-built `feature-loop-headless` profile with
+`ask`: `dsh --profile feature-loop-headless headless "write a file"` returned
+
+```
+Error: tool "write" requires approval, but no approval channel is available
+```
+
+and the run produced no work at all — the model spent its remaining budget
+reasoning about whether `Bash` was a legitimate alternative and then stopped.
+Nothing is watching in `dsh headless`: no dashboard page is opened, no browser
+polls `/api/state`, and `ask` fails closed by design. So the headless twin is
+`deny`, which refuses the step at once and says why.
+
+This also bites a WEB profile whose dashboard port is taken: the page on the
+other port is the one answering, and the port you are looking at is dead. If
+you hand-edit a row, `grep gateMode` it after any `EADDRINUSE`.
+
 ### Doing it by hand instead
 
 If you would rather build it manually, the files are:

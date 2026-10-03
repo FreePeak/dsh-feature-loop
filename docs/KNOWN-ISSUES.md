@@ -133,6 +133,43 @@ approved by a human.`, Allow once produced the file, Reject did not. The two
 `docs/evidence/in-ui-*.png` frames were re-taken against that run, because the
 committed ones came from a boot where nothing was gated.
 
+### 1bb. The headless profile asked a question nobody was there to answer
+
+**Observed:** against the hand-built `~/.dsh/profiles/feature-loop-headless`
+(which the docs still point people at), `dsh --profile feature-loop-headless
+headless "create a file"` returned
+
+```
+Error: tool "write" requires approval, but no approval channel is available
+```
+
+and produced no work. The web twin, same machine, same gateway, gates and asks
+perfectly well — so the difference is not the plugin.
+
+**Why:** the two profiles were built at different times and `gateMode: ask` was
+copied into both. `ask` needs a MOUNTED ANSWERER, and in `dsh headless` nothing
+ever mounts one: no dashboard page is opened and no browser polls
+`/api/state`, so every ask resolves "no answerer available". The gate then fails
+closed — which is the correct behaviour and a useless outcome, because the run
+has no way forward. The model spent its remaining budget reasoning about whether
+`Bash` was a legitimate alternative and then stopped.
+
+The same trap has a second door: a WEB profile whose dashboard port is already
+taken also has no answerer on the port you are looking at, and the working
+dashboard is on the other one.
+
+**Fix:** `gateMode` follows the app. `scripts/make-profile.sh` stamps `ask` for
+`--web` and `deny` for `--headless` — `deny` refuses the step at once with an
+honest reason, which is strictly better than a refusal reported as a sandbox
+denial, and it is what the docs already recommend for unattended runs. Both live
+profiles fixed by hand, each carrying the measurement in a comment beside the
+line it changes.
+
+**Verified:** the same headless command that failed above now returns
+`REVIEW REQUESTED (policy): write: irreversible is always approved by a human.`
+with the file absent and no error, and the web profile still asks and still gets
+answered.
+
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
 **Observed:** `bash scripts/make-profile.sh webz --port 4596` printed
