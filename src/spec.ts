@@ -261,3 +261,125 @@ export function parseOptimizeConfig(config: OptimizeConfig = {}): OptimizeConfig
   }
   return config
 }
+
+/**
+ * The `pipeline:` block — the 0→1 run's own configuration.
+ *
+ * Separate from the eight-dimension {@link LoopSpec} on purpose. A `LoopSpec`
+ * describes *a loop*; this describes *a sequence of loops*. They answer different
+ * questions and they scale differently — raising a phase's ceiling must never
+ * silently raise the run's, which is the whole point of App B #82's rule that a
+ * planning overrun is solved by simplifying the plan rather than stealing from
+ * execution (p296).
+ *
+ * Every field is optional, and an absent block means "policies off", exactly as
+ * an absent `spec` does today. That keeps the block safe to ship in a patch row
+ * before anyone has decided on a budget.
+ */
+export interface PipelineConfig {
+  /** Turn the five-phase pipeline on. Omitted means a plain bounded loop, as today. */
+  enabled?: boolean
+  /** Where run artifacts land, relative to the workspace root. Defaults to `.feature-loop/runs`. */
+  runsDir?: string
+  /** The project's test command, whose exit 0 is the test phase's exit gate. No default. */
+  testCommand?: string
+  /** Per-phase step ceilings, by phase name. Falls back to a share of `spec.maxSteps`. */
+  phaseMaxSteps?: Partial<Record<string, number>>
+  /**
+   * Per-phase spend ceilings in USD, as absolute amounts rather than shares.
+   *
+   * Absolute on purpose: the shares in `PIPELINE_BUDGET` are proportions of a
+   * ceiling the operator already accepted, so multiplying them out keeps the two
+   * from drifting when the run budget changes.
+   */
+  phaseMaxSpendUSD?: Partial<Record<string, number>>
+  /**
+   * Wall-clock ceiling per phase, in ms. The book's Timeout Guard is independent
+   * of step count on purpose: a loop that is making calls can outrun a step
+   * ceiling by spending its ceiling slowly.
+   */
+  phaseTimeoutMs?: number
+  /** Wall-clock ceiling for the whole run, in ms. */
+  timeoutMs?: number
+}
+
+/** The default run-artifact directory, relative to the workspace root. */
+export const DEFAULT_RUNS_DIR = '.feature-loop/runs'
+
+/** Every phase name the config may key, in order. One source of truth for the loader's error messages. */
+export const PIPELINE_PHASE_NAMES = ['research', 'prd', 'implement', 'test', 'ship'] as const
+
+/**
+ * Validate the `pipeline:` block, naming the first bad field.
+ *
+ * Same rule as `parseOptimizeConfig` and `parseDashboardConfig`: a `TypeError`
+ * whose message starts with the field path, thrown at load so a typo never
+ * becomes a mid-run no-op. The two rules it enforces beyond types are both about
+ * ceilings, because an unbounded pipeline is the failure the whole package
+ * exists to prevent and the cheapest moment to catch it is before the first step.
+ *
+ * @param config - the raw `pipeline:` value from the patch row.
+ * @returns the same block, for chaining.
+ * @throws TypeError naming the first bad field.
+ */
+export function parsePipelineConfig(config: PipelineConfig = {}): PipelineConfig {
+  if (typeof config !== 'object' || config === null || Array.isArray(config)) {
+    throw new TypeError(`pipeline must be a mapping of options, received ${JSON.stringify(config)}`)
+  }
+  if (config.enabled !== undefined && typeof config.enabled !== 'boolean') {
+    throw new TypeError(`pipeline.enabled must be true or false, received ${JSON.stringify(config.enabled)}`)
+  }
+  if (config.runsDir !== undefined && (typeof config.runsDir !== 'string' || config.runsDir.trim() === '')) {
+    throw new TypeError(`pipeline.runsDir must be a non-empty path string, received ${JSON.stringify(config.runsDir)}`)
+  }
+  if (config.testCommand !== undefined && (typeof config.testCommand !== 'string' || config.testCommand.trim() === '')) {
+    throw new TypeError(
+      `pipeline.testCommand must be a non-empty command string, received ${JSON.stringify(config.testCommand)} — `
+      + 'without it the test phase cannot pass its own exit gate',
+    )
+  }
+  const finitePositive = (value: number, field: string): void => {
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new TypeError(`${field} must be > 0, received ${String(value)} — an unlimited phase budget is not a budget`)
+    }
+  }
+  for (const [field, value] of Object.entries({
+    ...config.phaseMaxSteps ?? {},
+  })) {
+    if (!PIPELINE_PHASE_NAMES.includes(field as (typeof PIPELINE_PHASE_NAMES)[number])) {
+      throw new TypeError(
+        `pipeline.phaseMaxSteps has an unknown phase "${field}" — expected one of ${PIPELINE_PHASE_NAMES.join(', ')}`,
+      )
+    }
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+      throw new TypeError(`pipeline.phaseMaxSteps.${field} must be an integer >= 1, received ${JSON.stringify(value)}`)
+    }
+  }
+  for (const [field, value] of Object.entries({ ...config.phaseMaxSpendUSD ?? {} })) {
+    if (!PIPELINE_PHASE_NAMES.includes(field as (typeof PIPELINE_PHASE_NAMES)[number])) {
+      throw new TypeError(
+        `pipeline.phaseMaxSpendUSD has an unknown phase "${field}" — expected one of ${PIPELINE_PHASE_NAMES.join(', ')}`,
+      )
+    }
+    if (typeof value !== 'number') {
+      throw new TypeError(`pipeline.phaseMaxSpendUSD.${field} must be a number, received ${JSON.stringify(value)}`)
+    }
+    finitePositive(value, `pipeline.phaseMaxSpendUSD.${field}`)
+  }
+  for (const [name, value] of [
+    ['timeoutMs', config.timeoutMs],
+    ['phaseTimeoutMs', config.phaseTimeoutMs],
+  ] as const) {
+    if (value === undefined) continue
+    if (typeof value !== 'number') {
+      throw new TypeError(`pipeline.${name} must be a number, received ${JSON.stringify(value)}`)
+    }
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new TypeError(
+        `pipeline.${name} must be > 0, received ${String(value)} — a run with no wall-clock ceiling is a loop that `
+        + 'only stops when the money does',
+      )
+    }
+  }
+  return config
+}
