@@ -99,7 +99,8 @@ jobs:
           test/phases.test.ts test/phase-budget.test.ts test/pipeline.test.ts \
           test/questioner.test.ts \
           test/policy.test.ts test/refine.test.ts test/runlog.test.ts \
-          test/runner.test.ts test/tools.test.ts
+          test/runner.test.ts test/sandbox.test.ts test/tools.test.ts \
+          test/yolo.test.ts
 
   typecheck:
     name: typecheck (harness-free src/ modules)
@@ -160,4 +161,4 @@ jobs:
             src/phase-budget.ts src/pipeline.ts src/prompts.ts \
             src/questioner.ts src/refine.ts \
             src/review.ts src/routing.ts src/runlog.ts src/runner.ts src/signals.ts src/spec.ts \
-            src/tools.ts
+            src/sandbox.ts src/tools.ts src/yolo.ts

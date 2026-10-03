@@ -64,6 +64,9 @@ import { AttentionRouter, ReviewGate, judgeQuestion } from './review.ts'
 import type { GatePolicy } from './review.ts'
 import { detectSignals } from './signals.ts'
 import type { ReviewSignal, StepObservation } from './signals.ts'
+import { envelope } from './yolo.ts'
+import type { Sandbox } from './sandbox.ts'
+import { existsSync } from 'node:fs'
 import { parseDashboardConfig, pendingIdFor, startDashboard, DashboardState } from './dashboard.ts'
 import { createApprovalRegistry, clearWatcher, watcherActive } from './approvals.ts'
 import { createChangeEmitter } from './change-event.ts'
@@ -222,6 +225,16 @@ export interface FeatureLoopPolicy {
    * before this existed: a bounded loop with no phases.
    */
   pipeline?: PipelineRuntime
+  /**
+   * The absolute directory an unattended run may write to.
+   *
+   * Set by the sandbox when the pipeline starts; `undefined` under `auto` means
+   * the envelope denies every write, because containment with nothing to contain
+   * against is not containment. Present on the policy rather than in the
+   * pipeline runtime so the envelope can be asked about a write even on a
+   * deployment that has a YOLO gate and no phase machine yet.
+   */
+  worktreeRoot?: string
 }
 
 /**
@@ -235,6 +248,14 @@ export interface PipelineRuntime {
   run: PipelineRun
   /** Per-phase ceilings carved out of the run budget. */
   budget: PhaseAllocator
+  /**
+   * The run's worktree, when one was created.
+   *
+   * `undefined` under a supervised run — nothing is confined because nothing
+   * needs to be. Under YOLO it is the containment root the envelope compares
+   * every write against, and its absence is what makes every write deny.
+   */
+  worktree?: Sandbox
 }
 
 /**
@@ -319,8 +340,12 @@ function recordAgentMeta(state: DashboardState, agent: Agent | undefined): strin
  * - `ask`  — hand the decision to the approval channel (Web UI prompt). Fails
  *            closed to a refusal when no channel is mounted.
  * - `deny` — refuse outright, never prompting. For unattended and CI runs.
+ * - `auto` — YOLO: the three-way verdict collapses to allow/deny and the
+ *            decision moves to `yolo.ts`'s envelope, which has no `ask` at all.
+ *            Requires `worktreeRoot`, because containment with nothing to
+ *            contain against is not containment — without it every write denies.
  */
-export type GateMode = 'ask' | 'deny'
+export type GateMode = 'ask' | 'deny' | 'auto'
 
 /**
  * What a deployment may configure for the optimization half.
@@ -395,6 +420,16 @@ export interface CreatePolicyOptions {
    * bitten by once.
    */
   pipeline?: PipelineConfig & { enabled?: boolean }
+  /**
+   * The sandbox a YOLO run is confined to.
+   *
+   * Supplied by the caller — a CLI, a command, or the dashboard's Start button —
+   * rather than built here, because creating a worktree is a filesystem side
+   * effect and `createPolicy` is a constructor the test suite calls dozens of
+   * times. `createSandbox` refuses outright outside a git repository, so the
+   * two belong together but not in the same function.
+   */
+  worktree?: Sandbox
 }
 
 /**
@@ -432,7 +467,7 @@ export function createPolicy(options: CreatePolicyOptions): FeatureLoopPolicy {
   // half-configured pipeline can exist, and it degrades to "no pipeline".
   const pipeline = spec === undefined || options.pipeline?.enabled !== true
     ? undefined
-    : buildPipelineRuntime(spec, options.pipeline)
+    : buildPipelineRuntime(spec, options.pipeline, options)
   return {
     spec,
     budget,
@@ -447,6 +482,10 @@ export function createPolicy(options: CreatePolicyOptions): FeatureLoopPolicy {
     pending: undefined,
     lastConfidence: undefined,
     pipeline,
+    // Published at the top level as well as on the runtime, because the
+    // envelope is asked about tool calls — which can happen on a deployment
+    // that has a YOLO gate and no phase machine yet.
+    worktreeRoot: options.worktree?.worktreeRoot,
   }
 }
 
@@ -460,7 +499,11 @@ export function createPolicy(options: CreatePolicyOptions): FeatureLoopPolicy {
  *   typo here would otherwise be a ceiling that is never consulted, which is the
  *   same class of defect as the spend metering gap this package once had.
  */
-function buildPipelineRuntime(spec: LoopSpec, config: PipelineConfig & { enabled?: boolean }): PipelineRuntime {
+function buildPipelineRuntime(
+  spec: LoopSpec,
+  config: PipelineConfig & { enabled?: boolean },
+  options: CreatePolicyOptions,
+): PipelineRuntime {
   const perPhase = config.phaseMaxSpendUSD ?? {}
   for (const key of Object.keys(perPhase)) {
     if (!PIPELINE_PHASE_NAMES.includes(key as (typeof PIPELINE_PHASE_NAMES)[number])) {
@@ -482,7 +525,7 @@ function buildPipelineRuntime(spec: LoopSpec, config: PipelineConfig & { enabled
   // than at the first step — a pipeline that sat idle for a minute must not
   // spend a minute of the research phase's wall clock.
   budget.enterPhase(run.state as PipelinePhase)
-  return { run, budget }
+  return { run, budget, worktree: options.worktree }
 }
 
 /**
@@ -632,6 +675,11 @@ export function gateForTool(
   policy: FeatureLoopPolicy,
   toolName: string,
 ): GateVerdict {
+  // YOLO short-circuits the gate entirely, and it does so *before* the
+  // reversibility lookup: under `auto` there is nothing to ask a human about,
+  // so the question is not "which class is this tool" but "is this call inside
+  // the envelope at all". `gateEnforce` answers that with the arguments in hand.
+  if (policy.gateMode === 'auto') return { kind: 'proceed' }
   if (policy.gate === undefined) return { kind: 'proceed' }
   const reversibility = resolveReversibility(toolName, policy.spec?.actuator)
   const decision = policy.gate.check(toolName, reversibility, policy.lastConfidence)
@@ -646,6 +694,39 @@ export function gateForTool(
 }
 
 /**
+ * Whether the operator has armed the kill switch.
+ *
+ * The sentinel is a file, checked per call rather than held in memory, for two
+ * reasons. It works across processes — the dashboard's Stop button and a human's
+ * `touch` are the same action, with no IPC to go wrong. And it is checked on
+ * every tool call rather than on a timer, so a stop lands within one call rather
+ * than one poll interval, which is the difference between the seconds App B #75
+ * asks for and the minutes a cached flag would give.
+ *
+ * It lives inside the run's worktree because YOLO requires one — a run with no
+ * worktree has no writes to stop anyway, so `undefined` correctly answers false
+ * rather than inventing a root.
+ *
+ * @param policy - the agent's policies.
+ * @returns true when the sentinel exists in the run's worktree.
+ */
+function stopArmed(policy: FeatureLoopPolicy): boolean {
+  const root = policy.worktreeRoot
+  if (root === undefined) return false
+  try {
+    return existsSync(join(root, STOP_SENTINEL))
+  } catch {
+    // An unreadable workspace denies nothing by itself — the envelope is the
+    // boundary, and a stat failure here would turn a filesystem quirk into a
+    // silent halt.
+    return false
+  }
+}
+
+/** The sentinel's path, relative to a workspace root. */
+export const STOP_SENTINEL = '.feature-loop/STOP'
+
+/**
  * The gate's verdict for one tool call.
  *
  * `proceed` dispatches, `ask` routes to the deployment's approval channel, and
@@ -655,6 +736,50 @@ export type GateVerdict =
   | { kind: 'proceed' }
   | { kind: 'ask', reason: string }
   | { kind: 'deny', reason: string }
+
+/**
+ * The YOLO verdict for one tool call, with its arguments in hand.
+ *
+ * A separate entry point from {@link gateForTool} because the envelope needs the
+ * parsed arguments — the command line, the target path — and the gate's
+ * reversibility lookup deliberately does not, so folding the two would either
+ * pass arguments the gate ignores or make the supervised path carry a shape it
+ * has no use for.
+ *
+ * Under any other `gateMode` this defers to the gate unchanged, so a deployment
+ * that flips `auto` back to `ask` gets the old behaviour with no residue.
+ *
+ * @param policy - the agent's policies.
+ * @param toolName - the tool about to run.
+ * @param args - the call's parsed arguments.
+ * @param stopArmed - whether the operator's stop sentinel is set.
+ * @returns proceed or deny. Never `ask` — that is what YOLO means.
+ */
+export function gateEnforce(
+  policy: FeatureLoopPolicy,
+  toolName: string,
+  args: unknown,
+  stopArmed: boolean,
+): GateVerdict {
+  if (policy.gateMode !== 'auto') return gateForTool(policy, toolName)
+  if (stopArmed) {
+    // Checked at the tool boundary, not only at the step boundary, so a stop
+    // lands before the next *call* rather than at the start of the next step —
+    // the difference between a loop that stops mid-minute and one that stops
+    // mid-hour.
+    return { kind: 'deny', reason: `YOLO STOPPED — ${killText(policy.pipeline?.run.state ?? 'unknown')}` }
+  }
+  const decision = envelope({ tool: toolName, args, worktreeRoot: policy.worktreeRoot })
+  return decision.kind === 'deny'
+    ? { kind: 'deny', reason: `YOLO ENVELOPE — ${decision.reason}` }
+    : { kind: 'proceed' }
+}
+
+/** The kill switch's reason line, phrased for the tool boundary. */
+function killText(state: string): string {
+  return `the operator's stop sentinel is set — halting the run while in "${state}". `
+    + 'Remove .feature-loop/STOP to resume.'
+}
 
 /**
  * The slice of the agent's session log the spend meter reads, declared
@@ -1475,7 +1600,11 @@ export function apply(
       // parsed arguments are both known. The step's outcome is filled in below.
       policy.pending = { tool: toolName, argsKey: argsKey(rawArgs), error: false }
 
-      const gate = gateForTool(policy, toolName)
+      // YOLO is answered here rather than by `gateForTool` because the envelope
+      // needs the parsed arguments: the command line, the target path. A gate
+      // that only sees a tool name cannot tell `git push origin fl/x` from
+      // `git push origin main`, and that distinction is the entire boundary.
+      const gate = gateEnforce(policy, toolName, rawArgs, stopArmed(policy))
       if (gate.kind === 'proceed') return next()
 
       // The call is blocked either way, and the call is *answered* rather than

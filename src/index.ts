@@ -73,8 +73,15 @@ export interface Config {
    *            than `deny`.
    * - `deny` — refuse outright without prompting. Use for unattended and CI
    *            runs where no human is watching.
+   * - `auto` — **YOLO**. The three-way verdict collapses to allow/deny and the
+   *            decision moves to the envelope in `yolo.ts`: reads, writes inside
+   *            the run's worktree, pushing its own branch and opening a PR are
+   *            allowed; pushing a protected branch, force-push, merge, publish,
+   *            deploy, and touching a credential are **denied, never asked**.
+   *            Requires a worktree — without one there is nothing to contain
+   *            writes against, so they all deny.
    */
-  gateMode?: 'ask' | 'deny'
+  gateMode?: 'ask' | 'deny' | 'auto'
   /**
    * The HITL approval dashboard: a loopback web page for answering this loop's
    * approval requests and watching the run. On by default — omitting the block
@@ -143,7 +150,7 @@ export const Config: z<Config> = z.object({
   checkpointAtStep: z.number(),
   judgeThreshold: z.number(),
   gatePolicies: z.any(),
-  gateMode: z.union([z.const('ask'), z.const('deny')]),
+  gateMode: z.union([z.const('ask'), z.const('deny'), z.const('auto')]),
   dashboard: z.any(),
   optimize: z.any(),
   pipeline: z.any(),
