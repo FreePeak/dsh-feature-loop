@@ -55,12 +55,16 @@ import ApprovalService, { type ApprovalOutcome, type ApprovalRequest } from '@de
 import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
 
 // The real plugin under test, resolved through this repo's package export.
-// `test/integration/run.sh` rewrites ONLY these two import specifiers when it
+// `test/integration/run.sh` rewrites ONLY these three import specifiers when it
 // stages this file into the harness tree — every other import (including the
 // dashboard types, re-exported through `plugin.ts`) must ride along with them.
 import { apply as applyFeatureLoop } from '../../src/plugin.ts'
 import type { DashboardSnapshot } from '../../src/plugin.ts'
 import type { LoopSpec } from '../../src/spec.ts'
+// The watcher's own module, for the reason in `featureLoopSetup`'s `watched`:
+// the stamp must land in the SAME module instance the plugin reads, which means
+// the same specifier run.sh rewrites.
+import { clearWatcher, noteWatcher } from '../../src/approvals.ts'
 
 const testToolSignal = new AbortController().signal
 
@@ -175,8 +179,37 @@ async function featureLoopSetup(options: {
   gateMode?: 'ask' | 'deny'
   gatePolicies?: Record<string, 'auto' | 'auto-if-confident' | 'always-approve'>
   dashboard?: boolean
+  /**
+   * `dashboard.answers`.
+   *
+   * `false` is the documented observe-only mode and it is the one these cases
+   * need: it is what makes the registry DECLINE the claim, so the harness's
+   * other answerers — the composer panel, here the test's own listener — still
+   * see the ask. With the registry claiming, `next()` is never reached and the
+   * call parks for `answerTimeoutMs` (10 minutes by default) instead of
+   * failing, which is why these three cases HUNG rather than errored when they
+   * were given only a watcher (measured 2026-10-03).
+   */
+  dashboardAnswers?: boolean
   explainer?: { explain: (input: unknown) => Promise<string | undefined> }
+  /**
+   * Whether a front end is watching — the one thing §1be made load-bearing.
+   *
+   * The plugin now refuses an unwatched ask ITSELF, so every case that asserts
+   * an ANSWERER was consulted has to be a case where one could be. Stated on
+   * each call and defaulted to false, because the watcher is module-global with
+   * a 15s TTL: inheriting it from the previous test made three cases hang for
+   * the full vitest timeout, which reports "timed out" and names no cause.
+   *
+   * The stamp goes in through the SAME absolute path the plugin imports, which
+   * is why `run.sh` rewrites this import alongside plugin.ts and spec.ts — two
+   * specifiers for one module are two module instances, and a stamp on the
+   * wrong one is invisible to the plugin.
+   */
+  watched?: boolean
 } = {}): Promise<{ ctx: Context, dispose: () => void, dashboard?: DashboardProbe }> {
+  if (options.watched === true) noteWatcher()
+  else clearWatcher()
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(SessionStore)
@@ -206,7 +239,9 @@ async function featureLoopSetup(options: {
       gateMode: options.gateMode ?? 'ask',
       gatePolicies: options.gatePolicies ?? {},
       ...options.explainer === undefined ? {} : { explainer: options.explainer as never },
-      ...(options.dashboard === true ? { dashboard: { enabled: true, port: 0, standalone: true } } : {}),
+      ...(options.dashboard === true
+        ? { dashboard: { enabled: true, port: 0, standalone: true, answers: options.dashboardAnswers ?? true } }
+        : options.dashboardAnswers === false ? { dashboard: { answers: false } } : {}),
     })
     if (options.dashboard === true) {
       for (let attempt = 0; attempt < 300 && line === undefined; attempt++) {
@@ -230,7 +265,9 @@ async function featureLoopSetup(options: {
 
 describe('feature-loop gate inside a real DSH pipeline', () => {
   it('APPROVE: allowed-once lets the gated write run', async () => {
-    const { ctx } = await featureLoopSetup()
+    // `watched: true`: this case is about what an answerer's GRANT does, so
+    // there has to BE somebody to grant (§1be).
+    const { ctx } = await featureLoopSetup({ watched: true, dashboardAnswers: false })
     const seen: ApprovalRequest[] = []
     ctx.on('approval/request', (req) => {
       seen.push(req)
@@ -260,7 +297,8 @@ describe('feature-loop gate inside a real DSH pipeline', () => {
   })
 
   it('REJECT: a human refusal stops the write and tells the model', async () => {
-    const { ctx } = await featureLoopSetup()
+    // Same: a refusal has to come from somebody, not from the gate.
+    const { ctx } = await featureLoopSetup({ watched: true, dashboardAnswers: false })
     ctx.on('approval/request', () => Promise.resolve<ApprovalOutcome>('rejected'))
 
     const result = await ctx.tools.execute({
@@ -287,12 +325,17 @@ describe('feature-loop gate inside a real DSH pipeline', () => {
       signal: testToolSignal,
     })
 
-    // This is the safety property: `ask` with no channel is exactly as safe as
-    // `deny`. It must never silently proceed.
+    // This is the safety property: `ask` with nobody watching is exactly as
+    // safe as `deny`. It must never silently proceed — and since KNOWN-ISSUES
+    // §1be the refusal is the PLUGIN's, carrying the gate reason plus what is
+    // actually true. The harness's own sentence ("no approval channel is
+    // available") reached the model as a sandbox objection, so pinning it here
+    // would have pinned the confusing version.
     expect(result.isError).toBe(true)
     expect(result.content[0]).toMatchObject({
-      text: 'Error: tool "write_file" requires approval, but no approval channel is available',
+      text: expect.stringContaining('nobody is watching'),
     })
+    expect(String((result.content[0] as { text: string }).text)).toContain('gateMode: deny')
   })
 
   it('UNATTENDED: gateMode deny refuses without ever consulting the answerer', async () => {
@@ -340,7 +383,12 @@ describe('feature-loop gate inside a real DSH pipeline', () => {
   })
 
   it('DASHBOARD DELEGATE: enabled with no tab, the composer answerer still wins', async () => {
-    const { ctx, dispose, dashboard } = await featureLoopSetup({ dashboard: true })
+    // No tab is the case: the dashboard may not claim (answers off) and there
+    // is nobody to click, so `next()` must reach the composer. Both halves are
+    // stated — a claim parks this call for 10 minutes instead of failing it.
+    const { ctx, dispose, dashboard } = await featureLoopSetup({
+      dashboard: true, watched: true, dashboardAnswers: false,
+    })
     try {
       expect(dashboard).toBeDefined()
       let composerAsked = 0
@@ -458,8 +506,10 @@ describe('feature-loop gate inside a real DSH pipeline', () => {
       })
 
       expect(result.isError).toBe(true)
+      // Same as FAIL CLOSED above: the refusal is the plugin's (KNOWN-ISSUES
+      // §1be), not the harness's fail-closed sentence.
       expect(result.content[0]).toMatchObject({
-        text: 'Error: tool "write_file" requires approval, but no approval channel is available',
+        text: expect.stringContaining('nobody is watching'),
       })
       expect((await apiState(dashboard!)).pending).toHaveLength(0)
     } finally {
