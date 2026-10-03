@@ -1,9 +1,9 @@
 # Release pipeline for @freepeak/dsh-feature-loop.
 #
 # On every push to main: compute the next semantic version from the commits
-# since the last `v*` tag, bump package.json, tag, push, and create a GitHub
-# release with generated notes. `workflow_dispatch` re-evaluates the tip of
-# main (also the retry path if a run failed after pushing its tag).
+# since the last `v*` tag, bump package.json, tag, push, publish to npm, and
+# create a GitHub release with generated notes. `workflow_dispatch` re-evaluates
+# the tip of main (also the retry path if a run failed after pushing its tag).
 #
 # Bump rules — conventional-commit subjects; anything unrecognised is a patch:
 #   feat!: / BREAKING CHANGE:  major   (minor while 0.x — semver 0.y.z)
@@ -19,6 +19,9 @@
 #    unreleased commits, and no-ops instead of racing it to the same version.
 #  - A push made with the default GITHUB_TOKEN does not re-trigger workflows,
 #    so the version-bump commit cannot loop back into this workflow.
+#  - The publish step asks npm whether the version exists rather than trusting
+#    the tag, because a run that fails between tagging and publishing leaves a
+#    tag with no package behind it — and a retry must not E403 on it.
 #
 # If branch protection rejects github-actions[bot], the run fails at the
 # `git push` step: allow the bot to bypass, or point the push at a PAT.
@@ -32,6 +35,9 @@ on:
 
 permissions:
   contents: write
+  # `--provenance` signs the tarball with this run's OIDC identity. Without the
+  # permission npm rejects the flag, so it is not optional.
+  id-token: write
 
 # Two quick merges queue rather than race on tags and version numbers.
 concurrency:
@@ -40,7 +46,7 @@ concurrency:
 
 jobs:
   release:
-    name: semantic version + GitHub release
+    name: semantic version + npm publish + GitHub release
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -52,6 +58,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          # Writes .npmrc pointing at registry.npmjs.org with NODE_AUTH_TOKEN.
+          # No registry-url line means no auth, and `npm publish` then fails
+          # with E401 on a package the run is otherwise ready to ship.
+          registry-url: 'https://registry.npmjs.org'
 
       - name: Compute next version
         id: ver
@@ -119,3 +129,48 @@ jobs:
           git tag -a "v$VERSION" -m "release v$VERSION"
           git push origin HEAD:main "refs/tags/v$VERSION"
           gh release create "v$VERSION" --title "v$VERSION" --generate-notes
+
+      # The GitHub release is not the package. Everything in this file until
+      # here produced a TAG; without this step the README's npm badge points at a
+      # version that was never published, and the SETUP guide's install line
+      # cannot work for anyone but the author.
+      #
+      # `--provenance` with the id-token permission is what lets npm tie the
+      # tarball to this workflow run, which is the whole reason to publish from
+      # CI rather than from a laptop. `prepack` builds `lib/` at pack time, so the
+      # tarball cannot be the empty-lib one §1 shipped once — asserted below
+      # rather than assumed, because that defect was silent.
+      - name: Publish to npm
+        id: publish
+        if: steps.ver.outputs.skip == 'false'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # Each step gets its own env: the version is computed in a PREVIOUS
+          # step, so without this `set -u` fails on an unset VERSION — which is
+          # what the first draft of this step did.
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # Already published: a retried run, or a tag that predates this
+          # step. `npm view` is the authority, not the git tag.
+          if npm view "@freepeak/dsh-feature-loop@$VERSION" version >/dev/null 2>&1; then
+            echo "version $VERSION is already on npm — nothing to do"
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # The defect this file keeps needing to not repeat: a tarball with no
+          # lib/ passes `npm pack` and fails at the consumer's import. Check the
+          # TARBALL, not the working tree.
+          tarball=$(npm pack --silent)
+          count=$(tar -tzf "$tarball" | grep -c '^package/lib/' || true)
+          rm -f "$tarball"
+          if [ "$count" -lt 10 ]; then
+            echo "::error::the tarball carries $count lib/ entries; refusing to publish"
+            exit 1
+          fi
+          echo "tarball carries $count lib/ entries"
+
+          npm publish --provenance --access public
+          echo "published=true" >> "$GITHUB_OUTPUT"
