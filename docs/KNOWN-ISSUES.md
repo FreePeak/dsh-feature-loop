@@ -301,6 +301,58 @@ watcher is process-global with a TTL, so the new case passed alone and failed
 in the suite until both `mount` helpers stated `noteWatcher()`/`clearWatcher()`
 explicitly rather than inheriting whatever the previous test left.
 
+### 1be. The harness's fail-closed told the model the wrong thing
+
+**Observed:** with `gateMode: ask` and no front end open, a gated `write`
+came back as
+
+```
+tool "write" requires approval, but no approval channel is available
+```
+
+which the model then reported as **the sandbox denying the write** — and spent
+its remaining budget reasoning about whether `Bash` was a legitimate
+alternative, before producing no work at all. The refusal was correct; the
+sentence it came back in was not.
+
+**Why:** that string is the harness's (`packages/core/tools/src/index.ts`,
+the `unavailable` branch of the approval outcome), and from there it is
+accurate — the harness genuinely has no channel. It is answering for itself,
+not for the deployment. The model receives it as a *tool* verdict, so it reads
+"the filesystem objected" and goes looking for a narrower tool.
+
+This plugin can see the answerer directly. `noteWatcher` is called by every
+`/api/state` poll and every `remote.live()` — the in-UI page and the standalone
+dashboard both heartbeat through it — so `watcherActive()` is a 15-second TTL
+fact, not a prediction. §1bb fixed the headless profile by telling operators to
+set `gateMode: deny`; that is the right config and it is also a documentation
+answer to a defect this plugin can answer properly.
+
+**Fix:** `gateForTool` now refuses an `ask` itself when no watcher is active,
+and the refusal says what is true and what to do:
+
+```
+REVIEW REQUESTED (policy): write: irreversible is always approved by a human —
+nobody is watching: this run has no open dashboard or composer, so no human can
+answer an approval. Open the Feature Loop page or set gateMode: deny to refuse
+up front.
+```
+
+Nothing changes when a page IS open: the watcher is a TTL-kept fact, and an ask
+raised within 15s of a page closing still routes as an ask.
+
+**Verified:** unit tests both directions (watcher on → `ask`, watcher off →
+`deny` with both phrases in the reason), and on the wire — the same headless
+task that produced the harness sentence now produces the plugin's, verbatim,
+with the file absent.
+
+**A trap this change walked into, and the tests had to be fixed for it.** The
+watcher is process-global with a TTL, so it leaks between tests in a file. Four
+existing tests asserted `ask` and started passing or failing depending on which
+test ran first — and one of them **passed when run alone** and failed in the
+suite. Both test helpers now state the watcher explicitly (`noteWatcher()` or
+`clearWatcher()`) rather than inheriting it.
+
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
 **Observed:** `bash scripts/make-profile.sh webz --port 4596` printed
