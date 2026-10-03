@@ -370,6 +370,36 @@ paraphrase of the refusal rather than the refusal itself. The model reports
 "approval policy: ask, no answerer", not "nobody is watching". Grepping for my
 own wording proved nothing; the table above greps for behaviour.
 
+### 1bg. A clean clone cannot typecheck `src/plugin.ts`, and the script said why — wrongly
+
+**Observed:** `git clone` + `npm install` + `make check` is green in a bare
+checkout — 306 tests over CI's 21 files, every drift check, the exact CI
+typecheck command. The six suites that import `src/plugin.ts` do not run there,
+and neither does `tsc` over `plugin.ts`. Both are excluded with a written
+reason, so both are expected, and nothing claims otherwise.
+
+**Why it is still worth writing down:** `scripts/typecheck.sh`'s header said the
+whole-`src/` check works "from a harness checkout's node_modules **or this
+repo's own** (its devDependencies carry dsh-llm/dsh-tools, which is what
+Dependabot's majors actually break)". That has never been true. `devDependencies`
+carries exactly one `@deepseek-ai/*` package — `dsh-typert-protocol` — and adding
+the others fails `ERESOLVE` against the harness's own peer graph:
+
+```
+dsh-agent@0.2.0-rc.2  wants dsh-invariants@0.2.0-rc.2
+dsh-brand@0.0.1-rc.1  wants dsh-invariants@^0.0.1-rc.1
+```
+
+So the premise was false AND unfixable in `package.json`, and the comment named
+a mechanism ("Dependabot's majors") that pointed at the wrong file. A developer
+reading it would spend an hour adding dependencies that cannot resolve.
+
+**Verified** by trying, on this branch, in this order: cordis 0.4.4 → ERESOLVE
+(`dsh-agent` wants cordis 4.0.2); cordis 4.0.4 + dsh-agent 0.2.0-rc.2 → ERESOLVE
+(the `dsh-invariants` conflict above). The header now states the one place that
+works, names the two measured conflicts, and says what the CI list covers
+instead.
+
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
 **Observed:** `bash scripts/make-profile.sh webz --port 4596` printed

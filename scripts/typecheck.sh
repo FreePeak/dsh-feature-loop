@@ -6,9 +6,16 @@
 #
 #   whole src/   tsconfig.json covers every module, `src/plugin.ts` included.
 #                plugin.ts imports four @deepseek-ai/* packages, so this needs
-#                them installed — from a harness checkout's node_modules or this
-#                repo's own (its devDependencies carry dsh-llm/dsh-tools, which is
-#                what Dependabot's majors actually break).
+#                them installed — and the ONLY place that works is a harness
+#                checkout's node_modules. This comment used to claim the repo's
+#                own devDependencies carried dsh-llm/dsh-tools "which is what
+#                Dependabot's majors actually break"; they never have, and
+#                adding them fails ERESOLVE against the harness's own peer graph
+#                (dsh-agent 0.2.0-rc.2 wants dsh-invariants@0.2.0-rc.2, which
+#                dsh-brand@0.0.1-rc.1 still wants at ^0.0.1-rc.1 — measured
+#                2026-10-03). So the premise was false AND unfixable in
+#                package.json, and a developer reading the comment would waste
+#                an hour discovering it. Hence: harness checkout, or CI's list.
 #   CI's list     the harness-free closure, byte-for-byte the command in
 #                .github/workflows/ci.yml. Reads as one source rather than a
 #                second copy that can drift; `check-typecheck-list.mjs` fails when
