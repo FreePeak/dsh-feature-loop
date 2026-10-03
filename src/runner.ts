@@ -148,6 +148,16 @@ export interface LoopRunResult {
   outcome: Outcome
   steps: number
   spentUSD: number
+  /**
+   * Spend per route, from the same ledger `spentUSD` totals.
+   *
+   * Present because a record that omits it is not a record of absence: the
+   * optimizer reads `byRoute` to choose the cheapest rung, and the demo path
+   * wrote `byRoute: {}` beside a real `costUSD`, so a run with spend taught the
+   * optimizer that every route was free. One field, from the object that
+   * already has the number.
+   */
+  byRoute: Readonly<Record<string, { steps: number; usd: number }>>
   reviews: number
   reviewFraction: number
   signals: ReviewSignal[]
@@ -534,6 +544,7 @@ export async function runLoop(options: LoopRunnerOptions): Promise<LoopRunResult
     outcome,
     steps: Math.min(step, spec.maxSteps),
     spentUSD,
+    byRoute: budget.snapshot().byRoute,
     reviews: stats.reviews,
     reviewFraction: stats.fraction,
     signals: allSignals,

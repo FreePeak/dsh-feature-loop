@@ -28,8 +28,19 @@ const repo = join(dirname(fileURLToPath(import.meta.url)), '..')
 const file = join(repo, 'docs/KNOWN-ISSUES.md')
 const text = readFileSync(file, 'utf8')
 
+/**
+ * A section letter: `1a` and its longer descendants `1bb`.
+ *
+ * ONE character here made the check blind to a third of the file. It matched
+ * `1[a-z]`, so the eight `§1bb`…`§1bi` entries had no headings, no index rows
+ * and no validated cross-references — and the check still printed "21 sections,
+ * index and cross-references agree". The file's own §1t records a duplicate
+ * `1i`; this was the same drift one letter wider, and just as silent.
+ */
+const LETTER = '1[a-z]{1,2}'
+
 /** `### 1a. Title`, the section headings. */
-const sections = [...text.matchAll(/^### (1[a-z])\. (.+)$/gm)]
+const sections = [...text.matchAll(new RegExp(`^### (${LETTER})\\. (.+)$`, 'gm'))]
 const titles = new Map()
 let failed = false
 
@@ -46,7 +57,8 @@ for (const [, letter, title] of sections) {
 }
 
 const rows = new Map(
-  [...text.matchAll(/^\| (1[a-z]) \| (.+?) \|$/gm)].map(([, letter, label]) => [letter, label]),
+  [...text.matchAll(new RegExp(`^\\| (${LETTER}) \\| (.+?) \\|$`, 'gm'))]
+    .map(([, letter, label]) => [letter, label]),
 )
 
 for (const letter of titles.keys()) {
@@ -64,7 +76,7 @@ for (const letter of rows.keys()) {
 
 // Every `§1x` in the prose must resolve, or the sentence points nowhere.
 const prose = text.replace(/^\|.*\|$/gm, '')
-for (const match of prose.matchAll(/§(1[a-z])/g)) {
+for (const match of prose.matchAll(new RegExp(`§(${LETTER})`, 'g'))) {
   if (!titles.has(match[1])) {
     console.error(`KNOWN-ISSUES: a cross-reference to §${match[1]}, which does not exist.`)
     failed = true

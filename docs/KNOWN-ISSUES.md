@@ -58,6 +58,15 @@ rather than a list of letters:
 | 1s | five of six detectors reach a DSH deployment; the sixth cannot |
 | 1t | KNOWN-ISSUES had two sections numbered 1i, and nothing noticed |
 | 1u | the runbook's sandbox is a throwaway copy, and never said so |
+| 1bb | The headless profile asked a question nobody was there to answer |
+| 1bc | The judge and the brief asked a model nothing here had ever run |
+| 1bd | Eight profiles were running bytes nobody could name |
+| 1be | The harness's fail-closed told the model the wrong thing |
+| 1bf | The settings page's claim was true, and I checked it anyway |
+| 1bg | A clean clone cannot typecheck `src/plugin.ts`, and the script said why — wrongly |
+| 1bh | A green integration run was partly a property of this machine |
+| 1bi | The README's first command failed on a fresh clone |
+| 1bj | The check that guards §1t could not see a third of the file |
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
 
@@ -451,6 +460,93 @@ package, and the real one resolves two directories up.
 
 Verified both ways: the worktree still runs 11/11, and the clone now stops at
 the precondition with a sentence naming the missing package.
+
+### 1bi. The README's first command failed on a fresh clone
+
+**Observed:** `git clone`, `npm install`, then the command the README opens with:
+
+```
+$ node --experimental-strip-types --test test/*.test.ts
+# tests 373
+# pass 367
+# fail 6
+```
+
+Six failures, all `ERR_MODULE_NOT_FOUND: Cannot find package
+'@deepseek-ai/dsh-llm'`. The same command in a worktree — where the harness
+packages happen to resolve by directory walk, per §1bh — passes 454/454.
+
+**Why:** the glob includes six suites that import `src/plugin.ts`, and
+`plugin.ts` reaches four `@deepseek-ai/*` packages the plugin declares as
+OPTIONAL peers. A clean install therefore cannot run them, by design: the
+deployment supplies them, and `.npmrc` sets `auto-install-peers=false` so the
+install does not fail trying.
+
+That is all correct, and it was still wrong as the FIRST thing a reader runs.
+The comment above it said "no network, no model call — the policy layer is pure",
+which is true of the 367 and false of the six, and `check-test-list.mjs` had
+already written down which twenty-one files need no harness. The README simply
+was not reading it.
+
+**Fix:** the quick start now says `make ci-tests` — "exactly what CI runs" —
+and says plainly, right below, why not the glob and what the six failures mean.
+Verified by pasting the new README into a fresh clone and running its first
+command: green.
+
+**The same class of defect one layer down, in the demo's own run record.** Every
+pass `refine.ts` records wrote `byRoute: {}` next to a real `costUSD`, with a
+comment saying the loop result "does not carry" per-route spend. It did — the
+ledger that produces `spentUSD` was already carrying it, one call away in the
+same function. And the field is not decorative: `src/optimizer.ts` reads
+`byRoute` to choose the cheapest rung, so every demo-shaped run with spend was
+teaching the optimizer that every route is free. Proved on the wire:
+
+```
+$ bash demo/run.sh --judge none
+  outcome goal-met · 6 steps · $0.004824
+  record  byRoute {"onegw/execution": {"steps": 6, "usd": 0.00482385}}   # was {}
+```
+
+`LoopRunResult` now carries it, `refine.ts` reads it instead of a literal, and a
+test fails if `byRoute` goes back to empty beside a real `costUSD` (reverted the
+one-line change and watched it go red).
+
+**The pattern across all three:** a missing value is written down as a zero, and
+the zero is accepted because nothing reads it *at the moment it is written*. It
+is read later, by something that trusts it.
+
+### 1bj. The check that guards §1t could not see a third of the file
+
+**Observed:** `node scripts/check-known-issues.mjs` printed
+
+```
+known-issues: 21 sections, index and cross-references agree
+```
+
+on a file with **29** sections. The eight entries numbered `§1bb`…`§1bi` — a
+third of everything recorded here, and every finding this session produced —
+had no headings, no index rows and no validated cross-references, as far as the
+check was concerned.
+
+**Why:** every pattern in the script was `1[a-z]` — ONE letter. It was written
+for §1t, the duplicate `§1i`, and that fix was correct at the time; the `1b`
+sub-family arrived later, one commit at a time, and the regexes were never
+widened. The failure is the file's own recurring shape (§1t, §1u, §1be, this):
+a check written for one instance, and a second instance arriving one character
+away from where the check could see it.
+
+Worse than blind: it reported SUCCESS. "21 sections … agree" is a sentence that
+reads as an audit and is not one.
+
+**Fix:** one `LETTER = '1[a-z]{1,2}'` used by all three patterns, and index rows
+for the eight `1b` sections — generated from each section's own heading, so a row
+cannot drift from the title it claims to list.
+
+**Verified** both ways, because a check that has just been fixed is exactly the
+check that gets believed. Renumbering `§1bi` to `§1bh` — the §1t failure —
+exits 1 naming both sections. Repointing an index row at a letter with no
+section exits 1. And the count it prints went from 21 to 29, which is the
+number it should have been saying all along.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
