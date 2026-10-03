@@ -60,6 +60,7 @@ rather than a list of letters:
 | 1br | A typical run costs $0.00 and takes 0 steps |
 | 1bs | The human-escalation alert that could never fire |
 | 1bt | Zero milliseconds, round-trip |
+| 1bu | The speed axis, empty since the day it was written |
 
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
@@ -986,6 +987,50 @@ goes back to a literal: the record test asserts `wallMs === undefined` and
 put a zero in the wall axis and that one timed run is enough to name the kind;
 the empty-history test asserts no kind is declared. Reverting `wallMs: 0` fails
 the first.
+
+### 1bu. The speed axis, empty since the day it was written
+
+**Observed:** §1bt made `wallMs` and `latencyKind` optional, because the harness
+path has no seam that times anything. That was true — and it was also only half
+the finding. The **CLI runner** does time every step, and has since it was
+written:
+
+```ts
+const callStartedAt = performance.now()
+// … the model call …
+const latencyMs = performance.now() - callStartedAt
+history.push({ index: step, …, latencyMs })
+```
+
+That measurement went onto `StepObservation` and **stopped there**. `runLoop` did
+not return it, so `refine.ts` — which assembles a `RunRecord` from a
+`LoopRunResult` — had nothing to write and wrote `stepLatencyMs: []`. The speed
+axis has been empty on the one path that measures it, for as long as both have
+existed.
+
+**Why it survived §1bt.** §1bt asked "which fields are empty or constant on the
+harness path" and the answer was honest for that path. It did not ask the
+follow-up: *is there a path where they are not?* There was.
+
+**Fix.** `LoopRunResult` carries `stepLatencyMs`, `wallMs` and `latencyKind`.
+The samples come from a `callLatencies` array pushed inside the timing window —
+**not** from `history`, because `history` only grows when a step dispatches a
+tool, and a model-only step would then report "no measurement" for a step that
+was measured. `wallMs` is one clock started before the run's first step.
+
+**Verified, on a real run.** `bash demo/run.sh`:
+
+```
+stepLatencyMs [1343, 2261, 3256, 2306, 1470, 8618]   ms
+wallMs        62314 ms
+latencyKind   round-trip
+```
+
+That is the first record in this repo's history with a populated speed axis, and
+`summarize` now reports `latencyMs p50 2261 / p95 8618 ms` over a history where
+it previously reported 0. Two tests, each failing if its half is reverted: one
+drives `runLoop` end to end and asserts the samples are real durations, one
+asserts the record carries them.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 

@@ -251,9 +251,12 @@ export async function runRefined(options: RefineOptions): Promise<RefinedResult>
         // the loop prices before it counts — an unpriced route throws there,
         // so it cannot reach this record.
         byRoute: { ...result.byRoute },
-        stepLatencyMs: [],
-        wallMs: 0,
-        latencyKind: 'round-trip',
+        // The measured values, not empties: `runLoop` times every step and the
+        // whole run, and used to drop both at the result boundary — so every
+        // record the CLI wrote had an empty speed axis (§1bt).
+        stepLatencyMs: [...result.stepLatencyMs],
+        wallMs: result.wallMs,
+        latencyKind: result.latencyKind,
         signals: result.signals.map(s => ({ kind: s.kind, severity: s.severity })),
         judgeScores,
         reviewFraction: result.reviewFraction,
