@@ -57,6 +57,7 @@ rather than a list of letters:
 | 1r | a helper whose doc claimed a detector was impossible, tested by the helper |
 | 1s | five of six detectors reach a DSH deployment; the sixth cannot |
 | 1t | KNOWN-ISSUES had two sections numbered 1i, and nothing noticed |
+| 1u | the runbook's sandbox is a throwaway copy, and never said so |
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
 
@@ -1154,6 +1155,44 @@ entries" instead.
 The index the check maintains is the table at the top of this section, so the map
 a reader uses and the map the check verifies are the same rows rather than two
 things that can disagree.
+
+### 1u. The walkthrough's sandbox keeps the fix on purpose, and neither guide said so
+
+§1p made `bash demo/run.sh` restore the file the loop edits, so a run leaves the
+repository's tree clean. Verified here by running it: `git status` empty, the only
+other artefact the gitignored `.feature-loop/runs.jsonl`.
+
+**But the docs' own walkthrough does not run the demo — it copies it:**
+
+```bash
+cp -r …/demo /tmp/fl-demo
+cd /tmp/fl-demo && bash reset.sh
+```
+
+`/tmp/fl-demo` is **not a git checkout**, so `run.sh`'s `git -C "$ROOT" checkout
+-- …` cannot run there. The loop's fix simply stays. Measured: the copy has no
+`.git`, and the restore is `|| true`, so it fails silently and correctly.
+
+That is the **intent**, and neither guide said it — while both tell the operator
+to ask the agent to *"report the root cause, **the diff**, and the final test
+result"*. The diff is visible *only because* the copy keeps the fix. A reader who
+took §1p's "runs leave the tree clean" as applying to the walkthrough would
+expect the opposite, and could conclude the restore is broken.
+
+Two doc fixes, in both guides:
+
+- the copy is disposable, has no `.git`, and **keeps** the fix — which is how you
+  see the one-line change;
+- **`rm -rf /tmp/fl-demo` first.** `RUNBOOK-SERVER.md` had it; `SETUP.md` did not,
+  and a second `cp -r` into an existing directory nests a `demo/` inside it, so
+  the agent edits a tree the reader is not looking at. That is the §1n trap in a
+  `cp -r`: the second run looks like the first and works on the wrong path.
+
+Neither changes a line of code, which is the point worth recording. §1p fixed the
+**repository's** tree and created a silent asymmetry between it and the sandbox the
+docs tell people to work in. A fix that only holds on one of the two paths a
+document names is half a fix, and the half that is invisible is the half a reader
+trusts.
 
 ### 1. The stylesheet restyled the whole host UI
 

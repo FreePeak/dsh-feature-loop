@@ -529,9 +529,14 @@ solve a hard problem. Use the bundled demo bug, which is a real one-line
 off-by-one with a failing test suite:
 
 ```bash
+rm -rf /tmp/fl-demo                       # a second `cp -r` nests demo/ inside it
 cp -r ~/work/harvey/freepeak/dsh-feature-loop/demo /tmp/fl-demo
 cd /tmp/fl-demo && bash reset.sh      # re-plant the bug
 ```
+
+`/tmp/fl-demo` is a throwaway copy with no `.git`, and it **keeps** the agent's
+fix afterwards — which is the point here, because the next step diffs it. Run the
+three commands again to start over.
 
 Now paste this into the DSH session:
 
