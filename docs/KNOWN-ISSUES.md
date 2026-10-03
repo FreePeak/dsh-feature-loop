@@ -200,6 +200,40 @@ itself reads, not guessed from the profile's name — `flproof` says nothing abo
 being headless, and `feature-loop-headless` would say something that could be a
 typo.
 
+### 1bc. The judge and the brief asked a model nothing here had ever run
+
+**Observed:** `src/plugin.ts` carried `config.judgeModel ?? 'xiaomi/mimo-v2.5'`
+and `cordis.patch.yml`'s documented brief example said
+`model: xiaomi/mimo-v2.5`. A deployment that set `judge: chat` without also
+setting `judgeModel` — or that enabled `dashboard.brief` by copying the
+documented example — was asking a concrete id this repo does not declare
+anywhere and no shipped config names.
+
+**Why:** §1a's exact shape, one rung over. That fix made `execution` the only
+ladder route and added a check for ladder rungs. But the ladder is not the only
+place a model id is hard-coded, and the other two places were never looked at.
+The id resolved perfectly on the gateway (`POST /v1/chat/completions
+{"model":"xiaomi/mimo-v2.5"}` → 200, verified 2026-10-03), so it failed
+silently — *resolves* and *tested* are different questions and this one had no
+check of either kind. Nothing reads a judge's model except the judge itself,
+which is why it was invisible: the gate, the dashboard, and every test were all
+perfectly healthy while the judge quietly asked something else.
+
+**Fix:** both defaults are `execution`, and `check-ladder-models.mjs` now asks
+the second question about both — a hard-coded model default must be the tested
+route. It reads them from source rather than keeping a list, because a list is a
+promise somebody has to keep and that is how all four of these drifted.
+
+The first version of the check swept every `?? '<string>'` in `src/plugin.ts`
+and reported `ask`, `none`, `.feature-loop/runs.jsonl` and `laya` as model
+defaults — three false positives on the first run, the same lesson
+`declaredModels` learned when it swept in the patch's own entry ids. The field
+name is the discriminator: a default MODEL is the one passed to something that
+asks a gateway.
+
+**Verified:** both halves proven to fire by restoring each default in turn —
+`src/plugin.ts` and `cordis.patch.yml` each exit 1 naming the file and the id.
+
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
 **Observed:** `bash scripts/make-profile.sh webz --port 4596` printed

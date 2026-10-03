@@ -63,7 +63,7 @@ export const NO_EXPLAINER: Explainer = {
 export interface ChatExplainerConfig {
   /** The transport to ask. */
   llm: LlmClient
-  /** The model id to ask, e.g. `xiaomi/mimo-v2.5`. */
+  /** The model to ask. A bare wire id, e.g. `execution` — not `onegw/execution`. */
   model: string
   /** Cap on the brief's own output. Default 1024. */
   maxTokens?: number

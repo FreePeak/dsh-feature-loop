@@ -302,7 +302,7 @@ export interface DashboardConfig {
 export interface BriefConfig {
   /** Must be `true` for the plugin to request briefs at all. */
   enabled?: boolean
-  /** The model id to ask, e.g. `xiaomi/mimo-v2.5`. Required when enabled. */
+  /** The model to ask. Required when enabled; the wire id is bare. */
   model?: string
   /** Cap on the brief's own output tokens. Default 1024. */
   maxTokens?: number

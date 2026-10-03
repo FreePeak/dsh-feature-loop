@@ -240,6 +240,74 @@ const cases = [
   },
 ]
 
+/**
+ * Every model this repo asks for, wherever the default lives.
+ *
+ * The ladder check asks whether a LADDER rung resolves. That is the wrong
+ * question for the two other places a model id is hard-coded, and both were
+ * wrong for the same reason:
+ *
+ *   src/plugin.ts   `config.judgeModel ?? 'xiaomi/mimo-v2.5'`
+ *   cordis.patch.yml  the brief example, `model: xiaomi/mimo-v2.5`
+ *
+ * A deployment that set `judge: chat` — or enabled `dashboard.brief` by
+ * copying the documented example — asked a concrete id this repo does not
+ * declare anywhere, that no shipped config names, and that no test had ever
+ * run. It resolved perfectly on the gateway, which is exactly what §1a says
+ * about the ladder: *resolves* and *tested* are different questions, and
+ * only the first one had a check.
+ *
+ * So this asks the second question about the two places that can still be
+ * wrong, and it reads them from SOURCE rather than keeping a list — a list is
+ * a promise somebody has to keep, which is how all four of these drifted in
+ * the first place.
+ *
+ * ponytail: three greps over two files. The alternative — a YAML-schema walk
+ * of the harness's own config surface — would be more correct and would need a
+ * dependency, for a check whose whole job is to catch a string that a parser
+ * would happily accept.
+ */
+const TESTED_MODEL = 'execution'
+
+/**
+ * Model ids hard-coded as a DEFAULT in src/, with the file that holds them.
+ *
+ * Scoped to the two assignments that NAME a model, by name, in a field called
+ * `model` (or `judgeModel`). A bare `?? '<string>'` sweep caught `gateMode:
+ * 'ask'`, `history: '.feature-loop/runs.jsonl'` and `judge: 'none'` — three
+ * false positives on the first run, which is the same lesson the ladder check
+ * learned the hard way when `declaredModels` swept in the patch's own entry
+ * ids. The field name is the discriminator: a default MODEL is the one that
+ * is passed to something that asks a gateway.
+ */
+const MODEL_DEFAULT = /(judgeModel|model)\s*[:?]{1,2}\s*'([\w./-]+)'/g
+
+function defaultModelsInSrc() {
+  const out = []
+  for (const file of ['src/plugin.ts']) {
+    const text = readFileSync(join(repo, file), 'utf8')
+    for (const m of text.matchAll(MODEL_DEFAULT)) out.push([file, m[2]])
+  }
+  return out
+}
+
+/** Model ids hard-coded in a shipped YAML example someone copies verbatim. */
+function defaultModelsInPatches() {
+  const out = []
+  for (const file of ['cordis.patch.yml', 'docker/profile.patch.yml']) {
+    const text = readFileSync(join(repo, file), 'utf8')
+    for (const m of text.matchAll(/^\s*#?\s*model:\s*([\w./-]+)\s*$/gm)) {
+      // The ladder's own rungs are `provider: X` on the previous line; skip
+      // those by requiring no provider line directly above.
+      const line = text.slice(0, m.index).split('\n').length
+      const lines = text.split('\n')
+      if (/^\s*-\s*provider:/.test(lines[line - 2] ?? '')) continue
+      out.push([file, m[1]])
+    }
+  }
+  return out
+}
+
 let failed = false
 for (const c of cases) {
   const text = readFileSync(join(repo, c.file), 'utf8')
@@ -467,6 +535,21 @@ for (const dir of profiles) {
       )
       failed = true
     }
+  }
+}
+
+// The judge and the brief, checked against the same constant as the ladder.
+for (const [file, model] of [...defaultModelsInSrc(), ...defaultModelsInPatches()]) {
+  const bare = model.split('/').pop()
+  if (bare !== TESTED_MODEL) {
+    console.error(
+      `${file}: a model this repo asks for by DEFAULT is ${model}, not ${TESTED_MODEL}.\n`
+      + `  A deployment that configures nothing inherits this one, and nothing\n`
+      + `  reads it but the call itself. It resolves on the gateway — which is not\n`
+      + `  the question. ${TESTED_MODEL} is the route verified end to end here.\n`
+      + `  (§1a: "resolves" and "tested" were conflated, once already.)`,
+    )
+    failed = true
   }
 }
 
