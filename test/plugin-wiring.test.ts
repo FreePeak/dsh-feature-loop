@@ -131,10 +131,11 @@ async function tool(
   handler: (event: string) => Handler,
   name: string,
   agent: unknown = AGENT,
+  args: Record<string, unknown> = { path: 'a.ts' },
 ): Promise<{ decision: Decision, delegated: boolean }> {
   let delegated = false
   const decision = await handler('tools/pre-execute')(
-    { agent, name, arguments: { path: 'a.ts' } },
+    { agent, name, arguments: args },
     async () => { delegated = true; return { kind: 'allow' } },
   )
   return { decision, delegated }
@@ -153,8 +154,66 @@ test('a tool call the gate blocks never reaches the harness', async () => {
   assert.equal(delegated, false, 'the call must be decided here, not passed on')
   assert.equal(decision.kind, 'ask')
   assert.match(decision.reason ?? '', /REVIEW REQUESTED \(policy\)/)
+  // The card names what it is about. Measured 2026-10-03: five asks for three
+  // files produced five identical cards, and a gate whose cards cannot be told
+  // apart trains the click that makes it worthless.
+  assert.match(decision.reason ?? '', /write_file a\.ts/)
   dispose()
   void ctx
+})
+
+test('two writes in one run produce two DIFFERENT cards', async () => {
+  // The assertion the previous one exists for: it is not enough that a card
+  // carries a subject, it is that two cards about different files differ.
+  const { handler, dispose } = mount({ spec: SPEC })
+  const first = await tool(handler, 'write_file', AGENT, { path: 'notes/first.md' })
+  const second = await tool(handler, 'write_file', AGENT, { path: 'notes/second.md' })
+  assert.notEqual(first.decision.reason, second.decision.reason)
+  assert.match(first.decision.reason ?? '', /notes\/first\.md/)
+  assert.match(second.decision.reason ?? '', /notes\/second\.md/)
+  dispose()
+})
+
+test('a bash card names the command, because bash is gated too', async () => {
+  const { handler, dispose } = mount({ spec: SPEC })
+  const { decision } = await tool(handler, 'bash', AGENT, { command: 'ls notes' })
+  assert.equal(decision.kind, 'ask')
+  assert.match(decision.reason ?? '', /bash ls notes/)
+  dispose()
+})
+
+test('a card never quotes the file contents back at the reviewer', async () => {
+  // The subject is a path or a command; the CONTENT is the thing the human has
+  // not decided about, and putting it on the card invites approving a diff
+  // nobody read.
+  const { handler, dispose } = mount({ spec: SPEC })
+  // Invented content, and deliberately NOT shaped like a credential: a fixture
+  // that reads as a key is one this repo's own scan will (correctly) refuse to
+  // let through, and the property under test does not need one.
+  const contents = 'const timeoutMs = 30_000'
+  const { decision } = await tool(handler, 'write_file', AGENT, { path: 'a.ts', content: contents })
+  assert.match(decision.reason ?? '', /a\.ts/)
+  assert.equal(decision.reason?.includes(contents), false)
+  dispose()
+})
+
+test('a card with nothing to name says nothing extra', async () => {
+  // No path, no command: the reason must be byte-identical to the old one, so
+  // an unnamable call gains no noise.
+  const { handler, dispose } = mount({ spec: SPEC })
+  const { decision } = await tool(handler, 'write_file', AGENT, { mode: 'overwrite' })
+  assert.equal(decision.kind, 'ask')
+  assert.equal(decision.reason?.includes('write_file —'), false)
+  dispose()
+})
+
+test('a multi-line or runaway subject is dropped, not truncated onto the card', async () => {
+  const { handler, dispose } = mount({ spec: SPEC })
+  const multiline = await tool(handler, 'bash', AGENT, { command: 'echo a\necho b' })
+  assert.equal(multiline.decision.reason?.includes('echo a'), false)
+  const long = await tool(handler, 'bash', AGENT, { command: 'x'.repeat(300) })
+  assert.equal(long.decision.reason?.includes('x'.repeat(100)), false)
+  dispose()
 })
 
 test('a read-only tool is delegated to the harness', async () => {

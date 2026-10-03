@@ -600,15 +600,54 @@ export function escalationForStep(
  * @param toolName - the tool about to run.
  * @returns the review decision: proceed, prompt a human, or refuse.
  */
+/**
+ * The thing this call is about, in a form a human can act on.
+ *
+ * Measured 2026-10-03 on a three-file task: five asks arrived, three of them
+ * `write`, and every card said the same thing — "write: irreversible is always
+ * approved by a human". A person cannot tell ask 3 from ask 4 without reading
+ * the run, and a gate whose cards are indistinguishable trains the click that
+ * makes it worthless.
+ *
+ * `tools/pre-execute` already receives the PARSED ARGUMENTS (this file stores
+ * their key for the step record two lines above), so the fact was in hand and
+ * discarded. Only path-like string values are used: a review prompt should
+ * never quote a file's contents back at the human who is deciding whether to
+ * write them.
+ *
+ * Returns '' when nothing names the call — the previous behaviour, unchanged.
+ *
+ * @param toolName - the tool about to run.
+ * @param args - its parsed arguments.
+ * @returns ` — <subject>` or an empty string.
+ */
+function subjectOf(toolName: string, args: unknown): string {
+  if (args === null || typeof args !== 'object' || Array.isArray(args)) return ''
+  const record = args as Record<string, unknown>
+  const path = record['file_path'] ?? record['path'] ?? record['filePath']
+  const subject = typeof path === 'string' && path !== ''
+    ? path
+    // `bash` names its work in the command, and a truncated one is still enough
+    // to tell ask 1 from ask 5.
+    : typeof record['command'] === 'string' && record['command'] !== ''
+      ? record['command'].slice(0, 80)
+      : undefined
+  // The subject must be checkable by the eye: a newline would break the card
+  // into two paragraphs, and a very long path is not what was being asked.
+  if (subject === undefined || /[\n\r]/.test(subject) || subject.length > 120) return ''
+  return ` — ${toolName} ${subject}`
+}
+
 export function gateForTool(
   policy: FeatureLoopPolicy,
   toolName: string,
+  args: unknown,
 ): GateVerdict {
   if (policy.gate === undefined) return { kind: 'proceed' }
   const reversibility = resolveReversibility(toolName, policy.spec?.actuator)
   const decision = policy.gate.check(toolName, reversibility, policy.lastConfidence)
   if (!decision.review) return { kind: 'proceed' }
-  const reason = reviewText(decision.reason, decision.source)
+  const reason = reviewText(`${decision.reason}${subjectOf(toolName, args)}`, decision.source)
   // The mode decides *how* the human is asked, never *whether* the call is
   // questioned: both branches stop the call, and `ask` still fails closed if no
   // approval channel answers.
@@ -1173,11 +1212,28 @@ export function apply(
 
   // Agent id === session id in DSH (`AgentRegistry.get`). Structural: a test
   // double without `agents` still mounts; live cordis always injects it.
+  //
+  // `ctx.agents` is a cordis PROXY, and the proxy THROWS on a missing service
+  // rather than returning undefined — so the `agents?:` type above is a lie that
+  // cost a real run: `resolveAgent` was called on the `session/event` fiber,
+  // where `AgentRegistry` had not been injected, the getter threw
+  // `cannot get property "agents" without inject`, and the turn's history record
+  // was LOST. Measured 2026-10-03 on a live web run, in the feed, verbatim.
+  //
+  // A failed record is supposed to be visible but not fatal, and it was — the
+  // cost was a silent hole in the run history, which is the one thing the
+  // history exists to prevent. The lookup is now a try/catch: no agent found is
+  // already a supported answer (the agent-less policy), so a throwing getter is
+  // the same answer with extra noise, not a lost record.
   const resolveAgent = (sessionId: string): Agent | undefined => {
-    const agents = (ctx as { agents?: { get?: (id: string) => Agent | undefined } }).agents
-    const get = agents?.get
-    if (typeof get !== 'function') return undefined
-    return get.call(agents, sessionId)
+    try {
+      const agents = (ctx as { agents?: { get?: (id: string) => Agent | undefined } }).agents
+      const get = agents?.get
+      if (typeof get !== 'function') return undefined
+      return get.call(agents, sessionId)
+    } catch {
+      return undefined
+    }
   }
 
   // The dashboard is process-wide (one server, one feed), not per agent — it
@@ -1470,7 +1526,7 @@ export function apply(
       // parsed arguments are both known. The step's outcome is filled in below.
       policy.pending = { tool: toolName, argsKey: argsKey(rawArgs), error: false }
 
-      const gate = gateForTool(policy, toolName)
+      const gate = gateForTool(policy, toolName, rawArgs)
       if (gate.kind === 'proceed') return next()
 
       // The call is blocked either way, and the call is *answered* rather than
