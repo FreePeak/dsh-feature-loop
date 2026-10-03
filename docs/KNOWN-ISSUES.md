@@ -718,11 +718,33 @@ copies`. Deleting one row from the docker copy exits 1 naming the tool and
 saying which file classifies it and which does not; reclassifying `job_list` in
 one copy exits 1 naming both classifications.
 
+**Verified end to end, live.** The same three-file task against a web profile
+carrying the fixed table, real browser, real model:
+
+```
+write — write /private/tmp/tarp-work/notes/first.md
+write — write /private/tmp/tarp-work/notes/second.md
+write — write /private/tmp/tarp-work/notes/third.md
+```
+
+`e2e-in-ui (allow): 3 × Allow once → 3 file(s) written`, waits 39–58ms, and
+**zero** `job_list` asks where the same task produced one before. The card is now
+both distinguishable AND only ever about a real write.
+
 **The pattern, fourth time.** §1t (duplicate section letters), §1bd (eight
 profiles running bytes nobody could name), §1bi (the README's first command),
 this. A fact written in several places with nothing asserting the copies agree.
 The fix that has worked each time is not "be more careful" — it is a script that
 fails, wired into `make check` and CI.
+
+**And the lesson from re-verifying it, which cost five attempts.** Getting the
+fixed table into a live profile by hand-editing its YAML produced a file the
+generator could never have written: four rounds of indentation arithmetic, each
+one making it slightly worse, ending in a duplicate-key parse error. The
+generator's own heredoc is the source of truth and was correct the whole time —
+the fix was to rewrite the file from the template, which took one command. Hand
+transcription of generated YAML is a fifth instance of the same mistake, and the
+same rule answers it: use the thing that generates it.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
