@@ -43,7 +43,8 @@
  * shape a parser would forgive. It exits non-zero, naming the file and the
  * model.
  */
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -550,6 +551,105 @@ for (const [file, model] of [...defaultModelsInSrc(), ...defaultModelsInPatches(
       + `  (§1a: "resolves" and "tested" were conflated, once already.)`,
     )
     failed = true
+  }
+}
+
+/**
+ * A profile running a STALE build of the plugin, reported per profile.
+ *
+ * This is the failure that costs a debugging session and names neither the
+ * profile nor the build. A `file:` dependency COPIES the package at install
+ * time — it is not a link — so `npm run build` in the checkout, a commit, and
+ * a rebuild all leave the profile serving the bytes it was installed with.
+ * Nothing errors. The row composes, the client bundle is in the boot graph,
+ * and the profile runs the plugin you fixed three commits ago.
+ *
+ * Measured on this machine before the check existed: all 11 installed
+ * profiles reported a `client.js` that matched NO checkout — the worktree,
+ * `prod-warts`, or `main`. Every one of them was serving a build from
+ * somewhere else entirely.
+ *
+ * `client.js` is checked rather than `lib/`: it is TRACKED (so its hash is
+ * stable across a rebuild) and it is what the harness loads as
+ * `dsh.client`, so a stale one is a stale UI in front of a correct gate.
+ * `lib/` would be the more direct signal but tsdown's chunk names are
+ * content-hashed (`approvals-05MIOAcj.mjs`), so its filenames change on every
+ * build and there is nothing stable to compare.
+ *
+ * `link:` specs are exempt and the reason is worth stating: a symlinked
+ * dependency is always current by construction, so naming it would report a
+ * defect that cannot exist.
+ *
+ * ponytail: a sha256 of one tracked file per profile, compared to this
+ * checkout's. The alternative — comparing mtimes — is wrong in the direction
+ * that matters: a `git checkout` rewrites mtime without changing content, so
+ * it would call an up-to-date profile stale.
+ */
+function sha256(path) {
+  try {
+    return createHash('sha256').update(readFileSync(path)).digest('hex')
+  } catch {
+    return undefined
+  }
+}
+
+const hereClient = sha256(join(repo, 'client.js'))
+
+if (hereClient !== undefined) {
+  for (const dir of profiles) {
+    const pkg = join(dir, 'package.json')
+    let spec
+    try {
+      spec = JSON.parse(readFileSync(pkg, 'utf8'))?.dependencies?.['@freepeak/dsh-feature-loop'] ?? ''
+    } catch {
+      continue
+    }
+    if (spec.startsWith('link:')) continue
+    const installed = sha256(join(dir, 'node_modules/@freepeak/dsh-feature-loop/client.js'))
+    if (installed === undefined) continue
+    // Compare against the tree the profile DECLARES it installs, not against
+    // whatever checkout the reader happens to be standing in. A profile whose
+    // `file:` spec is `…/prod-warts` is current when its bytes match
+    // prod-warts, and comparing it to exec-rung would report eight profiles
+    // stale for the crime of being pinned to a different branch.
+    const root = spec.replace(/^file:/, '')
+    const sourcePath = join(root, 'client.js')
+    const installedPath = join(dir, 'node_modules/@freepeak/dsh-feature-loop/client.js')
+    // pnpm HARDLINKS a `file:` dependency out of the store, so `client.js` in
+    // the profile and `client.js` in the source tree can be the SAME inode —
+    // verified on this machine (nlink 9). Content comparison cannot see a
+    // difference between two names for one file, which is not a defect: there
+    // is nothing to report. `lib/` cannot be used the same way because tsdown's
+    // chunk names are content-hashed and change on every build.
+    try {
+      if (statSync(installedPath).ino === statSync(sourcePath).ino) continue
+    } catch {
+      // `sourcePath` does not exist: handled as its own failure below.
+    }
+    const source = sha256(sourcePath)
+    if (source === undefined) {
+      // The spec names a tree that no longer exists. This is a WEAKER state
+      // than stale and it is worth naming on its own: reinstalling cannot fix
+      // it, and the profile is running the last bytes that tree ever had.
+      console.error(
+        `profile ${basename(dir)}: its plugin source no longer exists —\n`
+        + `  installs: ${spec}\n`
+        + `  A file: dependency is copied at install time, so this profile still runs\n`
+        + `  whatever that tree last built; a reinstall would only fail. Point it at a\n`
+        + `  live tree (or at a tag) before you reinstall.`,
+      )
+      failed = true
+      continue
+    }
+    if (installed === source) continue
+    console.log(
+      `profile ${basename(dir)}: STALE — it runs different bytes than the tree it installs.\n`
+      + `  A file: dependency is COPIED at install time, not linked, so this profile\n`
+      + `  runs the plugin as it was when it was installed. Nothing errors and nothing\n`
+      + `  looks wrong: the row composes and the gate works, on the wrong bytes.\n`
+      + `  installs: ${spec}\n`
+      + `  fix: cd ${dir} && npx pnpm@9.15.9 install`,
+    )
   }
 }
 
