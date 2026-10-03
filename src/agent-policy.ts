@@ -202,6 +202,10 @@ export function gateDecisionFor(
  * doing so changed nothing (verified: removing both the helper call and the
  * `pending` flip fails the cascade test, and with only the flip it passes).
  *
+ * The companion question — which of the six detectors can raise in a DSH
+ * deployment at all — is answered in `docs/KNOWN-ISSUES` §1i: **five** of six,
+ * and `quality-drop` is the one that cannot, for two independent reasons.
+ *
  * Mutates the last observation in place, and returns whether it changed.
  *
  * @param history - the step history, mutated.

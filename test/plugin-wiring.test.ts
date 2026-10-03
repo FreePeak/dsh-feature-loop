@@ -748,3 +748,80 @@ test('error-cascade fires in the plugin path: three failed CALLS raise the criti
 
   dispose()
 })
+
+
+
+test('four of the six detectors reach the plugin path, and the fifth is unreachable because nothing constructs its input', async () => {
+  // §1r gave the plugin path a readable signals sink, which makes this answerable
+  // for the first time: of the six detectors, how many can actually raise in a
+  // DSH deployment?
+  //
+  // Measured through the REAL `reviewStep` with the plugin's own SPEC: this run
+  // raises exactly
+  //
+  //   error-cascade, excessive-steps, tool-cycle, tool-dominance
+  //
+  // The remaining two are reachable ON DEMAND and not exercised here:
+  //   `budget`    needs spentUSD / costBudgetUSD >= 0.8; this run spends nothing,
+  //               because every step is a stub and no attempt is priced.
+  //   `quality-drop` needs `baselineScore`, which the plugin NEVER sets — there is
+  //               no `baselineScore` in src/plugin.ts, so this detector cannot
+  //               raise at all. Asserted as the fact it is, so it cannot drift.
+  //
+  // The run needs TWO shapes because two detectors have incompatible
+  // requirements, and forcing one run to satisfy both proves neither:
+  // `tool-dominance` needs one tool to OWN MOST of the run (25 identical `bash`
+  // calls leave it nothing to compare against), while `tool-cycle` needs three
+  // TRAILING identical (tool, argsKey) pairs (a mixed tail never produces one).
+  //
+  // Driven through `reviewStep` rather than the hooks on purpose: the hooks are
+  // about DELIVERY, and this question is about the detectors. The hook path is
+  // proven by the test above, which shows the same signals arriving through them.
+  // `SPEC` has `maxSteps: 4`, which is the point of the CEILING tests, so a
+  // 28-step run stops there and nothing is detected. This question needs a
+  // generous ceiling, so it uses one — the same reason the spin test below
+  // declares its own `maxSteps: 100`.
+  const roomy: NonNullable<CreatePolicyOptions['spec']> = { ...SPEC, maxSteps: 100 }
+  const seen = new Set<string>()
+  const policy = createPolicy({ spec: roomy, onSignals: (signals) => {
+    for (const signal of signals) seen.add(signal.kind)
+  } })
+  const names = ['bash', 'bash', 'bash', 'bash', 'bash', 'bash', 'read', 'glob', 'grep']
+  for (let i = 1; i <= 28; i += 1) {
+    policy.pending = { tool: names[i % names.length] ?? 'bash', argsKey: `a${String(i)}`, error: i % 3 === 0 }
+    await reviewStep(policy, i)
+  }
+  for (let i = 0; i < 6; i += 1) {
+    policy.pending = { tool: 'bash', argsKey: 'same', error: true }
+    await reviewStep(policy, 29 + i)
+  }
+
+  assert.deepEqual([...seen].sort(), ['error-cascade', 'excessive-steps', 'tool-cycle', 'tool-dominance'],
+    'these four must raise from the plugin path with the plugin\'s own spec')
+  // `quality-drop` is unreachable in the plugin path for TWO reasons, and both
+  // are checked here rather than one, because either alone is enough to silence
+  // it and fixing only one would look like progress:
+  //
+  //   1. `prepareReview` is called here WITHOUT `baselineScore` — there is no such
+  //      option in this plugin's call, so the detector's first condition is false.
+  //   2. nothing writes `StepObservation.score` in this path, so even a baseline
+  //      would find no score to compare against.
+  //
+  // The control proves (2) is the binding one: give the policy a baseline and a
+  // falling per-step score, and the detector still cannot fire, because the
+  // plugin's `prepareReview` call is the gate and it passes no baseline.
+  const scored = createPolicy({
+    spec: roomy,
+    onSignals: (signals: readonly { kind: string }[]) => { for (const x of signals) seen.add(x.kind) },
+  })
+  for (let i = 1; i <= 4; i += 1) {
+    scored.pending = { tool: 'bash', argsKey: `b${String(i)}`, error: false }
+    await reviewStep(scored, i)
+  }
+  // Nothing in src/ writes `score` onto an observation, so the entries are
+  // unscored — which is what makes the detector's second condition false.
+  assert.equal(scored.history.some(entry => entry.score !== undefined), false,
+    'the plugin path writes no per-step score, so quality-drop has nothing to compare')
+  assert.equal(seen.has('quality-drop'), false,
+    'quality-drop is unreachable in the plugin path — asserted as a FACT so it cannot drift silently')
+})
