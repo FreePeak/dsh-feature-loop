@@ -74,6 +74,103 @@ export interface RunRecord {
   qualityScore?: number
   /** Fingerprint of the spec that produced this run, so unlike configs never mix. */
   specFingerprint: string
+
+  // ── the 0→1 pipeline's additions ──
+  //
+  // All optional and all additive, on purpose. `metrics.ts`, `envelope.ts` and
+  // `optimize.ts` read this file today and know nothing about phases; adding
+  // fields they do not read changes nothing for them, and a run with no phases
+  // omits all of them and stays exactly the shape it was.
+
+  /**
+   * Where this run's evidence bundle is, relative to the workspace root.
+   *
+   * The pointer is in the record rather than implied because the bundle is the
+   * replay artifact and the record is the index: given a history line you can
+   * find the artifacts without guessing a directory layout.
+   */
+  evidenceDir?: string
+  /** Where the run actually happened. The throwaway worktree, in YOLO mode. */
+  worktree?: string
+  /** The pull request the ship phase opened, when it got that far. */
+  prUrl?: string
+  /** One line per phase: its budget, its spend and how its exit gate went. */
+  phases?: readonly PhaseRecord[]
+  /**
+   * One line per step: what it called, what it cost, and what it produced.
+   *
+   * Named `trajectory` rather than `steps` because `steps` above is the step
+   * *count*, and that field predates the pipeline and is read by `metrics.ts`,
+   * `envelope.ts` and `optimize.ts`. Overloading one name for a count and a
+   * list would have been a type error at best and a silent zero at worst.
+   */
+  trajectory?: readonly StepRecord[]
+  /**
+   * Write steps that produced no captured artifact.
+   *
+   * The honest number, and the one the report prints instead of rounding up to
+   * green. The book's warning is that *"checking only the final output miss[es]
+   * the 80% of failures that happen in intermediate steps"* (p23) — a bundle
+   * that renders a clean bill of health on a run whose writes cannot be
+   * evidenced is that failure, with a nicer font.
+   */
+  unverifiedSteps?: number
+}
+
+/** How one phase ended. */
+export type PhaseOutcome = 'passed' | 'budget-stop' | 'blocked' | 'failed' | 'skipped'
+
+/** One phase's ledger: what it may spend, what it did, how it finished. */
+export interface PhaseRecord {
+  phase: string
+  startedAt: number
+  endedAt?: number
+  steps: number
+  /** What this phase spent. Never the run total — that is the point of the record. */
+  costUSD: number
+  budgetUSD: number
+  outcome: PhaseOutcome
+  /** The gate's verdict, in one line a human can read in the report. */
+  exitGate?: string
+  /** Whether the gate passed. Absent means the phase never reached its gate. */
+  exitGatePassed?: boolean
+  /** Paths this phase produced, relative to the workspace. */
+  artifacts?: readonly string[]
+}
+
+/**
+ * One step's ledger line.
+ *
+ * This is the trajectory, which the book insists is the real object of study: a
+ * final answer reached through a broken path *"got lucky this time"* (p23). The
+ * fields here are the ones a post-mortem needs and nothing more — every field
+ * has a consumer, which is the rule the rest of this file already follows.
+ */
+export interface StepRecord {
+  /** 1-based step number within the run. */
+  index: number
+  /** Which phase the step belongs to. */
+  phase: string
+  /** The tool the step called, when it called one. */
+  tool?: string
+  /** Whether the step failed. */
+  error?: boolean
+  /** What this step cost. */
+  costUSD?: number
+  /** Wall-clock of the model call, when the transport timed it. */
+  latencyMs?: number
+  /** Detectors that fired on this step. */
+  signals?: readonly { kind: string; severity: string }[]
+  /** Paths this step produced. Empty on a read step. */
+  evidence?: readonly string[]
+  /**
+   * Whether this step's writes can be evidenced.
+   *
+   * `undefined` means "not a write step, nothing to evidence" — which is not
+   * the same as `false`. Only a write step with an empty `evidence` is
+   * unverified, and conflating the two would report every read as a failure.
+   */
+  verified?: boolean
 }
 
 /** The default history path, relative to the workspace root. */

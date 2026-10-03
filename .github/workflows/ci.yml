@@ -94,7 +94,7 @@ jobs:
       - name: Run the test suite
         run: node --experimental-strip-types --test \
           test/agent-policy.test.ts test/approval-bridge.test.ts \
-          test/budget.test.ts test/envelope.test.ts test/judge.test.ts \
+          test/budget.test.ts test/envelope.test.ts test/evidence.test.ts test/judge.test.ts \
           test/metrics.test.ts test/optimize.test.ts test/optimizer.test.ts \
           test/phases.test.ts test/phase-budget.test.ts test/pipeline.test.ts \
           test/questioner.test.ts \
@@ -154,7 +154,7 @@ jobs:
             --allowImportingTsExtensions \
             src/agent-policy.ts src/budget.ts \
             src/approval-bridge.ts src/brief.ts \
-            src/dashboard.ts src/dashboard-page.ts src/envelope.ts src/explainer.ts \
+            src/dashboard.ts src/dashboard-page.ts src/envelope.ts src/evidence.ts src/explainer.ts \
             src/judge.ts src/laya.ts src/llm.ts src/messages.ts \
             src/metrics.ts src/optimize.ts src/optimizer.ts src/phases.ts \
             src/phase-budget.ts src/pipeline.ts src/prompts.ts \
