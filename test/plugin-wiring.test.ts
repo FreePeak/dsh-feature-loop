@@ -511,6 +511,52 @@ test('a settled attempt is priced even when the session cursor is already past i
   dispose()
 })
 
+test('a THROWING ctx.agents still records the turn', async () => {
+  // `ctx.agents` is a cordis PROXY, and reading it on a fiber where
+  // `AgentRegistry` has not mounted THROWS `cannot get property "agents" without
+  // inject`. Measured 2026-10-03 on a live web run: that throw escaped into the
+  // turn record, and the feed showed `run history append failed` — the one
+  // thing the history exists to be, gone.
+  //
+  // No agent found is ALREADY a supported answer (the agent-less policy, with
+  // shared ceilings and an honest label). A getter that throws is the same
+  // answer with noise on it, not a lost record.
+  const { mkdtempSync, readFileSync, existsSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-agents-throw-'))
+  const historyPath = join(dir, 'runs.jsonl')
+
+  const session = settledSession([PRICED_MSG])
+  const handlers = new Map<string, (...args: unknown[]) => unknown>()
+  const ctx = {
+    get agents(): never {
+      throw new Error('cannot get property agents without inject')
+    },
+    on(event: string, fn: (...args: unknown[]) => unknown): () => void {
+      handlers.set(event, fn)
+      return () => { handlers.delete(event) }
+    },
+  }
+  apply(ctx as never, {
+    spec: SPEC,
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+  })
+
+  const sessionHandler = handlers.get('session/event') as Handler
+  sessionHandler({ id: 'sess-throwing' }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+
+  // recordTurn is async and imports runlog.ts dynamically, so the append lands
+  // a tick or two later. Poll for the file instead of guessing a sleep.
+  for (let attempt = 0; attempt < 100 && !existsSync(historyPath); attempt += 1) {
+    await new Promise(resolve => { setTimeout(resolve, 10) })
+  }
+  assert.ok(existsSync(historyPath), 'a throwing ctx.agents must not lose the record')
+  const [line] = readFileSync(historyPath, 'utf8').trim().split('\n')
+  assert.equal(JSON.parse(line!).runId, 'sess-throwing')
+})
+
 test('session/event records cost against the agent resolved from ctx.agents', async () => {
   // agentOfSession was a stub returning undefined, so turn records always
   // read the agent-less shared policy (fresh zero budget) even when the live
