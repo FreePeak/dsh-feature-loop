@@ -375,6 +375,19 @@ cp -r /Users/linh.doan/work/harvey/freepeak/dsh-feature-loop/demo /tmp/fl-demo
 cd /tmp/fl-demo && bash reset.sh      # re-plants the one-line off-by-one
 ```
 
+**`/tmp/fl-demo` is a THROWAWAY COPY, and it stays fixed after the run.** It is
+not a git checkout — it has no `.git` — so the restore `bash demo/run.sh` does on
+the repository (it reverts the one file the loop is allowed to edit, so the tree
+does not match the commit; measured 2026-10-03, see `KNOWN-ISSUES` §1p) cannot
+run here, and the loop's fix simply stays.
+
+That is the intent: the point of this walkthrough is to read what a fixed file
+looks like after an agent wrote it, and `diff /tmp/fl-demo/src/latency-window.ts`
+against the repo is how you see the one-line change. To start again, re-run the
+three commands above — `rm -rf` first, because a second `cp -r` into an existing
+directory nests a `demo/` inside it and the agent then edits the wrong tree.
+Nothing outside `/tmp/fl-demo` is touched by this walkthrough.
+
 Open the live URL in a browser, then paste:
 
 > Read `src/latency-window.ts` and `test/latency-window.test.ts`, find the
