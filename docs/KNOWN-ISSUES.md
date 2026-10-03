@@ -995,6 +995,81 @@ proves (the detector), and the plugin-path proof is named as the other test. **A
 test that names the wrong subject is worse than one that names none**, because it
 discharges the obligation to prove that subject.
 
+**And the seam then answered a question nobody had asked.** With the signals
+readable, "which detectors can actually raise in a DSH deployment?" became
+answerable. Measured through the real `reviewStep` with this plugin's spec, over a
+28-step mixed run plus a repeating tail:
+
+| detector | reachable? | why |
+|---|---|---|
+| `error-cascade` | ✅ | three consecutive failed **calls** (§1q) |
+| `tool-cycle` | ✅ | three trailing identical `(tool, argsKey)` pairs |
+| `tool-dominance` | ✅ | one tool owning >60% of a **mixed** run, from step 6 |
+| `excessive-steps` | ✅ | history past 20 |
+| `budget` | ✅ on demand | needs ≥80% of the ceiling **spent**; these steps spend nothing |
+| `quality-drop` | ❌ **not at all** | needs `baselineScore`, which `prepareReview` is never given here, AND a per-step `score`, which nothing in `src/` writes |
+
+So the old doc's "four detectors instead of six" was **five**, and the fifth
+failure is `quality-drop` — for two independent reasons, either of which alone
+silences it. Both are asserted, with a control that supplies a baseline and a
+falling score and shows the detector still cannot fire, so the reason is pinned
+rather than guessed.
+
+The run needed **two shapes**, because two detectors have incompatible
+requirements: 25 identical `bash` calls leave `tool-dominance` nothing to compare
+against, and a mixed tail never produces `tool-cycle`. Forcing one run to satisfy
+both proves neither — the same trap as §1n's ceiling row, where a run that
+finished *below* the limit looked like one the limit stopped.
+
+### 1i. Five of six detectors reach a DSH deployment, and the sixth cannot
+
+§1r gave the plugin path a readable signals sink. The first question worth asking
+of a seam is not "does it work" but **"what can I now see that I could not
+see before?"** — and this is the answer.
+
+Measured through the real `reviewStep` with this plugin's own spec, over a
+28-step mixed run plus a repeating tail:
+
+| detector | reachable in a DSH deployment? | needs |
+|---|---|---|
+| `error-cascade` | ✅ | three consecutive failed **calls** — only since §1q |
+| `tool-cycle` | ✅ | three trailing identical `(tool, argsKey)` pairs |
+| `tool-dominance` | ✅ | one tool owning >60% of a **mixed** run, from step 6 |
+| `excessive-steps` | ✅ | history past 20 |
+| `budget` | ✅ on demand | ≥80% of the ceiling **spent**; a stub run spends nothing |
+| `quality-drop` | ❌ **not reachable at all** | a `baselineScore` **and** a per-step `score` |
+
+So the claim in §1r's old doc — "`error-cascade` could never fire, so the gate
+would silently run on **four** detectors instead of six" — was wrong in the
+count: it is **five**, and `quality-drop` is the one that cannot fire.
+
+**And it is silenced for two independent reasons**, which matters because fixing
+either one would look like progress:
+
+1. `prepareReview` is called in `plugin.ts` **without** `baselineScore`, so the
+   detector's first condition is false;
+2. nothing in `src/` writes `StepObservation.score`, so even a baseline would
+   find no score to compare.
+
+Both are asserted in `test/plugin-wiring.test.ts`, together with a **control**
+that hands the policy a baseline and a falling score and shows the detector still
+cannot fire — which pins the reason instead of asserting a guess. And the whole
+table is proven to move: raising `excessive-steps` past the run length fails it.
+
+**The measurement needed two run shapes**, because two detectors have
+incompatible requirements. Twenty-five identical `bash` calls leave
+`tool-dominance` nothing to compare against (it counts distinct tools, and there
+is one); a mixed tail never produces `tool-cycle` (it needs three trailing
+identical pairs). Forcing one run to satisfy both proves neither — which is the
+§1n trap in a new place: a shape that looks like the thing can be the shape that
+hides it.
+
+**What is deliberately not done.** `quality-drop` is the detector the book cares
+about most, and making it live means deciding what the plugin's per-step `score`
+IS: the judge's review-worthiness is not it (that scores the *previous* step), and
+a rubric the loop does not otherwise compute is a feature, not a fix. Recorded
+rather than invented.
+
 ### 1. The stylesheet restyled the whole host UI
 
 **Observed:** after the dashboard was folded into the DSH UI, the host's `<body>`
