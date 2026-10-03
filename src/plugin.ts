@@ -96,13 +96,13 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { budgetStopText, budgetWarnText, escalationText, reviewText } from './messages.ts'
-// Type-only: `summarize` reads data, never the disk, so the module ships no
-// fs imports into the plugin's graph (the same stance `metrics.ts` documents
-// for its own `RunRecord` import). The history I/O (`runlog.ts`) is loaded
-// dynamically only when a deployment configures `optimize.history`, so a
-// deployment that never asked for run-history keeps the plugin's graph
-// exactly as it was before this feature existed.
+// Type-only: `summarize` reads data, never the disk, so that module ships no
+// fs imports of its own. `runlog.ts` — which does touch the disk — is imported
+// STATICALLY on purpose; it used to be a dynamic import inside the turn closer,
+// and a load that never settles loses the record with no error at all
+// (KNOWN-ISSUES §1bw). A static import resolves at load, before any run.
 import { summarize } from './metrics.ts'
+import { appendRecord, readRecords, specFingerprint, taskKeyOf } from './runlog.ts'
 import type { RunRecord, StepRecord } from './runlog.ts'
 import type { RunOutcome } from './runlog.ts'
 
@@ -1776,14 +1776,22 @@ function outcomeOf(reasonKind: string, policy: FeatureLoopPolicy, steps: number)
  * turns a failed append into a feed line, and this function itself never
  * catches: a record that failed to land must be visible, not swallowed.
  *
- * Two loads are dynamic, both deliberate:
+ * `runlog.ts` is imported STATICALLY, and that is a fix rather than a style:
+ * it used to be `await import('./runlog.ts')` here, justified as keeping
+ * `node:fs` out of the plugin's static graph — but `readFileSync` from
+ * `node:fs` has been a static import at the top of this file for some time, so
+ * the justification was stale and the cost was the defect.
  *
- * - `runlog.ts` (fs + crypto) is imported only here so the plugin's static
- *   graph ships no `node:fs` (see the import comment at the top of this
- *   module). `metrics.ts` is static because it is pure arithmetic.
- * - `optimize.ts` is NOT imported: `planEnvelope`'s P95 derivation belongs to
- *   the CLI's pre-run planning, not to a per-turn hook. What the dashboard
- *   needs is the roll-up (`summarize`), which is already imported statically.
+ * Measured 2026-10-04 on a real web run: the listener fired, `asTurnEnd`
+ * accepted the `turn/end`, this function was entered (its first statement
+ * printed a feed note), and the very next statement — the dynamic import —
+ * never resolved. No rejection, so the caller's `.catch` never ran, no record
+ * was written and nothing was logged. A load that never settles loses the write
+ * silently, which is the worst shape a dependency can have.
+ *
+ * `optimize.ts` is still NOT imported: `planEnvelope`'s P95 derivation belongs to
+ * the CLI's pre-run planning, not to a per-turn hook. What the dashboard needs is
+ * the roll-up (`summarize`), which is already imported statically.
  *
  * @param input - the closed turn and everything the record is built from.
  */
@@ -1825,7 +1833,6 @@ function turnStartTime(session: unknown, turn: number): number | undefined {
 
 async function recordTurn(input: TurnRecordInput): Promise<void> {
   const { session, event, openedAt, options, policyFor, resolveAgent, state, historyPath } = input
-  const runlog = await import('./runlog.ts')
   const agent = agentOfSession(session, resolveAgent)
   const policy = policyFor(agent)
   const snapshot = policy.budget?.snapshot()
@@ -1839,7 +1846,7 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
     endedAt: event.time ?? now,
     pass: 1,
     passes: 1,
-    taskKey: spec === undefined ? 'none' : runlog.taskKeyOf(spec.goal),
+    taskKey: spec === undefined ? 'none' : taskKeyOf(spec.goal),
     outcome: outcomeOf(event.reasonKind, policy, steps),
     steps,
     maxSteps: spec?.maxSteps ?? 0,
@@ -1869,7 +1876,7 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
     // fire, however many reviews the loop had actually requested. The count was
     // on `policy.router` the whole time, exposed by its own `stats()`.
     reviewFraction: policy.router.stats().fraction,
-    specFingerprint: spec === undefined ? 'none' : runlog.specFingerprint(spec),
+    specFingerprint: spec === undefined ? 'none' : specFingerprint(spec),
     // Where the 0→1 pipeline got to, and what it may spend next. A phase change
     // needs a TURN to deliver its instructions, so a run that finishes its turn
     // mid-pipeline resumes at the next one — which means the resume point has to
@@ -1881,13 +1888,13 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
     // that cannot reach the content it indexes is not an index.
     ...(policy.history.length === 0 ? {} : { trajectory: policy.history.map(observationToStep) }),
   }
-  runlog.appendRecord(historyPath, record)
+  appendRecord(historyPath, record)
   writeEvidenceBundle(String(runId), record)
   // The Metrics panel reads what just landed: the roll-up is over the file,
   // not over memory, so a resumed process that never saw the earlier turns
   // still renders their history. A torn line is counted and skipped by the
   // reader, never thrown — the panel shows a smaller history, not an error.
-  const { records, malformed } = runlog.readRecords(historyPath)
+  const { records, malformed } = readRecords(historyPath)
   state.setMetrics(summarize(records, { malformed }))
 }
 

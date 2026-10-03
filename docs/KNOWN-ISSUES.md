@@ -79,6 +79,7 @@ rather than a list of letters:
 | 1bt | Zero milliseconds, round-trip |
 | 1bu | The speed axis, empty since the day it was written |
 | 1bv | The plugin path's wall clock, hiding in the event it was already reading |
+| 1bw | Open: the run record still does not land on the harness path |
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
 
@@ -1081,6 +1082,45 @@ exist. `undefined` on both is the finding from §1bt, not a leftover.
 `turn` is one harness turn, so a loop run of many steps reports the span of the
 turn it closed. That is what the field has always meant on this path (one record
 per closed turn) and it is the duration a reader of the record is asking about.
+
+### 1bw. Open: the run record still does not land on the harness path
+
+**Status: unresolved, and every claim below is measured.** Recorded so the next
+person does not re-derive it.
+
+**Measured on a real `dsh web` run** (2026-10-04, generated web profile, real
+model, real browser, five asks settled, three files written):
+
+| observation | value |
+|---|---|
+| `session/event` listener reached? | **yes** — 70 events for one session |
+| `turn/end` among them? | **yes** — exactly 1 |
+| `asTurnEnd` verdict on it | **accepted** |
+| `recordTurn` entered? | **yes** — its first statement printed a feed line |
+| run record written? | **no** — the history file is unchanged, and `metrics` is absent from `/api/state` |
+
+**Two candidate causes, not yet separated:**
+
+1. the append itself never completing (a settled promise that does nothing), and
+2. `turn/end` arriving only at run teardown, so the record lands after the run
+   has already reported.
+
+**What this changes about the earlier entries.** §1bp through §1bv each read a
+figure off a file and found it wrong. That work stands on its own — the figures
+were wrong. What is **not** established is the causal claim I attached to them:
+that the harness path had never written a record at all. That was an inference
+from "no record exists", and the listener is demonstrably running. Correct the
+chain, do not discard it.
+
+**What did change, and is verified:** the listener is now registered with
+`{ global: true }` (the documented switch for "receive regardless of context
+filter checks"), and `runlog.ts` is imported **statically** rather than through
+`await import(...)` inside the turn closer. The dynamic import was justified as
+keeping `node:fs` out of the plugin's graph — which stopped being true when
+`readFileSync` became a static import at the top of the file — and a load that
+never settles loses the record with no rejection, so nothing catches it. A
+static import resolves at load, before any run. Both are improvements either way;
+neither is the cause, because both were in place for the run above.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
