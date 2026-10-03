@@ -298,6 +298,7 @@ check: ci-tests typecheck ## CI's test list, the typecheck, and the config drift
 	@node scripts/check-ladder-models.mjs
 	@node scripts/check-dead-exports.mjs
 	@node scripts/check-noop-config-keys.mjs
+	@node scripts/check-known-issues.mjs
 	@echo "  check passed"
 
 .PHONY: ci-tests
