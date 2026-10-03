@@ -27,6 +27,7 @@ import { test } from 'node:test'
 
 import { apply, createPolicy, reviewStep, routeForStep } from '../src/plugin.ts'
 import type { CreatePolicyOptions, FeatureLoopPolicy } from '../src/plugin.ts'
+import { clearWatcher, noteWatcher } from '../src/approvals.ts'
 
 /** The plugin's decision shapes, narrowed to what this file reads. */
 interface Decision { kind: string, reason?: string, messages?: { source?: { kind?: string } }[] }
@@ -80,12 +81,26 @@ const SPEC: NonNullable<CreatePolicyOptions['spec']> = {
 const AGENT = {}
 
 /** Mount the plugin with the dashboard off (it would bind a port per test). */
-function mount(options: CreatePolicyOptions): {
+/**
+ * Mount the plugin with the dashboard OFF, and a watcher on by default.
+ *
+ * `gateMode: ask` refuses up front when no front end is watching — see
+ * `gateForTool` — so every assertion that an `ask` is returned is a claim that
+ * somebody COULD answer it. `watched: false` is how a test states the other
+ * case rather than inheriting a TTL left behind by the previous test.
+ */
+function mount(options: CreatePolicyOptions, watched: boolean = true): {
   ctx: unknown
   handler: (event: string) => Handler
   dispose: () => void
 } {
   const { ctx, handler } = fakeCtx()
+  // Stated, not inherited: the watcher is process-global with a TTL, so a test
+  // that did not set it would depend on whichever test ran before it. Running
+  // this one case alone passed while the suite failed, which is the whole
+  // argument for clearing here.
+  if (watched) noteWatcher()
+  else clearWatcher()
   return { ctx, handler, dispose: apply(ctx as never, { ...options, dashboard: { enabled: false } }) }
 }
 
@@ -147,6 +162,25 @@ test('a read-only tool is delegated to the harness', async () => {
   const { decision, delegated } = await tool(handler, 'read_file')
   assert.equal(delegated, true)
   assert.equal(decision.kind, 'allow')
+  dispose()
+})
+
+test('an ask with NO front end watching is refused here, not by the harness', async () => {
+  // The harness's own fail-closed is correct but its message is
+  //   tool "write_file" requires approval, but no approval channel is available
+  // which a run reports as a SANDBOX denial — a different fact, and one that
+  // sends the model hunting for a narrower tool. Measured 2026-10-03: the model
+  // spent its remaining budget on that question and produced no work.
+  //
+  // So the refusal is the plugin's, it says what is actually true, and it says
+  // what to do about it. This is the assertion that keeps gateMode: ask from
+  // degrading into a confusing deny.
+  const { handler, dispose } = mount({ spec: SPEC }, false)
+  const { decision, delegated } = await tool(handler, 'write_file')
+  assert.equal(delegated, false)
+  assert.equal(decision.kind, 'deny')
+  assert.match(decision.reason ?? '', /nobody is watching/)
+  assert.match(decision.reason ?? '', /gateMode: deny/)
   dispose()
 })
 
