@@ -51,6 +51,7 @@ rather than a list of letters:
 | 1bi | The README's first command failed on a fresh clone |
 | 1bj | The check that guards §1t could not see a third of the file |
 | 1bk | `byRoute: {}` beside a real `costUSD` taught the optimizer every route was free |
+| 1bl | The usability check had only ever asked one question |
 
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
@@ -499,6 +500,49 @@ one-line change and watched it go red).
 **The pattern across all three:** a missing value is written down as a zero, and
 the zero is accepted because nothing reads it *at the moment it is written*. It
 is read later, by something that trusts it.
+
+### 1bl. The usability check had only ever asked one question
+
+**Observed:** `test/e2e-in-ui.mjs` drove the real page against a task that
+creates ONE file. One ask, one click, one assertion. Every number it could
+report — and it reported none — was therefore about the cheapest possible run.
+
+**Why that matters:** "a human can use this" is not a property of a one-ask
+run. It is a property of a run that needs a human SEVERAL times, where the
+costs show up: how long each card takes to appear after the model calls the
+tool, whether the card says WHICH call it is about, and whether the NEXT ask
+arrives at all once this one is settled. The script could not answer any of
+those — it clicked one card and asserted one file.
+
+**Fix:** the default task is now a three-file fixing task, the script settles
+EVERY ask in turn (matching each by its own `askedAt`, waiting for it to leave
+the screen before looking for the next), and it prints the wait for each.
+
+**Measured, real browser, real model, against a profile generated from this
+branch — the numbers this had never produced:**
+
+```
+e2e-in-ui (allow): 5 × Allow once → 3 file(s) written, waits 66, 34, 30, 47, 45ms
+e2e-in-ui (reject): 2 × Reject → no file written, waits 50, 48ms
+```
+
+Two things fall out of that which no previous run could show:
+
+- **The page is not the slow part.** Every card was on screen in tens of
+  milliseconds. The gaps the human feels are the 12–57 SECOND model steps
+  between them, so latency work belongs in the loop, not in the approval UI.
+- **The gate asks more than it needs to.** Five asks for three files: two were
+  `bash` (mkdir / ls) before any write. Under the generated profile
+  `resolveReversibility` defaults an unknown tool to `irreversible`, so every
+  shell call is gated too. That is SAFE and it is also noise — a human who
+  clicks through `bash` on autopilot has stopped reading the cards, which is
+  the property the gate exists to have. The next thing to look at is the
+  actuator table, not the approval flow.
+
+Also fixed while measuring: the `finally` block that cleans up the proof threw
+`ERR_INVALID_ARG_TYPE` when a run failed BEFORE the page had named its target,
+which replaced the real failure with a `join(undefined, …)` — the one failure
+mode you must never hide.
 
 ### 1bj. The check that guards §1t could not see a third of the file
 
