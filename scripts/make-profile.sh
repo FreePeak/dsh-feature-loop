@@ -229,7 +229,14 @@ cat > "$PROFILE_DIR/cordis.patch.yml" <<'YAML'
         bash: irreversible
         edit: reversible-write
         write: irreversible
+        # Anything not named here falls back to `irreversible`. Every extra row
+        # below is a card a person does not have to click through on autopilot:
+        # the HITL tool would otherwise be gated on every delegated task, and
+        # the background-job tools on every progress check.
         task: read
+        job_list: read
+        job_output: read
+        job_kill: reversible-write
       feedback: the verification command exits 0, and the diff is the smallest that achieves it
       termination:
         successCommand: bash verify.sh

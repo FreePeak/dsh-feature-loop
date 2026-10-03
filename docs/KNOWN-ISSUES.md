@@ -53,6 +53,7 @@ rather than a list of letters:
 | 1bk | `byRoute: {}` beside a real `costUSD` taught the optimizer every route was free |
 | 1bl | The usability check had only ever asked one question |
 | 1bm | Five cards that said the same thing, and a lost run record hiding in plain sight |
+| 1bn | One gate, three tables, and nothing that compared them |
 
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
@@ -681,6 +682,47 @@ the only reinstall that works on this machine right now. `--offline` alone fails
 timeout. Recorded here because "my rebuild did not reach the profile" is the
 exact class of bug this file keeps re-finding, and this time the answer was a
 flag rather than a rebuild.
+
+### 1bn. One gate, three tables, and nothing that compared them
+
+**Observed:** measured on the live five-ask run, one ask was `job_list` — a
+tool whose entire job is to *read* a list of background jobs, gated as
+`irreversible` and asking a person to approve it.
+
+`resolveReversibility` returns `'irreversible'` for anything the `actuator` table
+does not name. That is the right default for `write` and pure noise for a
+progress check, and it is silent: the card looks like every other card.
+
+**Why it was missed:** the table ships in three hand-edited files —
+
+| file | deployment |
+|---|---|
+| `cordis.patch.yml` | the default profile the package installs |
+| `docker/profile.patch.yml` | the container profile |
+| `scripts/make-profile.sh` | the generated profile |
+
+— and **nothing compared them**. They had already diverged: the docker copy was
+missing `task`, so a container deployment gated every delegated HITL call while
+a generated one did not. One deployment, two policies, discoverable only by
+reading two files side by side. `job_list` was missing from all three, which is
+why the live run asked about it.
+
+**Fix, both halves.** `job_list`, `job_output` and `job_kill` are now classified
+in all three copies — read, read, and `reversible-write` respectively (a
+cancellation a re-run can undo, which is what `reversible-write` means
+elsewhere). And `scripts/check-actuator-tables.mjs` compares the three mappings,
+because the fix is not a third careful edit, it is a comparison.
+
+**Verified both directions.** The check reports `10 tools, identical in all 3
+copies`. Deleting one row from the docker copy exits 1 naming the tool and
+saying which file classifies it and which does not; reclassifying `job_list` in
+one copy exits 1 naming both classifications.
+
+**The pattern, fourth time.** §1t (duplicate section letters), §1bd (eight
+profiles running bytes nobody could name), §1bi (the README's first command),
+this. A fact written in several places with nothing asserting the copies agree.
+The fix that has worked each time is not "be more careful" — it is a script that
+fails, wired into `make check` and CI.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
