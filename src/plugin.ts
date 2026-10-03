@@ -949,9 +949,13 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
     budgetUSD: spec?.costBudgetUSD ?? 0,
     unpricedSteps: snapshot?.unpricedSteps ?? 0,
     byRoute: snapshot === undefined ? {} : { ...snapshot.byRoute },
+    // Absent, not zero. This path has no seam that times a step — the runner's
+    // own records are the ones that carry a measurement — so `0` and
+    // `'round-trip'` were a run that took minutes reporting "0 ms, round trip".
+    // `summarize` reads both, so the absence has to be in the record.
     stepLatencyMs: [],
-    wallMs: 0,
-    latencyKind: 'round-trip',
+    wallMs: undefined,
+    latencyKind: undefined,
     signals: policy.history.length === 0 ? [] : policy.history.map(() => ({ kind: 'detector', severity: 'info' })),
     judgeScores: [],
     // From the router that counted them. `recordTurn` wrote a literal `0` here,

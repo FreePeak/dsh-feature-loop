@@ -338,7 +338,11 @@ test('a closed turn appends exactly one run record with metered numbers', async 
   // Honestly absent, never guessed: no route priced, no latency timed.
   assert.deepEqual(record.byRoute, {})
   assert.deepEqual(record.stepLatencyMs, [])
-  assert.equal(record.latencyKind, 'round-trip')
+  // Absent, not `'round-trip'`: this path has no seam that times a step, so the
+  // old value declared a MEASUREMENT KIND for a measurement never taken, and
+  // the panel rendered it as though it had been (§1bt).
+  assert.equal(record.wallMs, undefined)
+  assert.equal(record.latencyKind, undefined)
   assert.equal(typeof record.taskKey, 'string')
   assert.equal(typeof record.specFingerprint, 'string')
 })

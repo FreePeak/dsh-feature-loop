@@ -357,6 +357,9 @@ export function buildOptimizerState(records: readonly RunRecord[], spec: unknown
   const latencyMean = meanOf(latencies)
   const latencyP95 = p95Of(latencies)
   const roundTrips = records.filter(r => r.latencyKind === 'round-trip').length
+  // `wallMs` is absent on a record that timed nothing; averaging those would
+  // report an absence as zero.
+  const timed = records.filter(r => r.wallMs !== undefined)
   const models = n - roundTrips
   lines.push(
     n === 0 || latencyMean === undefined
@@ -364,7 +367,11 @@ export function buildOptimizerState(records: readonly RunRecord[], spec: unknown
       : `speed: step latency mean ${String(Math.round(latencyMean))}ms, `
         + `p95 ${latencyP95 === undefined ? 'n/a' : `${String(Math.round(latencyP95))}ms`} `
         + `(round-trip ${String(roundTrips)} run(s), model ${String(models)}); `
-        + `wall mean ${String(Math.round(meanOf(records.map(r => r.wallMs)) ?? 0))}ms.`,
+        // Only the runs that timed something, and `n/a` when none did — a mean
+        // over `undefined`s is not zero, it is nothing (§1bt).
+        + `wall mean ${(meanOf(timed.map(r => r.wallMs ?? 0)) === undefined
+          ? 'n/a'
+          : `${String(Math.round(meanOf(timed.map(r => r.wallMs ?? 0)) ?? 0))}ms`)}.`,
   )
 
   // Which axis is worst — every fraction in [0, 1] so they are comparable.

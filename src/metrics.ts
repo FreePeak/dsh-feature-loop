@@ -81,10 +81,17 @@ export interface MetricsSummary {
     steps: AxisMetric
     /** Per-step latency in ms, pooled across every `stepLatencyMs` sample. Records with an empty array contribute nothing here. */
     latencyMs: AxisMetric
-    /** Wall-clock ms per run, over the runs that took a step — see `measuredRuns`. */
+    /**
+     * Wall-clock ms per run, over the runs that TIMED anything — see
+     * `measuredRuns`. Zeros mean no run was timed, not that runs were instant.
+     */
     wallMs: AxisMetric
-    /** What `stepLatencyMs` measured: the common declared kind, or `'mixed'` when records disagree — two differently-labelled numbers must never be averaged into one claim. */
-    latencyKind: 'round-trip' | 'model' | 'mixed'
+    /**
+     * What `stepLatencyMs` measured: the common declared kind, or `'mixed'`
+     * when records disagree — two differently-labelled numbers must never be
+     * averaged into one claim. `undefined` when nothing was timed.
+     */
+    latencyKind?: 'round-trip' | 'model' | 'mixed'
   }
   quality: {
     /** Share of runs that ended `goal-met`. */
@@ -177,7 +184,11 @@ export function summarize(
   const perStepAxis: AxisMetric = axisOf(
     records.filter(r => r.steps > 0).map(r => r.costUSD / r.steps),
   )
-  const wallAxis: AxisMetric = axisOf(ran.map(r => r.wallMs))
+  // Over the records that timed anything: `wallMs` is `undefined` when nothing
+  // was timed, and counting those would put a 0 in the distribution for an
+  // absence (§1bs's shape).
+  const timed = ran.filter(r => r.wallMs !== undefined)
+  const wallAxis: AxisMetric = axisOf(timed.map(r => r.wallMs ?? 0))
   const latencyValues = records.flatMap(r => r.stepLatencyMs)
   const latencyAxis: AxisMetric = { ...axisOf(latencyValues), baseline: base.latencyMs }
 
@@ -193,15 +204,17 @@ export function summarize(
   const measuredKinds = new Set(
     records.filter(r => r.stepLatencyMs.length > 0).map(r => r.latencyKind),
   )
-  // ponytail: `LatencyKind` has no "none" value, so a history with zero timed
-  // steps reports 'round-trip' rather than "measured nothing"; ceiling: the
-  // dashboard cannot distinguish a measured round-trip from an empty window;
-  // upgrade path: widen `LatencyKind` in runlog.ts to carry 'none'.
+  // Upgraded rather than worked around: `RunRecord.latencyKind` is now optional,
+  // so "measured nothing" is expressible and this no longer has to pick a kind
+  // for an empty window.
+  // `undefined` when nothing was timed. It defaulted to `'round-trip'`, which is
+  // a declared MEASUREMENT KIND for a run that never took one — the `ponytail`
+  // note below records why the type had no 'none' and what changed that.
   const latencyKind: MetricsSummary['speed']['latencyKind'] = measuredKinds.size > 1
     ? 'mixed'
     : measuredKinds.size === 1
       ? [...measuredKinds][0]
-      : 'round-trip'
+      : undefined
 
   const alerts: MetricsSummary['alerts'] = []
   const push = (kind: string, detail: string): string => {

@@ -59,6 +59,7 @@ rather than a list of letters:
 | 1bq | Two rates that were one number |
 | 1br | A typical run costs $0.00 and takes 0 steps |
 | 1bs | The human-escalation alert that could never fire |
+| 1bt | Zero milliseconds, round-trip |
 
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
@@ -947,6 +948,44 @@ failure, so the test could never pass no matter what the plugin wrote. And my
 first expectation was `0.5` where the real answer is `1`: the checkpoint fires at
 step 1, before `observeStep` has seen both steps, so the fraction is taken at the
 moment of recording. Both were the test's fault and both looked like the plugin's.
+
+### 1bt. Zero milliseconds, round-trip
+
+**Observed:** §1bp, §1bq, §1br and §1bs each found ONE figure from the same
+sweep. Asking the question systematically — *which fields are computed from a set
+that is empty, constant, or never written by this path?* — found the rest at
+once:
+
+```
+wallMs p50 0 / p95 0 / latest 0,  for all 15 records
+latencyMs  p50 0 / p95 0,          for all 15 records
+latencyKind "round-trip",          for all 15 records
+```
+
+A panel reading that says a run took **0 ms** and its latency was measured
+**round-trip**. Every harness-path record claimed a measurement that was never
+taken.
+
+**Why:** unlike §1bs, there is nothing here to read — `AttentionRouter` had a
+count, but the plugin has no seam that times a step, so `wallMs: 0` and
+`latencyKind: 'round-trip'` were literals standing in for an absence. **The type
+was the defect**: `wallMs: number` and a required `latencyKind` have no way to
+say "not measured", so the absence had to wear a number's clothes.
+
+**Fix:** `RunRecord.wallMs` and `RunRecord.latencyKind` are optional. The
+harness path writes `undefined` for both; `summarize` averages wall-clock over
+records that timed something and reports `latencyKind: undefined` when none did;
+`buildOptimizerState` says `wall mean n/a` rather than `0ms`. The `ponytail`
+note that documented the old compromise — "`LatencyKind` has no 'none' value …
+upgrade path: widen `LatencyKind`" — is now the thing that was done, which is
+the outcome a `ponytail:` note is supposed to produce.
+
+**Verified.** Three assertions in three files, each of which fails if the field
+goes back to a literal: the record test asserts `wallMs === undefined` and
+`latencyKind === undefined`; a metrics test asserts an unmeasured run does not
+put a zero in the wall axis and that one timed run is enough to name the kind;
+the empty-history test asserts no kind is declared. Reverting `wallMs: 0` fails
+the first.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
