@@ -211,7 +211,7 @@ and that is the intended behaviour, not a miss.
 ## Quick start
 
 ```bash
-# 449 tests, no network, no model call — the policy layer is pure
+# 454 tests, no network, no model call — the policy layer is pure
 node --experimental-strip-types --test test/*.test.ts
 
 # the end-to-end demo (needs onegw on :8080; it runs on onegw/execution)
