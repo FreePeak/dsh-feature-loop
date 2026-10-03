@@ -58,7 +58,10 @@ export interface MetricsSummary {
     perRun: AxisMetric
     /** Per-step USD: each run's `costUSD / steps`, zero-step runs excluded (they have no "per step" to divide by). */
     perStep: AxisMetric
-    /** Mean cost of a goal-met run — the price of success. Absent when no run has met its goal, because an absent number is not zero. */
+    /**
+     * Mean cost of a run that met its goal and took a step — the price of
+     * success. Absent when no run has both, because an absent number is not zero.
+     */
     goalMetCost?: number
     /**
      * Sum of `unpricedSteps` across records, exposed whenever non-zero.
@@ -71,12 +74,14 @@ export interface MetricsSummary {
      */
     unpricedSteps: number
   }
+  /** Records the cost/speed axes are computed over. Below `runs` when closed turns took no step. */
+  measuredRuns: number
   speed: {
-    /** Steps per run. */
+    /** Steps per run, over the runs that took a step. */
     steps: AxisMetric
     /** Per-step latency in ms, pooled across every `stepLatencyMs` sample. Records with an empty array contribute nothing here. */
     latencyMs: AxisMetric
-    /** Wall-clock ms per run — every record has one, including the ones that timed no steps. */
+    /** Wall-clock ms per run, over the runs that took a step — see `measuredRuns`. */
     wallMs: AxisMetric
     /** What `stepLatencyMs` measured: the common declared kind, or `'mixed'` when records disagree — two differently-labelled numbers must never be averaged into one claim. */
     latencyKind: 'round-trip' | 'model' | 'mixed'
@@ -155,16 +160,29 @@ export function summarize(
   const runs = records.length
   const base = baseline(records)
 
-  const stepsAxis: AxisMetric = { ...axisOf(records.map(r => r.steps)), baseline: base.steps }
-  const perRunAxis: AxisMetric = { ...axisOf(records.map(r => r.costUSD)), baseline: base.cost }
+  // Runs that took no step are excluded from the cost/speed axes, and the count
+  // is reported beside them.
+  //
+  // Measured 2026-10-04 on the committed history: 13 of 15 records had
+  // `steps: 0`, so `steps.p50` and `cost.perRun.p50` were both **0** — a panel
+  // reading "a typical run costs $0.00 and takes 0 steps". The number was exact;
+  // the reading was wrong, because what the zero meant was "most of these runs
+  // never ran". §1bp fixed the label on those records (they are no longer
+  // `goal-met`); this is the other half — a run with no step contributes no
+  // per-step cost and no per-step latency, so including it can only drag the
+  // distribution toward zero, which describes the population and not the loop.
+  const ran = records.filter(r => r.steps > 0)
+  const stepsAxis: AxisMetric = { ...axisOf(ran.map(r => r.steps)), baseline: base.steps }
+  const perRunAxis: AxisMetric = { ...axisOf(ran.map(r => r.costUSD)), baseline: base.cost }
   const perStepAxis: AxisMetric = axisOf(
     records.filter(r => r.steps > 0).map(r => r.costUSD / r.steps),
   )
-  const wallAxis: AxisMetric = axisOf(records.map(r => r.wallMs))
+  const wallAxis: AxisMetric = axisOf(ran.map(r => r.wallMs))
   const latencyValues = records.flatMap(r => r.stepLatencyMs)
   const latencyAxis: AxisMetric = { ...axisOf(latencyValues), baseline: base.latencyMs }
 
   const met = records.filter(r => r.outcome === 'goal-met')
+  const ranMet = met.filter(r => r.steps > 0)
   const judges = records.flatMap(r => r.judgeScores)
   const qualities = records.flatMap(r => (r.qualityScore === undefined ? [] : [r.qualityScore]))
   const unpricedSteps = records.reduce((sum, r) => sum + r.unpricedSteps, 0)
@@ -262,9 +280,14 @@ export function summarize(
     cost: {
       perRun: perRunAxis,
       perStep: perStepAxis,
-      goalMetCost: met.length > 0 ? mean(met.map(r => r.costUSD)) : undefined,
+      // Over the runs that both met their goal AND took a step. Mean of the
+      // `goal-met` set alone reads far too low on a history where most closed
+      // turns did no work: measured 2026-10-04, $0.00048 across 13 of 15 records
+      // that spent nothing, against $0.0056 for the two that actually ran.
+      goalMetCost: ranMet.length > 0 ? mean(ranMet.map(r => r.costUSD)) : undefined,
       unpricedSteps,
     },
+    measuredRuns: ran.length,
     speed: { steps: stepsAxis, latencyMs: latencyAxis, wallMs: wallAxis, latencyKind },
     quality: {
       goalMetRate: runs > 0 ? met.length / runs : 0,

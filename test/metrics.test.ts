@@ -120,6 +120,34 @@ test('firstPassRate is absent when no record is a retry, rather than echoing goa
   assert.equal(withRetry.quality.firstPassRate, 0.5, 'one of two runs needed no retry')
 })
 
+test('a zero-step run is not a sample of what a run costs', () => {
+  // Measured 2026-10-04 on the committed history: 13 of 15 records had
+  // steps: 0, so steps.p50 and cost.perRun.p50 were BOTH 0 — "a typical run
+  // costs $0.00 and takes 0 steps". Exact arithmetic, misleading reading: the
+  // zero meant "most of these never ran".
+  const history = [
+    ...Array.from({ length: 13 }, () => record({ outcome: 'model-stop', steps: 0, costUSD: 0 })),
+    record({ outcome: 'goal-met', steps: 8, costUSD: 0.004 }),
+    record({ outcome: 'goal-met', steps: 10, costUSD: 0.006 }),
+  ]
+  const s = summarize(history, history)
+  assert.equal(s.runs, 15, 'every closed turn is still a run')
+  assert.equal(s.measuredRuns, 2, 'and the axes say how many of them ran')
+  assert.equal(s.speed.steps.p50, 8, 'p50 steps of the runs that ran')
+  // n=2, so p50 is the lower of the two — the point is that it is NOT 0. With
+  // the 13 non-runs included it would have been exactly 0.
+  assert.equal(s.cost.perRun.p50, 0.004, 'p50 cost is not dragged to zero by the non-runs')
+  assert.equal(s.cost.goalMetCost, 0.005, 'the price of success, over runs that succeeded by doing something')
+
+  // And when NOTHING ran, the axes are absent rather than zero — a 0 p50 with
+  // no measurement behind it is the same false claim in a smaller font.
+  const empty = [record({ outcome: 'model-stop', steps: 0, costUSD: 0 })]
+  const e = summarize(empty, empty)
+  assert.equal(e.measuredRuns, 0)
+  assert.equal(e.cost.perRun.p50, 0, 'the axis shape is unchanged when there is nothing to measure')
+  assert.equal(e.cost.goalMetCost, undefined, 'but no price of success is invented')
+})
+
 test('meanJudge and meanQuality stay absent when nothing was scored — absent is not zero', () => {
   const s = summarize([record(), record()])
   assert.equal(s.quality.meanJudge, undefined)
