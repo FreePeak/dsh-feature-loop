@@ -323,6 +323,38 @@ against each of these criteria.
 
 ---
 
+## 9a. Delivery status — read this before trusting §9
+
+Every module, gate, budget, envelope and command in this document is written and
+tested. **Three call sites are not**, and the pipeline therefore does not yet
+complete a run:
+
+| Written and tested | Not yet written |
+|---|---|
+| `phases.ts`, `pipeline.ts`, `phase-budget.ts`, `evidence.ts`, `yolo.ts`, `sandbox.ts`, `ship.ts` | the code that fills a `PhaseObservation` from the filesystem and from your test command |
+| `evaluateGate`, `transition`, `PhaseAllocator.verdict`, `preCallGuard`, `envelope`, `createSandbox`, `ship`, `renderReport` | the hook that evaluates the gate and calls `transition()` |
+| the phase rail on the page; `make install` | the caller that invokes `ship()` at the end of a phase |
+| the pre-call budget guard, the kill switch, the worktree refusal | the caller that invokes `createSandbox()` before a run |
+
+Today a `pipeline.enabled` deployment starts in `research`, is bounded by that
+phase's own ceiling and wall clock, prices every step, and cannot pass its own
+gate — so it stops rather than proceeding on an unverified result. That is the
+fail-closed direction and it is deliberate, but it is not a working pipeline.
+
+The safety consequence of the missing sandbox caller is the one to hold onto:
+**with no worktree, `gateMode: auto` denies every write.** Containment with
+nothing to contain against is not containment, so the envelope refuses rather
+than defaulting to open. YOLO is therefore not usable end to end yet — it will
+not silently write to your checkout, which is the property that matters while it
+is incomplete.
+
+No end-to-end run has been performed. Every claim in this document comes from
+unit tests and a typecheck. The evidence pack at
+`docs/evidence/local-loop-20260930-214354/` is the hand-built precedent; a
+generated one from a real five-phase run is the next artifact to produce.
+
+---
+
 ## 10. Non-goals
 
 Deliberately excluded, with reasons:

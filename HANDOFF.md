@@ -3,6 +3,26 @@
 Written 2026-09-22 at the end of the session that de-forked this plugin, added
 human approval, containerised it, and verified it end to end in a browser.
 
+**Updated 2026-10-03.** The 0→1 product loop landed on `dsh/zero-to-one`: five
+phases (research → PRD → implement → test → ship), per-phase budgets, a YOLO
+envelope with a worktree sandbox and a kill switch, an evidence bundle per run,
+and `make install`. Design: [`docs/PRD-0to1.md`](docs/PRD-0to1.md).
+
+**Read [`docs/PRD-0to1.md`](docs/PRD-0to1.md) §10 and the README's *Known
+limits → The 0→1 pipeline* before trusting any of it.** Every part exists and is
+tested, and **three call sites do not exist yet**:
+
+- nothing calls `transition()` — a run stays in `research`;
+- nothing fills a `PhaseObservation`, so no gate can pass;
+- nothing calls `ship()` or `createSandbox()`.
+
+That last one matters for safety, not just completeness: with no worktree,
+`gateMode: auto` denies **every** write, which is the correct fail-closed
+direction but means YOLO is not yet usable end to end. The next session's first
+job is the gate evaluator and the phase transition; the second is the evidence
+writer wired into the turn-end seam; the third is a real five-phase run recorded
+in `docs/evidence/`.
+
 **Everything below is true on this machine and on no other.** Read "State of the
 repo" before you do anything.
 
