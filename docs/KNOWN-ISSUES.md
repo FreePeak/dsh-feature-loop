@@ -1036,7 +1036,7 @@ Measured through the real `reviewStep` with this plugin's own spec, over a
 | `tool-cycle` | ✅ | three trailing identical `(tool, argsKey)` pairs |
 | `tool-dominance` | ✅ | one tool owning >60% of a **mixed** run, from step 6 |
 | `excessive-steps` | ✅ | history past 20 |
-| `budget` | ✅ on demand | ≥80% of the ceiling **spent**; a stub run spends nothing |
+| `budget` | ✅ | ≥80% of the ceiling **spent**, measured in `test/plugin-wiring.test.ts` |
 | `quality-drop` | ❌ **not reachable at all** | a `baselineScore` **and** a per-step `score` |
 
 So the claim in §1r's old doc — "`error-cascade` could never fire, so the gate
@@ -1063,6 +1063,24 @@ is one); a mixed tail never produces `tool-cycle` (it needs three trailing
 identical pairs). Forcing one run to satisfy both proves neither — which is the
 §1n trap in a new place: a shape that looks like the thing can be the shape that
 hides it.
+
+**And the row that was "on demand" was the one that needed measuring.** It had
+no plugin-path test, which is §1n's shape: a claim in a table that reads like a
+measurement. Measured — and the first attempt failed, for a reason worth
+recording:
+
+```
+40 priced attempts × $0.30 = $12 spent
+ceiling $10  ->  120%  ->  the CEILING rejects at step 1, no signal is produced
+ceiling $15  ->   80%  ->  `budget` fires and the run continues
+```
+
+**A ceiling that stops the run before `reviewStep` means the signal never gets a
+chance** — and the test read as "unreachable" rather than "the ceiling got there
+first". The fixture now sits the ceiling *above* the spend, and both behaviours
+are asserted: `budget` fires at $15, and moving the ceiling back to $10 fails the
+assertion. This is §1n's trap once more, in the most expensive form yet — a
+guard that stops the very thing it is supposed to warn about.
 
 **What is deliberately not done.** `quality-drop` is the detector the book cares
 about most, and making it live means deciding what the plugin's per-step `score`
