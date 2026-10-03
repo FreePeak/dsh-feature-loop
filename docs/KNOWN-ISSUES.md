@@ -311,6 +311,22 @@ raised within 15s of a page closing still routes as an ask.
 task that produced the harness sentence now produces the plugin's, verbatim,
 with the file absent.
 
+**The integration spec was still testing the old world.** §1be touched only the
+unit suites; the spec that runs the gate inside a REAL harness kept driving it
+with no front end at all, so five of its eleven cases had quietly become tests
+of something else — and four of them either asserted the harness's sentence or
+HUNG for the registry's 10-minute `answerTimeoutMs`, because with the registry
+claiming an ask `next()` (the composer path) is unreachable and nothing ever
+settles it. A case that hangs instead of failing is the worst shape a test can
+have, and it was the direct consequence of the fix, not a flake. Fixed by
+stating BOTH facts a case needs — the watcher, and `dashboard.answers: false`
+so the claim is declined — and by asserting the refusal the model now gets.
+
+**Measured on a profile generated from this HEAD** (not a hand-edited one):
+`ask` + nobody watching returns the plugin's sentence verbatim in the tool
+result, no file is created, and the model stops in one step reporting that no
+human is available — rather than retrying with a wider sandbox permission.
+
 **A trap this change walked into, and the tests had to be fixed for it.** The
 watcher is process-global with a TTL, so it leaks between tests in a file. Four
 existing tests asserted `ask` and started passing or failing depending on which
