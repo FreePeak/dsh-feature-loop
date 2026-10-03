@@ -892,6 +892,51 @@ The bug is *restored*, not the tree: `git checkout --` on one named file. A
 stash would also swallow whatever else the loop wrote, and this demo's whole point
 is that its output is disposable.
 
+### 1q. A call that ran and failed was invisible to the ladder — escalation meant "the gate stopped us"
+
+**Observed 2026-10-03, following §1n's `MODEL ESCALATION` note.** SETUP.md tells a
+reader to watch for it; the demo walkthrough showed a ladder with two rungs. Neither
+could produce it.
+
+Measured, on a generated profile with two rungs, the gate open for `bash`, and
+`escalateAfterFailures: 1`: two runs of `cat /nonexistent-file-xyz` (exit 1, twice)
+produced **no escalation notice**.
+
+**Why.** `policy.pending.error` was set in exactly one branch of
+`tools/pre-execute`: the one where the **gate blocks** a call. A call that
+*executed* and returned a failure never touched it. So `reviewStep`'s `failed` read
+a failed command as a successful step, and in a DSH deployment:
+
+- the ladder climbed only when the gate stopped the loop, never when the work
+  failed — a run failing fast and early stayed on the cheap model for the whole
+  task;
+- `error-cascade` never counted a run that was visibly failing, so the detector
+  built for that case had nothing to count.
+
+The standalone runner records the same outcome from its own tool result, which is
+why the bug exists in one path and not the other and why every test passed:
+**the plugin path had no source for the signal at all.**
+
+**Fix.** `tools/post-execute` is now subscribed — the only event that reports
+`isError` — and it flips `pending.error` for that agent's policy. The event is
+declared locally beside `approval/request`, for the same reason: the package that
+owns it is not among this repo's installed peers, so its `Events` augmentation is
+absent and `ctx.on('tools/post-execute', …)` would not typecheck at all.
+
+**And the regression test had to be built twice, which is the part worth
+keeping.** The first version asserted the climb and PASSED with the flip removed —
+because `bash` is absent from the test `SPEC`'s actuator, so it resolved
+`irreversible`, the **gate blocked it**, and a blocked call sets `pending.error` on
+its own. The test was measuring the gate, not the listener. It only became an
+assertion once `gatePolicies: {bash: 'auto', …}` was passed, leaving
+`tools/post-execute` as the sole thing that can mark the step failed. Verified by
+removing the flip with the gate open: `not ok 18`, and green again with it back.
+
+The general form, and the third time in this session it has appeared: **an
+assertion that survives the removal of the thing it names is not an assertion.**
+A passing test proves the code works; a test that fails when you break the code
+proves the test does.
+
 ### 1. The stylesheet restyled the whole host UI
 
 **Observed:** after the dashboard was folded into the DSH UI, the host's `<body>`

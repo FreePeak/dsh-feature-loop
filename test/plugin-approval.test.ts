@@ -186,11 +186,18 @@ test('the handler is registered on the harness tool-boundary event', async () =>
   // first (it owns the asks), then the session/event recorder, then the
   // step/request/tool hooks. The answerer is always present now — the in-UI
   // page is a claimer, and an unwatched ask must still delegate downstream.
+  //
+  // `tools/post-execute` is the SECOND tool hook and not an extra feature: it is
+  // the only event that reports whether a call that RAN succeeded, and without
+  // it a failed command is indistinguishable from a successful one at the step
+  // boundary (§1q). So a list of tool events that names only `pre-execute` is a
+  // statement about a plugin that cannot see a failure.
   assert.deepEqual(registered(), [
     'approval/request',
     'session/event',
     'agent/pre-step',
     'agent/request',
+    'tools/post-execute',
     'tools/pre-execute',
   ])
   dispose()

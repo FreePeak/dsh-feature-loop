@@ -112,6 +112,22 @@ declare module '@deepseek-ai/cordis' {
      * @param next - the rest of the answerer waterfall.
      * @returns the outcome the ask is resolved with.
      */
+    /**
+     * The outcome of a tool call that RAN. `tools/pre-execute` runs before the
+     * body, so only this event can report `isError` — and without it a failed
+     * command is indistinguishable from a successful one at the step boundary.
+     *
+     * Declared locally for the same reason as `approval/request`: the package
+     * that owns this event is not among this repo's installed peers, so its
+     * `Events` augmentation is absent and `ctx.on('tools/post-execute', …)`
+     * would not typecheck at all.
+     */
+    'tools/post-execute'(
+      this: unknown,
+      exec: { agent?: Agent, call?: { id?: string }, name?: string },
+      result: { isError?: boolean },
+      next: () => Promise<unknown>,
+    ): Promise<unknown>;
     'approval/request'(
       this: unknown,
       question: ApprovalQuestion,
@@ -1370,6 +1386,26 @@ export function apply(
     return routed === undefined ? resolved : { ...resolved, ...routed }
   })
 
+  // The outcome of a call that RAN — the only place `isError` exists.
+  //
+  // `policy.pending.error` used to be set in exactly one branch: the one where
+  // the GATE blocks a call. So a `bash` that executed and exited 1 left it
+  // `false`, `reviewStep` read the step as a success, and in a DSH deployment
+  // the ladder climbed ONLY when the gate stopped the loop — never when the work
+  // failed. `error-cascade` never counted a visibly failing run either. Measured
+  // 2026-10-02 on a two-rung profile with the gate open for `bash`: two runs of
+  // `cat /nonexistent` never produced a MODEL ESCALATION notice (§1q).
+  const disposeResults = ctx.on(
+    'tools/post-execute',
+    (exec: { agent?: Agent }, result: { isError?: boolean }, next: () => Promise<unknown>) => {
+      if (result.isError === true) {
+        const policy = policyFor(exec.agent)
+        if (policy.pending !== undefined) policy.pending.error = true
+      }
+      return next()
+    },
+  )
+
   const disposeTools = ctx.on(
     'tools/pre-execute',
     async ({ agent, name: toolName, arguments: rawArgs }: ToolExecution, next: () => Promise<PreToolDecision>) => {
@@ -1408,6 +1444,7 @@ export function apply(
     disposeStep()
     disposeRequest()
     disposeTools()
+    disposeResults()
     disposeSession?.()
     disposeApproval?.()
     if (dashboard !== undefined) void dashboard.stop()
