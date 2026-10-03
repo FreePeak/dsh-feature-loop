@@ -452,6 +452,66 @@ test('a turn whose start is not in the log reports no wall clock at all', async 
   assert.equal(record.wallMs, undefined, 'no start time means no wall clock, not zero')
 })
 
+test('the history listener is reachable from a SCOPED session event', async () => {
+  // The largest defect in this file's history of them, and the test that would
+  // have caught it.
+  //
+  // The harness emits `session/event` with `this` bound to a per-session SCOPE
+  // CARRIER, and cordis filters hooks by `filter.call(thisArg, hook.ctx)` — so a
+  // listener registered on the root context is unreachable from a scoped carrier
+  // unless it passes `global: true`. Measured 2026-10-04 on a real headless run:
+  // the listener WAS registered (the feed carried the "run history recording to"
+  // note, printed by the same branch) and NOT ONE record was written.
+  //
+  // This context models the filter rather than assuming it: an `on` WITHOUT
+  // `global` is unreachable from a scoped emitter, which is exactly what the
+  // harness does. A stub that ignored the option would have passed the bug.
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-scoped-'))
+  const historyPath = join(dir, 'runs.jsonl')
+  const opened = 1_700_000_000_000
+  const closed = opened + 1_500
+  const events = [
+    { seq: 0, type: 'turn/start', time: opened, data: { turn: 1 } },
+    { seq: 1, type: 'turn/end', time: closed, data: { turn: 1, reason: { kind: 'completed' } } },
+  ]
+  const session = {
+    id: 'sess-scoped',
+    seq: events.length,
+    eventAt: (seq: unknown) => events.find(event => event.seq === seq),
+  }
+
+  // What a scoped emitter can actually reach: only the global hooks.
+  const reachable = new Map<string, Handler>()
+  const ctx = {
+    on(event: string, fn: Handler, options?: { global?: boolean }): () => void {
+      if (options?.global !== true) return () => { /* scope-filtered out */ }
+      reachable.set(event, fn)
+      return () => { reachable.delete(event) }
+    },
+  }
+  Object.assign(ctx as object, { agents: { get: () => session } })
+
+  const dispose = apply(ctx as never, {
+    spec: { ...SPEC, maxSteps: 99 },
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+  })
+
+  const handler = reachable.get('session/event')
+  assert.ok(handler !== undefined, 'session/event must be registered in a way a scope carrier can reach')
+
+  handler(session, events[1])
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline && !existsSync(historyPath)) {
+    await new Promise(resolve => { setTimeout(resolve, 10) })
+  }
+  assert.ok(existsSync(historyPath), 'a scoped turn still produces a record')
+  const [line] = readFileSync(historyPath, 'utf8').trim().split('\n')
+  const record = JSON.parse(line!) as Record<string, unknown>
+  assert.equal(record.wallMs, 1_500, 'the harness clock, read through the scoped path')
+  dispose()
+})
+
 test('a re-delivered turn closer never double-records', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-hist-'))
   const historyPath = join(dir, 'runs.jsonl')
