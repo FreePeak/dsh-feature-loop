@@ -13,6 +13,35 @@ and correctly refused for a reason that had nothing to do with the approval UI.
 
 ## Fixed
 
+**The numbered entries below are this session's findings, in the order they
+were made.** They are numbered by discovery, not by severity, and two of them (1i, 1s)
+were both "1i" until a cross-reference caught it — which is why the map is here
+rather than a list of letters:
+
+| § | finding |
+|---|---|
+| 1a | nothing in this repo ran on the model it was supposed to run on |
+| 1b | `peers resolved` was reported as "your profile is ready" |
+| 1c | `make profile` hung for nine minutes with the registry unreachable |
+| 1d | the settings page wrote a file nothing decided with — and said so |
+| 1e | two shapes of a bad number in the same settings file behaved differently |
+| 1f | `make check` could not run where it was meant to, and `make test` lied |
+| 1g | a safety schema that was never run — and a throw that is loud but not fatal |
+| 1h | `make up` reported a dead container as up — and no HTTP probe can fix it |
+| 1i | the ladder check named three files and the repo has four |
+| 1j | naming a bug while a no-op call would have made the export look used |
+| 1k | a hand-edited settings file can name a tool that does not exist — silently |
+| 1l | picking a posture discards the hand-set fields without saying so |
+| 1m | the settings page called the strictest gate the loosest one |
+| 1n | a MIXED policy file was shown one posture's copy, which was true of one class |
+| 1o | the demo's committed transcript was two runs spliced into one |
+| 1p | a ceiling row that proved nothing about the ceiling |
+| 1q | a call that ran and failed was invisible to the ladder |
+| 1r | a helper whose doc claimed a detector was impossible, tested by the helper |
+| 1s | five of six detectors reach a DSH deployment; the sixth cannot |
+| 1t | KNOWN-ISSUES had two sections numbered 1i, and nothing noticed |
+
+
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
 
 **Observed:** every deployment and the demo ran on concrete model ids —
@@ -1004,7 +1033,7 @@ against, and a mixed tail never produces `tool-cycle`. Forcing one run to satisf
 both proves neither — the same trap as §1n's ceiling row, where a run that
 finished *below* the limit looked like one the limit stopped.
 
-### 1i. Five of six detectors reach a DSH deployment, and the sixth cannot
+### 1s. Five of six detectors reach a DSH deployment, and the sixth cannot
 
 §1r gave the plugin path a readable signals sink. The first question worth asking
 of a seam is not "does it work" but **"what can I now see that I could not
@@ -1070,6 +1099,45 @@ about most, and making it live means deciding what the plugin's per-step `score`
 IS: the judge's review-worthiness is not it (that scores the *previous* step), and
 a rubric the loop does not otherwise compute is a feature, not a fix. Recorded
 rather than invented.
+
+### 1t. Two sections of this file were numbered 1i, and the reader was the only detector
+
+**Found while renaming one and reading the other.** §1i is the ladder check's
+enumeration of model-deciding files; §1s is the detector inventory. Both were
+`1i` until this entry, so **every `§1i` in this file resolved to whichever came
+first** — and three of the four references happened to mean the ladder check, so
+nothing read as wrong. A cross-reference that lands on the wrong section is worse
+than no cross-reference: the reader has no reason to distrust it.
+
+**This file is the record of everything the session got wrong**, which makes it
+the last place that should need a check for its own errors. It is also a plain
+markdown file, for the same reason `README.md` is — and markdown has no
+cross-reference validation, so "every reference resolves" was a thing a person
+was supposed to notice and never had.
+
+**Fixed with `scripts/check-known-issues.mjs`**, in CI and in `make check`, for
+the three failures this file has actually had:
+
+1. a **duplicate letter** — two sections, one name (the live bug);
+2. a section with **no index row**, which is an entry nobody can find;
+3. an index row with **no section**, which is a promise nothing delivers.
+
+Each proven by introducing it: duplicating `1i`, deleting `1p`'s index row, and
+deleting `1p`'s heading respectively — all three exit 1 with the section named.
+The check also resolves every section reference in the prose, which caught a
+literal `§` + `1x` used as a *placeholder* in the new index header and sent me
+looking for a section that did not exist — so the header says "the numbered
+entries" instead.
+
+| § | finding |
+|---|---|
+| 1i | the ladder check named three files and the repo has four |
+| 1s | five of six detectors reach a DSH deployment; the sixth cannot |
+| 1t | KNOWN-ISSUES had two sections numbered 1i, and nothing noticed |
+
+The index the check maintains is the table at the top of this section, so the map
+a reader uses and the map the check verifies are the same rows rather than two
+things that can disagree.
 
 ### 1. The stylesheet restyled the whole host UI
 

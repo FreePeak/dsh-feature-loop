@@ -774,7 +774,7 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 ### Verifying the whole thing
 
 ```bash
-make verify          # compose + tests + typecheck + the six drift checks + integration
+make verify          # compose + tests + typecheck + the seven drift checks + integration
 ```
 
 That is the whole of it. Spelled out, `make verify` is:
@@ -791,6 +791,8 @@ node scripts/check-typecheck-list.mjs                   # and every harness-free
 node scripts/check-ladder-models.mjs                    # and no rung names an undeclared model
 node scripts/check-dead-exports.mjs                     # and no export is unreachable
 node scripts/check-noop-config-keys.mjs                 # and no config key claims to work unwired
+node scripts/check-known-issues.mjs                    # and KNOWN-ISSUES' sections, index and
+                                                           #   cross-references all agree
 bash test/integration/run.sh                            # 11 pass, in the real harness
 bash demo/run.sh                                        # goal-met
 ```
