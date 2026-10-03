@@ -396,6 +396,62 @@ test('a closed turn records the reviews its router counted', async () => {
   dispose()
 })
 
+test('a closed turn reports the wall clock the harness logged', async () => {
+  // §1bt made `wallMs` optional because the plugin path had no clock. It has
+  // one: every `SessionEvent` carries `time`, and the turn's own `turn/start`
+  // and `turn/end` are both logged — so the difference is the run's duration,
+  // measured by the harness rather than invented here (§1bu gave the runner a
+  // `performance.now()` span; this is the same measurement for this path).
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-wall-'))
+  const historyPath = join(dir, 'runs.jsonl')
+  const opened = 1_700_000_000_000
+  const closed = opened + 62_314
+  const events = [
+    { seq: 0, type: 'turn/start', time: opened, data: { turn: 1 } },
+    { seq: 1, type: 'turn/end', time: closed, data: { turn: 1, reason: { kind: 'completed' } } },
+  ]
+  const session = {
+    id: 'sess-wall',
+    seq: events.length,
+    eventAt: (seq: unknown) => events.find(event => event.seq === seq),
+  }
+  const { ctx, handler } = fakeCtx()
+  Object.assign(ctx as object, { agents: { get: () => session } })
+  const dispose = apply(ctx as never, {
+    spec: { ...SPEC, maxSteps: 99 },
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+  })
+  const fn = handler('session/event') as unknown as (s: unknown, e: unknown) => unknown
+  fn(session, events[1])
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline && !existsSync(historyPath)) {
+    await new Promise(resolve => { setTimeout(resolve, 10) })
+  }
+  const [line] = readFileSync(historyPath, 'utf8').trim().split('\n')
+  const record = JSON.parse(line!) as Record<string, unknown>
+  assert.equal(record.startedAt, opened, 'the turn\'s own start, not the moment of writing')
+  assert.equal(record.endedAt, closed)
+  assert.equal(record.wallMs, 62_314, 'the measured run, not an absence and not zero')
+  dispose()
+})
+
+test('a turn whose start is not in the log reports no wall clock at all', async () => {
+  // The other half: an absent start must read as absent. `0` is what §1bt
+  // removed, and reporting it again would be the same defect wearing a fix.
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-nowall-'))
+  const historyPath = join(dir, 'runs.jsonl')
+  const session = { id: 'sess-nowall', seq: 0, eventAt: () => undefined }
+  await emitSessionEvent({ spec: SPEC }, historyPath, {
+    type: 'turn/end',
+    time: 1_700_000_000_000,
+    data: { turn: 1, reason: { kind: 'completed' } },
+  }, session)
+  const [line] = readFileSync(historyPath, 'utf8').trim().split('\n')
+  const record = JSON.parse(line!) as Record<string, unknown>
+  assert.equal(record.wallMs, undefined, 'no start time means no wall clock, not zero')
+})
+
 test('a re-delivered turn closer never double-records', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-hist-'))
   const historyPath = join(dir, 'runs.jsonl')
