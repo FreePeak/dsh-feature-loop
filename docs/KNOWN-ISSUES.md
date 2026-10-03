@@ -56,6 +56,7 @@ rather than a list of letters:
 | 1bn | One gate, three tables, and nothing that compared them |
 | 1bo | The release workflow produced a tag and nothing else |
 | 1bp | An 87% success rate, computed from turns that did nothing |
+| 1bq | Two rates that were one number |
 
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
@@ -834,6 +835,39 @@ because that is the only file with a priced-session fixture; moving it into
 which is worse than putting the test where the fixture lives. And `ctx.agents`
 has to be wired BEFORE `apply` — the plugin resolves the session's agent when it
 records the turn, and the assignment silently did nothing when it came after.
+
+### 1bq. Two rates that were one number
+
+**Observed:** the same roll-up that reported `goalMetRate 0.867` also reported
+`firstPassRate 0.867` — on a history where **all 15 records had `pass: 1`**.
+
+`firstPassRate` is documented as "the fraction the loop got right without buying
+a retry". A reader seeing two rates in the same block takes that as two pieces
+of evidence. It was one number twice: `recordTurn` hardcodes `pass: 1`, and a
+`pass: 2` record comes only from the CLI's `runRefined`, which is not on the
+harness path. So `met.filter(r => r.pass === 1)` was the same set as `met`,
+always, by construction.
+
+**Why nobody noticed:** the number was not wrong. It was correct arithmetic over
+a set that never varies — which is the harder version of this file's recurring
+shape, and the second time in two turns that a *derived* figure has been the
+defect rather than the code that produced it.
+
+**Fix:** `firstPassRate` is `undefined` unless some record reports `pass > 1`,
+and it answers normally the moment one does — a real multi-pass history from
+`runRefined` still gets the metric. Absent is distinguishable from a real `0`,
+which is the whole point: `0` would mean "no run ever landed on its first pass".
+
+**Verified.** Both directions in one test: two single-pass `goal-met` records
+give `goalMetRate 1, firstPassRate undefined`; adding a `pass: 2` record gives
+`goalMetRate 1, firstPassRate 0.5`. The empty-history case now asserts `undefined`
+rather than `0`, with the reason inline.
+
+Measured on the committed history, after both this and §1bp:
+
+```
+goalMet 0.067,  firstPass undefined
+```
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 

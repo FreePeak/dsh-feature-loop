@@ -100,6 +100,26 @@ test('goalMetRate counts goal-met outcomes; firstPassRate only first-pass succes
   assert.equal(s.quality.firstPassRate, 0.25)
 })
 
+test('firstPassRate is absent when no record is a retry, rather than echoing goalMetRate', () => {
+  // The defect: `recordTurn` hardcodes `pass: 1`, so on the harness path
+  // `met.filter(pass === 1)` IS `met` and the two numbers are one number.
+  // Measured 2026-10-04 on the committed history — goalMetRate 0.867,
+  // firstPassRate 0.867, all 15 records pass === 1. A reader saw two
+  // independent-looking rates.
+  const single = summarize([record({ outcome: 'goal-met' }), record({ outcome: 'goal-met' })])
+  assert.equal(single.quality.goalMetRate, 1)
+  assert.equal(single.quality.firstPassRate, undefined)
+
+  // And it answers normally the moment a retry exists, which is the only way one
+  // can: the CLI's runRefined writes them.
+  const withRetry = summarize([
+    record({ outcome: 'goal-met', pass: 1 }),
+    record({ outcome: 'goal-met', pass: 2 }),
+  ])
+  assert.equal(withRetry.quality.goalMetRate, 1)
+  assert.equal(withRetry.quality.firstPassRate, 0.5, 'one of two runs needed no retry')
+})
+
 test('meanJudge and meanQuality stay absent when nothing was scored — absent is not zero', () => {
   const s = summarize([record(), record()])
   assert.equal(s.quality.meanJudge, undefined)
@@ -184,7 +204,10 @@ test('an empty record list summarizes to zeros without throwing', () => {
   assert.equal(s.provisional, true)
   assert.equal(s.malformed, 0)
   assert.equal(s.quality.goalMetRate, 0)
-  assert.equal(s.quality.firstPassRate, 0)
+  // Absent, not zero: with no records there are no passes to be first of, and
+  // a 0 here would be indistinguishable from a real "no run ever landed on its
+  // first pass" — which is exactly the confusion this field is being fixed for.
+  assert.equal(s.quality.firstPassRate, undefined)
   assert.equal(s.quality.reviewFraction, 0)
   assert.equal(s.quality.meanJudge, undefined)
   assert.equal(s.quality.meanQuality, undefined)
