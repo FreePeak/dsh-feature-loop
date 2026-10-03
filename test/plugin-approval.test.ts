@@ -26,7 +26,7 @@
  */
 
 import { strict as assert } from 'node:assert'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -325,6 +325,10 @@ test('a closed turn appends exactly one run record with metered numbers', async 
   assert.equal(record.costUSD, 0)
   assert.equal(record.maxSteps, 8)
   assert.equal(record.budgetUSD, 1)
+  // From the router, so a run that asked for reviews reports them. This was a
+  // literal `0`, which meant the Metrics "Human escalation rate > 15%" alert
+  // could never fire on any harness-path record however many reviews happened.
+  assert.equal(record.reviewFraction, 0, 'no reviews were requested, so the fraction is zero')
   // A turn that took no step is NOT goal-met, whatever the transport called it.
   // `completed` means the transport closed; it does not mean the loop worked.
   // Measured 2026-10-04: 13 of 15 records in the committed history were
@@ -337,6 +341,55 @@ test('a closed turn appends exactly one run record with metered numbers', async 
   assert.equal(record.latencyKind, 'round-trip')
   assert.equal(typeof record.taskKey, 'string')
   assert.equal(typeof record.specFingerprint, 'string')
+})
+
+test('a closed turn records the reviews its router counted', async () => {
+  // `recordTurn` wrote a literal `reviewFraction: 0`, so every harness-path
+  // record claimed a zero human-escalation rate and the Metrics "> 15%"
+  // alert could never fire — however many reviews the loop had requested.
+  // Measured 2026-10-04 on the committed history: 14 of 15 records said 0 and
+  // the 15th said 0.1 — and the 15th came from the CLI runner, not this path.
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-hist-rev-'))
+  const historyPath = join(dir, 'runs.jsonl')
+  // `agents` BEFORE `apply`: `recordTurn` resolves the session's agent through
+  // `ctx.agents`, and without it the turn is recorded against the AGENT-LESS
+  // policy — a different policy, whose router never saw my reviews. That is not
+  // a test artefact; it is the same fallback a real fiber takes.
+  const { ctx, handler } = fakeCtx()
+  const agent = {
+    id: 'sess-rev',
+    session: { id: 'sess-rev', snapshotEvents: () => [] },
+  }
+  Object.assign(ctx as object, { agents: { get: () => agent } })
+  const dispose = apply(ctx as never, {
+    spec: { ...SPEC, maxSteps: 99 } as NonNullable<CreatePolicyOptions['spec']>,
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+    router: { checkpointAtStep: 1 },
+  })
+
+  // Two steps, and the checkpoint at step 1 — the review an operator configures.
+  const pre = handler('agent/pre-step') as unknown as (
+    p: unknown, n: () => Promise<unknown>,
+  ) => Promise<unknown>
+  for (const step of [1, 2]) {
+    await pre(
+      { agent, messages: [], turn: 1, step, signal: new AbortController().signal },
+      async () => ({ kind: 'enter', messages: [] }),
+    )
+  }
+
+  const fn = handler('session/event') as unknown as (s: unknown, e: unknown) => unknown
+  fn(agent, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline && !existsSync(historyPath)) {
+    await new Promise(resolve => { setTimeout(resolve, 10) })
+  }
+  assert.ok(existsSync(historyPath), 'the turn must be recorded at all')
+  const [line] = readFileSync(historyPath, 'utf8').trim().split('\n')
+  const record = JSON.parse(line!) as Record<string, unknown>
+  assert.equal(record.reviewFraction, 1, 'the checkpoint review, over the steps the router saw')
+  dispose()
 })
 
 test('a re-delivered turn closer never double-records', async () => {

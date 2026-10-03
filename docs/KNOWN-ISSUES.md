@@ -58,6 +58,7 @@ rather than a list of letters:
 | 1bp | An 87% success rate, computed from turns that did nothing |
 | 1bq | Two rates that were one number |
 | 1br | A typical run costs $0.00 and takes 0 steps |
+| 1bs | The human-escalation alert that could never fire |
 
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
@@ -911,6 +912,41 @@ entries running.** At n=2, `percentile` returns the *lower* of the two values,
 so `p50 > 0.004` failed against a correct `0.004`. The code was right and the
 test's expectation was wrong — which is the failure mode this file keeps
 documenting, wearing a different hat.
+
+### 1bs. The human-escalation alert that could never fire
+
+**Observed:** `reviewFraction` — documented as "the human-escalation rate", and
+the input to `summarize`'s **"Human escalation rate > 15%" alert** — was written
+as a literal `0` by `recordTurn`. Measured 2026-10-04 on the committed history:
+14 of 15 records said `0`, and the 15th (`0.1`) came from the CLI runner, which
+is a different code path.
+
+So no harness-path record could ever exceed 0, and **the alert could not fire** —
+not rarely, not under load, not ever. A run that surfaced every single step for
+review would report a 0% escalation rate and light no bulb.
+
+**Why:** `AttentionRouter` has counted reviews since it was written —
+`reviewsRequested`, incremented in all five places a review can originate
+(`operatorRequest`, `checkpoint`, critical signal, gate hold, judge) — and
+exposes the number through its own `stats()`. The plugin then wrote `0` into the
+record instead of reading it, two objects away from where the count already was.
+
+**Fix:** `reviewFraction: policy.router.stats().fraction`.
+
+**Verified.** Two tests. The router half asserts the arithmetic through
+`createPolicy` (2 steps, checkpoint at 1 → `fraction 0.5`). The record half
+drives the real `session/event` listener with `ctx.agents` wired before `apply`
+— without it the turn is recorded against the agent-less policy, a *different*
+policy whose router never saw the reviews — and asserts the record says `1`.
+Reverting the fix fails the second one.
+
+**And two mistakes of my own, recorded because the entry above them is about a
+number being wrong.** My first poll loop was `while (readFileSync(path) === '')`,
+which throws ENOENT on a file that does not exist yet — the poll itself was the
+failure, so the test could never pass no matter what the plugin wrote. And my
+first expectation was `0.5` where the real answer is `1`: the checkpoint fires at
+step 1, before `observeStep` has seen both steps, so the fraction is taken at the
+moment of recording. Both were the test's fault and both looked like the plugin's.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 

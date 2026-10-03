@@ -557,6 +557,30 @@ test('a THROWING ctx.agents still records the turn', async () => {
   assert.equal(JSON.parse(line!).runId, 'sess-throwing')
 })
 
+test('the record reports the reviews the router counted, not a literal zero', async () => {
+  // `recordTurn` wrote `reviewFraction: 0`, so every harness-path record
+  // claimed a human-escalation rate of exactly zero and `summarize`'s
+  // "Human escalation rate > 15%" alert could never fire however many reviews
+  // the loop had requested. The count was on `policy.router` the whole time,
+  // exposed by its own `stats()`.
+  //
+  // Driven through `createPolicy`, which is the same factory `apply` uses, so
+  // the object under test is the one `recordTurn` reads.
+  const policy: FeatureLoopPolicy = createPolicy({
+    spec: { ...SPEC, maxSteps: 99, costBudgetUSD: 5 },
+    router: { checkpointAtStep: 1 },
+  })
+  policy.router.observeStep()
+  policy.router.observeStep()
+  const asked = policy.router.checkpoint(1)
+  assert.equal(asked?.review, true, 'the checkpoint is the configured review')
+
+  const stats = policy.router.stats()
+  assert.equal(stats.steps, 2)
+  assert.equal(stats.reviews, 1)
+  assert.equal(stats.fraction, 0.5, '1 review over 2 steps is 50%, which is what the record must say')
+})
+
 test('a turn that ran steps keeps goal-met when the transport completed', async () => {
   // The other half of the zero-step rule: the guard must not turn a real run
   // into a failure. This charges a priced assistant message first, so the record

@@ -954,7 +954,12 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
     latencyKind: 'round-trip',
     signals: policy.history.length === 0 ? [] : policy.history.map(() => ({ kind: 'detector', severity: 'info' })),
     judgeScores: [],
-    reviewFraction: 0,
+    // From the router that counted them. `recordTurn` wrote a literal `0` here,
+    // so every harness-path record reported a human-escalation rate of exactly
+    // zero — and `summarize`'s "Human escalation rate > 15%" alert could never
+    // fire, however many reviews the loop had actually requested. The count was
+    // on `policy.router` the whole time, exposed by its own `stats()`.
+    reviewFraction: policy.router.stats().fraction,
     specFingerprint: spec === undefined ? 'none' : runlog.specFingerprint(spec),
   }
   runlog.appendRecord(historyPath, record)
