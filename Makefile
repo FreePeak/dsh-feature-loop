@@ -366,6 +366,11 @@ e2e-in-ui: ## Click Allow/Reject on the in-UI page against a RUNNING profile (DS
 	@test -n "$(DSH_URL)" || { echo "DSH_URL is required: paste the 'dsh web:' line from the server log"; exit 2; }
 	@node test/e2e-in-ui.mjs allow && node test/e2e-in-ui.mjs reject
 
+.PHONY: e2e-composer
+e2e-composer: ## Answer a run from the HARNESS's own composer, with no dashboard page (DSH_URL=…)
+	@test -n "$(DSH_URL)" || { echo "DSH_URL is required: paste the 'dsh web:' line from the server log"; exit 2; }
+	@node test/e2e-composer.mjs
+
 .PHONY: e2e-settings
 e2e-settings: ## Click the SETTINGS page in a real browser (DSH_URL=…; opt-in, not part of verify)
 	@test -n "$(DSH_URL)" || { echo "DSH_URL is required: paste the 'dsh web:' line from the server log"; exit 2; }

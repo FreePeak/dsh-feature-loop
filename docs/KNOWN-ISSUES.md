@@ -1466,6 +1466,29 @@ live client and no page polling, an irreversible tool returns `ask`; reverting
 `someoneCanAnswer` to `watcherActive()` alone fails that test; with no gateway (or
 one reporting no client) it still returns `deny` with §1bb's two phrases.
 
+**Proven on the wire, in BOTH directions.** A live composer-only run, driven
+through a real browser against a generated web profile — task submitted through
+the harness's own conversation composer, the Feature Loop page never opened:
+
+```
+composer card: "REVIEW REQUESTED (policy): write: irreversible is always
+                approved by a human — write /priv…"
+asks settled by the COMPOSER: 1 (waits ms: 45)
+proof: /private/tmp/composer-proof/composer.txt exists ("hello")
+```
+
+Rebuilt with `someoneCanAnswer` reverted to `watcherActive()` alone, the same
+task was **denied up front** with §1bb's sentence, the composer card never
+appeared, and `panel.waitFor` timed out after 240s with zero asks. That is the
+whole defect, in two runs. `make e2e-composer` keeps it that way.
+
+**The trap in proving it, which cost this round an hour.** `/api/state` IS a
+watcher heartbeat (`noteWatcher`), so my own verification `curl` set
+`watching: true` inside the 15s TTL and the gate took the *dashboard* branch —
+the run passed while demonstrating nothing about the composer. Same class as
+§1be's fixtures asserting themselves. The rule now in `e2e-composer.mjs`'s
+banner: never poll `/api/state` while this runs.
+
 **One thing this does NOT fix, recorded rather than hidden:** the harness's
 `hasLiveClient()` answers "is a client stream open", not "is a human at this
 client". An idle browser tab satisfies it, and the ask then waits for the full
