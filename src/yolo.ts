@@ -54,6 +54,8 @@ export interface EnvelopeRequest {
    * against, so a missing root denies rather than defaulting to "allowed".
    */
   worktreeRoot?: string
+  /** The project's test command, for the shell allow-list's one escape hatch. */
+  verifyCommand?: string
 }
 
 /**
@@ -291,7 +293,7 @@ export function envelope(request: EnvelopeRequest): EnvelopeDecision {
     if (command === undefined) {
       return { kind: 'deny', reason: 'shell call with no readable command — the envelope denies what it cannot read' }
     }
-    return envelopeCommand(command)
+    return envelopeCommand(command, { worktreeRoot: request.worktreeRoot, verifyCommand: request.verifyCommand })
   }
 
   return {
@@ -309,7 +311,7 @@ export function envelope(request: EnvelopeRequest): EnvelopeDecision {
  * @param command - the command line as the model wrote it.
  * @returns allow or deny.
  */
-export function envelopeCommand(command: string): EnvelopeDecision {
+export function envelopeCommand(command: string, policy: ShellPolicy = {}): EnvelopeDecision {
   const words = commandWords(command)
   if (words.length === 0) return { kind: 'deny', reason: 'empty command' }
 
@@ -358,7 +360,100 @@ export function envelopeCommand(command: string): EnvelopeDecision {
     return { kind: 'deny', reason: 'changing permissions or ownership is outside the envelope' }
   }
 
+  // The one command the loop is allowed to execute is the one the operator
+  // configured as their test command. Matched in full, so an allowed `npm test`
+  // cannot be extended with `&& something-else`.
+  if (policy.verifyCommand !== undefined && command.trim() === policy.verifyCommand.trim()) {
+    return { kind: 'allow', reason: 'the configured verify command' }
+  }
+  if (!(READ_ONLY_COMMANDS.has(words[0]!))) {
+    return {
+      kind: 'deny',
+      reason: `"${words[0]}" is not on the shell allow-list. YOLO runs unattended, and a shell can do anything `
+        + 'a deny-list failed to name — so the list is of what it MAY run, not what it may not. '
+        + (INTERPRETERS.has(words[0]!)
+          ? ' An interpreter is not on the list because it can compute its own paths at runtime, which no '
+            + 'reading of the command can contain.'
+          : ' Set pipeline.testCommand to the one command the loop is allowed to execute.'),
+    }
+  }
+  const escape = escapesWorktree(words, policy.worktreeRoot)
+  if (escape !== undefined) return { kind: 'deny', reason: escape }
   return { kind: 'allow', reason: `shell: ${words[0]}` }
+}
+
+/**
+ * The exact command the loop is permitted to execute, and the root it is
+ * permitted to touch.
+ *
+ * An exact string match, not a prefix: `npm test` being allowed must not imply
+ * `npm test && rm -rf ~` is allowed, and only the operator knows which command
+ * actually verifies their project.
+ */
+export interface ShellPolicy {
+  /** The project's test command. Matched in full. */
+  verifyCommand?: string
+  /** The run's worktree, for the path-containment check. */
+  worktreeRoot?: string
+}
+
+/**
+ * Commands that only read.
+ *
+ * Deliberately a short list of things whose whole purpose is inspection. Every
+ * one either cannot write or writes only to its own stdout, which is why they
+ * survive without a path check on their output.
+ */
+export const READ_ONLY_COMMANDS: ReadonlySet<string> = new Set([
+  'ls', 'pwd', 'cat', 'head', 'tail', 'wc', 'grep', 'rg', 'find', 'file', 'stat',
+  'which', 'env', 'true',
+])
+
+/**
+ * Commands that execute code, and are therefore NOT on the read-only list.
+ *
+ * Named here only to record why they are absent. `node -e "…"` computes its own
+ * paths at runtime, so no amount of inspecting the command's tokens can contain
+ * it — the string it writes to is not in the argv. An allow-list of interpreters
+ * is not containment.
+ *
+ * They remain reachable through the one escape hatch: the operator's configured
+ * `verifyCommand`, matched in full. So a YOLO run can still run the test suite,
+ * and can run **nothing else**.
+ */
+export const INTERPRETERS: ReadonlySet<string> = new Set([
+  'node', 'npm', 'pnpm', 'npx', 'make', 'sh', 'bash', 'python', 'python3', 'deno', 'bun',
+])
+
+/**
+ * Find a token that names a path outside the worktree.
+ *
+ * The check that makes `cat ~/.ssh/id_rsa` and `sed -i /elsewhere/f` fail. It
+ * fires on `~`, on any absolute path, and on any relative path carrying a `..`.
+ * A bare word like `src` is left alone: it is relative to the command's own cwd,
+ * which the harness already pins to the worktree.
+ *
+ * @param words - the tokenised command.
+ * @param root - the run's worktree.
+ * @returns a reason when a token escapes, `undefined` when none does.
+ */
+export function escapesWorktree(words: readonly string[], root: string | undefined): string | undefined {
+  if (root === undefined) {
+    return 'YOLO has no worktree to contain shell commands against, so no shell command is allowed'
+  }
+  for (const word of words) {
+    if (word.startsWith('-')) continue
+    if (word.startsWith('~')) {
+      return `"${word}" is outside the worktree: ~ is the home directory, not the run's directory`
+    }
+    if (word.includes('..')) {
+      return `"${word}" traverses out of the worktree`
+    }
+    if (word.startsWith('/') && !isInside(root, word)) {
+      return `"${word}" is outside the worktree — YOLO contains every path it touches`
+    }
+  }
+  return undefined
 }
 
 /** Judge a `git` invocation. */

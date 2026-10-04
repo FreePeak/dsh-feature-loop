@@ -15,10 +15,13 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
 import {
+  INTERPRETERS,
   PROTECTED_BRANCHES,
+  READ_ONLY_COMMANDS,
   commandWords,
   envelope,
   envelopeCommand,
+  escapesWorktree,
   isForbiddenPath,
   isInside,
   killSwitchDecision,
@@ -27,8 +30,13 @@ import {
 const ROOT = '/tmp/fl-run/worktree'
 
 /** Judge a shell command as the bash tool would present it. */
-function shell(command: string): ReturnType<typeof envelope> {
-  return envelope({ tool: 'bash', args: { command }, worktreeRoot: ROOT })
+function shell(command: string, verifyCommand?: string): ReturnType<typeof envelope> {
+  return envelope({
+    tool: 'bash',
+    args: { command },
+    worktreeRoot: ROOT,
+    ...(verifyCommand === undefined ? {} : { verifyCommand }),
+  })
 }
 
 /** Judge a write as the write tool would present it. */
@@ -157,20 +165,23 @@ describe('what YOLO allows', () => {
     assert.equal(shell('gh pr list').kind, 'deny', 'reading PRs is harmless but is not what the ship phase needs')
   })
 
-  it('allows ordinary development commands', () => {
+  it('denies build and test runners, because they execute code', () => {
+    // This is the change that closed the shell hole. `npm test` and `cargo
+    // build` run whatever the project's own config says, from wherever that code
+    // chooses — so they are reachable only as the operator's configured
+    // `verifyCommand`, never because the model asked nicely.
+    for (const command of ['npm test', 'node --test', 'pnpm build', 'tsc --noEmit', 'cargo build --release', 'npm run publish-docs']) {
+      assert.equal(shell(command).kind, 'deny', `should have denied: ${command}`)
+    }
+  })
+
+  it('allows the git the run needs to commit and to be judged', () => {
     for (const command of [
-      'npm test',
-      'node --test',
-      'pnpm build',
-      'npm run publish-docs', // must not be caught by the `npm publish` prefix
       'git status',
       'git add -A',
       'git commit -m "feat: x"',
       'git diff --stat',
-      'tsc --noEmit',
-      'cargo build --release',
-      'ls -la',
-      'grep -r foo src/',
+      'git log --oneline',
     ]) {
       assert.equal(shell(command).kind, 'allow', `should have allowed: ${command}`)
     }
@@ -235,10 +246,11 @@ describe('dangerous shell shapes', () => {
     assert.equal(shell('rm -rf /usr').kind, 'deny')
   })
 
-  it('allows deleting a relative path the loop itself created', () => {
-    // The worktree can always be removed by `git worktree remove`, so a loop
-    // does not need a blunt instrument for cleanup.
-    assert.equal(shell('rm -f build/output.tmp').kind, 'allow')
+  it('denies deletion entirely, even of a relative path the loop created', () => {
+    // The worktree is removed by `git worktree remove`, which the loop may run.
+    // A shell `rm` adds nothing and is one more way out of the envelope.
+    assert.equal(shell('rm -f build/output.tmp').kind, 'deny')
+    assert.equal(shell('rm -rf src').kind, 'deny')
   })
 
   it('denies changing permissions or ownership', () => {
@@ -305,11 +317,14 @@ describe('a full unattended run raises zero prompts', () => {
   ]
 
   it('asks about nothing — every verdict is allow or deny, never ask', () => {
-    const results = SCRIPT.map(call => envelope({ ...call, worktreeRoot: ROOT }))
+    // The verify command is configured here, because that is the one shell call
+    // an unattended run may make and it has to come from somewhere.
+    const results = SCRIPT.map(call => envelope({ ...call, worktreeRoot: ROOT, verifyCommand: 'npm test' }))
     const asks = results.filter(r => 'ask' in r)
     assert.equal(asks.length, 0, `YOLO must never ask; ${asks.length} call(s) tried`)
-    // And the legitimate half of the script is genuinely allowed, so this is not
-    // passing by denying everything.
+    // The legitimate half is genuinely allowed, so this cannot pass by denying
+    // everything — which matters, because a YOLO that denies everything looks
+    // exactly like a safe one until you try to work with it.
     assert.equal(results.filter(r => r.kind === 'allow').length, SCRIPT.length)
   })
 
@@ -325,6 +340,97 @@ describe('a full unattended run raises zero prompts', () => {
     const results = forbidden.map(call => envelope({ ...call, worktreeRoot: ROOT }))
     assert.equal(results.filter(r => r.kind === 'deny').length, forbidden.length)
     assert.equal(results.filter(r => 'ask' in r).length, 0)
+  })
+})
+
+describe('the shell cannot escape the worktree', () => {
+  // The regression this whole section exists for. A deny-list of command
+  // prefixes looked complete and was not: `bash` was allowed unless its first
+  // two words matched a forbidden prefix, so a redirect, a `sed -i` on an
+  // absolute path, or `cat ~/.ssh/id_rsa` all passed — and every other YOLO
+  // guarantee was defeated by the shell tool.
+  it('denies a redirect that writes outside the worktree', () => {
+    assert.equal(shell('echo pwned > /Users/someone/evil.js').kind, 'deny')
+  })
+
+  it('denies an in-place edit of a file outside the worktree', () => {
+    assert.equal(shell("sed -i '' 's/a/b/' /Users/someone/secret.txt").kind, 'deny')
+  })
+
+  it('denies reading a credential by home-relative path', () => {
+    assert.equal(shell('cat ~/.ssh/id_rsa > /tmp/exfil').kind, 'deny')
+  })
+
+  it('denies a `cd` out of the worktree', () => {
+    assert.equal(shell('cd /Users/somewhere/else && git commit -am x').kind, 'deny')
+  })
+
+  it('denies a traversal out of the worktree', () => {
+    assert.equal(shell('cat ../../etc/passwd').kind, 'deny')
+  })
+
+  it('denies every interpreter, because one computes its own paths at runtime', () => {
+    // `node -e "writeFileSync(HOME + '/x')"` puts no outside path in the argv, so
+    // no amount of reading the command can contain it. An allow-list that
+    // includes interpreters is not containment.
+    for (const tool of INTERPRETERS) {
+      assert.equal(READ_ONLY_COMMANDS.has(tool), false, `${tool} must not be on the read-only list`)
+    }
+    assert.equal(shell('node -e "require(\'fs\').writeFileSync(process.env.HOME+\'/x\',\'y\')"').kind, 'deny')
+    assert.equal(shell('npm run deploy').kind, 'deny')
+    assert.equal(shell('bash -c "rm -rf ~"').kind, 'deny')
+  })
+
+  it('denies any shell command at all when there is no worktree', () => {
+    // Containment with nothing to contain against is not containment.
+    const r = envelope({ tool: 'bash', args: { command: 'ls' } })
+    assert.equal(r.kind, 'deny')
+    assert.match(r.reason, /no worktree/)
+  })
+
+  it('allows reading inside the worktree', () => {
+    for (const command of ['ls -la src', 'cat package.json', 'grep -r foo src', 'wc -l README.md', 'find . -name "*.ts"']) {
+      assert.equal(shell(command).kind, 'allow', `should have allowed: ${command}`)
+    }
+  })
+
+  it('allows the git the run needs, and nothing further', () => {
+    for (const command of ['git status --porcelain', 'git diff --stat', 'git add -A', 'git commit -m x', 'git rev-parse HEAD']) {
+      assert.equal(shell(command).kind, 'allow', `should have allowed: ${command}`)
+    }
+  })
+
+  it('allows exactly the configured verify command, and nothing near it', () => {
+    assert.equal(shell('npm test', 'npm test').kind, 'allow')
+    assert.equal(shell('npm test -- --coverage', 'npm test').kind, 'deny', 'the match is exact, not a prefix')
+    assert.equal(shell('npm test && rm -rf /', 'npm test').kind, 'deny')
+    assert.equal(shell('npm publish', 'npm test').kind, 'deny')
+  })
+
+  it('reports why a command was refused', () => {
+    const r = shell('cat ~/.ssh/id_rsa')
+    assert.equal(r.kind, 'deny')
+    assert.match(r.reason, /outside the worktree|not on the shell allow-list/)
+  })
+})
+
+describe('escapesWorktree', () => {
+  it('names the token that escapes', () => {
+    assert.match(escapesWorktree(['cat', '/etc/passwd'], '/wt') ?? '', /outside the worktree/)
+    assert.match(escapesWorktree(['cat', '~/x'], '/wt') ?? '', /home directory/)
+    assert.match(escapesWorktree(['cat', '../x'], '/wt') ?? '', /traverses/)
+  })
+
+  it('passes a bare relative word, which resolves against the command cwd', () => {
+    assert.equal(escapesWorktree(['cat', 'src', 'a.ts'], '/wt'), undefined)
+  })
+
+  it('ignores flags', () => {
+    assert.equal(escapesWorktree(['grep', '-r', '--exclude=..', 'x'], '/wt'), undefined)
+  })
+
+  it('allows an absolute path inside the worktree', () => {
+    assert.equal(escapesWorktree(['cat', '/wt/src/a.ts'], '/wt'), undefined)
   })
 })
 
