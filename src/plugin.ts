@@ -25,7 +25,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentRegistry, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContextFormed, LlmCallConfig, UserMessage } from '@deepseek-ai/dsh-llm'
 
@@ -59,13 +59,21 @@ import type { PipelineConfig } from './spec.ts'
 import { isTerminal, startPipeline } from './pipeline.ts'
 import type { PipelineRun } from './pipeline.ts'
 import { PHASE_ORDER } from './phases.ts'
-import type { PipelinePhase } from './phases.ts'
+import type { GateResult, PipelinePhase } from './phases.ts'
+import { goalNotice, phaseNotice, terminalNotice } from './phase-notice.ts'
+import { advancePhase, gateCurrentPhase, runShip } from './driver.ts'
+import { appendStep, writeBundle } from './evidence.ts'
+
+/** Where run artifacts land, relative to the workspace root. Mirrors the config default. */
+const RUNS_DIR = '.feature-loop/runs'
+import { spawnSync } from 'node:child_process'
 import { ModelLadder, routeLabel } from './routing.ts'
 import { AttentionRouter, ReviewGate, judgeQuestion } from './review.ts'
 import type { GatePolicy } from './review.ts'
 import { detectSignals } from './signals.ts'
 import type { ReviewSignal, StepObservation } from './signals.ts'
 import { envelope } from './yolo.ts'
+import { branchFor } from './sandbox.ts'
 import type { Sandbox } from './sandbox.ts'
 import { existsSync } from 'node:fs'
 import { parseDashboardConfig, pendingIdFor, startDashboard, DashboardState } from './dashboard.ts'
@@ -95,7 +103,7 @@ import { budgetStopText, budgetWarnText, escalationText, reviewText } from './me
 // deployment that never asked for run-history keeps the plugin's graph
 // exactly as it was before this feature existed.
 import { summarize } from './metrics.ts'
-import type { RunRecord } from './runlog.ts'
+import type { RunRecord, StepRecord } from './runlog.ts'
 import type { RunOutcome } from './runlog.ts'
 
 /**
@@ -236,6 +244,22 @@ export interface FeatureLoopPolicy {
    * deployment that has a YOLO gate and no phase machine yet.
    */
   worktreeRoot?: string
+  /**
+   * What the user asked for, read once from the session's first user message.
+   *
+   * Kept on the policy because it is needed by two callers that are far apart —
+   * the phase notice and the commit subject — and re-reading the transcript in
+   * both is the kind of duplication that drifts.
+   */
+  taskGoal?: string
+  /**
+   * The phase whose instructions have already been delivered.
+   *
+   * Without it the notice is recomputed every step and the model re-reads the
+   * same block on every step, or — the version this replaces — it is sent only
+   * on step 1 and a mid-turn transition is never announced at all.
+   */
+  noticedPhase?: string
 }
 
 /**
@@ -257,6 +281,22 @@ export interface PipelineRuntime {
    * every write against, and its absence is what makes every write deny.
    */
   worktree?: Sandbox
+  /**
+   * The project's test command, as configured.
+   *
+   * Read by the envelope as the single shell command YOLO may execute. It is
+   * configuration rather than policy precisely so the operator — who knows what
+   * their suite is — decides, and the model cannot widen it.
+   */
+  verifyCommand?: string
+  /**
+   * A stamp of the last continuation queued for this run.
+   *
+   * The seam that keeps a turn alive has no ceiling of its own, so without this
+   * a model that summarises immediately after being continued would be queued
+   * again and the run would never end.
+   */
+  continuedTurn?: string
 }
 
 /**
@@ -526,7 +566,7 @@ function buildPipelineRuntime(
   // than at the first step — a pipeline that sat idle for a minute must not
   // spend a minute of the research phase's wall clock.
   budget.enterPhase(run.state as PipelinePhase)
-  return { run, budget, worktree: options.worktree }
+  return { run, budget, worktree: options.worktree, ...(config.testCommand === undefined ? {} : { verifyCommand: config.testCommand }) }
 }
 
 /**
@@ -559,6 +599,9 @@ export async function reviewStep(
     const pending = policy.pending
     policy.history.push({
       index: step - 1,
+      // The phase as it was WHEN the step ran. Phase changes happen at a step
+      // boundary, after this push, so this is never off by one.
+      ...(policy.pipeline === undefined ? {} : { phase: policy.pipeline.run.state }),
       tool: pending?.tool,
       argsKey: pending?.argsKey,
       costUSD: 0,
@@ -770,35 +813,501 @@ export function gateEnforce(
     // mid-hour.
     return { kind: 'deny', reason: `YOLO STOPPED — ${killText(policy.pipeline?.run.state ?? 'unknown')}` }
   }
-  const decision = envelope({ tool: toolName, args, worktreeRoot: policy.worktreeRoot })
+  const decision = envelope({
+    tool: toolName,
+    args,
+    worktreeRoot: policy.worktreeRoot,
+    ...(policy.pipeline?.verifyCommand === undefined ? {} : { verifyCommand: policy.pipeline.verifyCommand }),
+  })
   return decision.kind === 'deny'
-    ? { kind: 'deny', reason: `YOLO ENVELOPE — ${decision.reason}` }
+    ? { kind: 'deny', reason: denyReason(toolName, decision.reason, policy) }
     : { kind: 'proceed' }
 }
 
 /**
- * Project the run's current phase onto the dashboard row.
+ * The reason a YOLO denial is reported, on stderr as well as to the model.
  *
- * A no-op for a policy with no pipeline, which is what keeps the rail off the
- * page entirely for an ordinary bounded loop rather than showing five stages
- * that will never change.
+ * A denial under `auto` is invisible by construction: there is no approval card,
+ * no dashboard watcher, and the harness's own feed may be off. A live run showed
+ * what that costs — a run blocked one step in, with a correct-looking history
+ * record, and nothing anywhere saying a single tool call had been refused. The
+ * operator's first question is always "what was it trying to do", and answering
+ * it should not require reproducing the run with a dashboard attached.
  *
- * The phase's own spend is published beside the run's total because the two
- * answer different questions, and the rail's meter reads the phase's: "can this
- * phase afford another step" is the question a five-phase run actually stalls
- * on, because the run total only ever goes up.
+ * One line per denial to stderr, which is where an unattended run's output
+ * already goes. Deliberately not `console.log`: this runs inside a host process
+ * that owns stdout.
  *
- * `evidenceDir` and `prUrl` are deliberately NOT published here. Neither is
- * known until the run has produced them — the bundle path depends on the run's
- * id and the URL arrives at the very end — and a rail that shows a link to a
- * directory that does not exist yet is worse than one that shows the link once
- * there is something behind it.
- *
- * @param state - the dashboard state to write.
- * @param runId - the run's row.
- * @param policy - the agent's policies.
- * @param armed - whether the kill switch is set.
+ * @param toolName - the tool that was refused.
+ * @param reason - the envelope's reason.
+ * @param policy - the run's policies, for the containment root.
+ * @returns the reason handed to the model.
  */
+function denyReason(toolName: string, reason: string, policy: FeatureLoopPolicy): string {
+  const root = policy.worktreeRoot ?? '<none — every write and every shell command is denied>'
+  process.stderr.write(`dsh-feature-loop: YOLO denied ${toolName} — ${reason} (root: ${root})\n`)
+  return `YOLO ENVELOPE — ${reason}`
+}
+
+/**
+ * Give a YOLO run the directory its writes are confined to.
+ *
+ * Only `gateMode: 'auto'` runs need one. A supervised run is already contained by
+ * the harness's own file policy and gains nothing here.
+ *
+ * Rooted at the directory the agent ACTUALLY operates in — the session's cwd.
+ * This used to create a git worktree and make that the root; a live run showed it
+ * to be theatre. The worktree was created beside the session, but the session's
+ * cwd never changed, so the agent kept reading and writing the original checkout
+ * while the envelope compared every path against the worktree. Every write
+ * denied, the run blocked after one step, and the worktree held nothing the agent
+ * had ever looked at. A worktree the agent never entered is worse than none — a
+ * branch, a directory and a false impression of isolation for no containment.
+ * Relocating a session mid-run is the host's decision, so the honest root today is
+ * where the agent really works. `createSandbox` stays available for a caller that
+ * starts a session INSIDE a worktree: then the cwd is the worktree and this
+ * resolves to the same answer with no special case.
+ *
+ * Idempotent, because `policyFor` can be reached more than once for the same
+ * agent, and a second attempt must not replace a root a write has already been
+ * judged against.
+ *
+ * @param policy - the run's policy, mutated in place.
+ * @param agent - the agent whose session carries the workspace path.
+ * @param options - the deployment config, for the gate mode.
+ */
+function attachContainment(policy: FeatureLoopPolicy, agent: Agent, options: { gateMode?: GateMode }): void {
+  if (policy.gateMode !== 'auto') return
+  if (policy.worktreeRoot !== undefined) return
+  // The session header is the authoritative cwd, and when it carries one this is
+  // exact. It does not always: a headless run created before the first turn has
+  // no header yet, and the header's shape has moved between harness releases.
+  //
+  // Falling back to the PROCESS cwd is what a plugin can honestly offer here —
+  // the harness starts the process in the session's directory, and it is the same
+  // directory every tool call resolves against. Returning early instead left
+  // `worktreeRoot` undefined, which the envelope reads as "deny every write and
+  // every shell command" — and a YOLO run that denied its first tool call simply
+  // ended, `blocked`, one step in, with nothing in the log to explain it.
+  if (policy.taskGoal === undefined) policy.taskGoal = userGoalOf(agent)
+  const root = sessionCwdOf(agent) ?? process.cwd()
+  if (root.length === 0) return
+  policy.worktreeRoot = root
+  if (policy.pipeline !== undefined && policy.pipeline.worktree === undefined) {
+    // Recorded so the report can name the directory a run was confined to. The
+    // branch is empty because none was created here — claiming one would be the
+    // same theatre the worktree version was.
+    // A REAL branch name, not an empty one. `attachContainment` roots the run at
+    // the session's own directory rather than a worktree beside it, but the branch
+    // is still needed: ship pushes it, and an empty ref made `git push -u origin ''`
+    // fail, which is why a run that completed all five phases reported "NO PR WAS
+    // OPENED" on work that was perfectly ready to be pushed.
+    policy.pipeline.worktree = {
+      worktreeRoot: root,
+      branch: branchFor(policy.taskGoal ?? policy.spec?.goal ?? 'feature-loop run', String(policy.taskGoal ?? 'run').slice(0, 8)),
+      stopSentinel: join(root, STOP_SENTINEL),
+    }
+  }
+}
+
+/**
+ * Commit, push and open the pull request for a run that reached `ship`.
+ *
+ * Invoked by the machine on entering the phase, never by the model, so a run
+ * cannot decide it has finished. Failures degrade rather than throw: a `gh`
+ * that is not installed leaves the work committed and reported in the notice,
+ * because a stopped run with its work on a branch is a success with a caveat,
+ * and a crashed turn is neither.
+ *
+ * @param policy - the run's policies.
+ * @returns one line for the feed, or `undefined` when there was no sandbox.
+ */
+function runPipelineShip(policy: FeatureLoopPolicy, agent: Agent): string | undefined {
+  const pipeline = policy.pipeline
+  const sandbox = pipeline?.worktree
+  if (pipeline === undefined || sandbox === undefined) {
+    process.stderr.write('dsh-feature-loop: ship skipped — the run has no sandbox to work in\n')
+    return undefined
+  }
+  // Read once: the branch and the PR body must be named for the same goal.
+  const goal = userGoalOf(agent) ?? policy.taskGoal ?? policy.spec?.goal ?? 'feature-loop run'
+  try {
+    const result = runShip({
+      repoRoot: '',
+      // The TASK, not the deployment's spec.goal, and the session log is read
+      // FRESH here rather than reusing `policy.taskGoal`: that field was captured
+      // at containment time, when the log still held no user turn, so it was
+      // seeded from the spec and the branch came out as
+      // `fl/create-tmp-fl-headless-proof-txt-…`. By ship time the log is fully
+      // populated and the reader returns what the human actually typed.
+      goal,
+      runId: '',
+      run: pipeline.run, budget: pipeline.budget,
+      config: { runsDir: RUNS_DIR },
+      runner: spawnSyncCommand,
+      // The branch is RE-derived here, not read off the sandbox. The sandbox
+      // captured it at containment time, when the session log still held no user
+      // turn, so it was seeded from the deployment's `spec.goal` and every run
+      // pushed `fl/create-tmp-fl-headless-proof-txt-…`. By ship time the log is
+      // populated and the reader returns the task.
+    }, { ...sandbox, branch: branchFor(goal, String(policy.taskGoal ?? 'run').slice(0, 8)) }, [], 0)
+    // Every ship attempt is announced. A run that reached `ship` and produced no
+    // pull request looked identical to one that never tried, which is the same
+    // silence that has cost hours three times now: denials, gate evaluations and
+    // phase transitions all needed a stderr line before they could be debugged.
+    process.stderr.write(`dsh-feature-loop: ship — branch=${sandbox.branch} outcome=${result.outcome}: ${result.detail}\n`)
+    return result.detail
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    process.stderr.write(`dsh-feature-loop: ship threw: ${reason}\n`)
+    return `ship failed: ${reason}`
+  }
+}
+
+/**
+ * Keep the run going when the model tries to stop mid-pipeline.
+ *
+ * The loop asks `agent/turn-stopping` at the exact moment it is about to end a
+ * turn, and breaks only if the inbox is still empty afterwards. That is a
+ * documented seam for exactly this: a listener may put work in `next-step` and
+ * the turn continues.
+ *
+ * Without it, a five-phase pipeline is really a two-phase one — a model that
+ * summarises after the PRD ends the turn, and the phases after it never happen.
+ * A live run measured that precisely: research → prd, then the turn ended with
+ * the implement phase untouched.
+ *
+ * Three conditions, all of which must hold, because the alternative is a loop
+ * that never stops:
+ *
+ * 1. A pipeline is running and its current phase still has budget — checked
+ *    against the phase's own ceiling, so a ceiling always wins over continuity.
+ * 2. The phase has not already been continued in this turn, so a model that
+ *    immediately summarises again cannot spin.
+ * 3. The pipeline has not reached a terminal state.
+ *
+ * @param agent - the agent whose turn is about to stop.
+ * @param policy - the run's policies.
+ * @returns whether work was queued.
+ */
+function continueIfMidPipeline(agent: Agent, policy: FeatureLoopPolicy): boolean {
+  const pipeline = policy.pipeline
+  if (pipeline === undefined) return false
+  const state = pipeline.run.state
+  if (!(PHASE_ORDER as readonly string[]).includes(state)) return false
+  const phase = state as PipelinePhase
+  if (pipeline.continuedTurn === turnStamp(policy)) return false
+
+  const verdict = pipeline.budget.verdict(phase)
+  if (verdict.kind === 'stop') return false
+
+  const inbox = (agent as unknown as { readonly inbox?: SteerableInbox }).inbox
+  if (inbox === undefined || typeof inbox.append !== 'function') return false
+  const noticeText = continuationNotice(policy, phase)
+  if (noticeText === undefined) return false
+  // One continuation per run per turn: the stamp is the phase plus the step count,
+  // so re-entering the SAME phase a moment later does not queue again, and
+  // moving to a new phase does.
+  pipeline.continuedTurn = `${String(pipeline.budget.usage(phase).steps)}:${String(phase)}`
+  inbox.append('next-step', notice(noticeText))
+  process.stderr.write(
+    `dsh-feature-loop: ${phase} has budget left and the model stopped — continuing the turn\n`,
+  )
+  return true
+}
+
+/**
+ * What to say when the run is continued mid-phase.
+ *
+ * NOT the phase rules again. A live run queued the same block four times and the
+ * model never moved, because repeating instructions to someone who has already
+ * read them is not feedback. What it needed was the one thing it could not see —
+ * the gate's verdict — so that is what this leads with, followed by the rules for
+ * the case where the rules were the problem.
+ *
+ * @param policy - the run's policies.
+ * @param phase - the phase the run is in.
+ * @returns the notice text, or `undefined` when there is no gate verdict to give.
+ */
+function continuationNotice(policy: FeatureLoopPolicy, phase: PipelinePhase): string | undefined {
+  const sandbox = policy.pipeline?.worktree
+  if (sandbox === undefined || policy.pipeline === undefined) return undefined
+  let verdict: GateResult
+  try {
+    const options = {
+      repoRoot: '', goal: '', runId: '',
+      run: policy.pipeline.run,
+      budget: policy.pipeline.budget,
+      config: { ...(policy.pipeline.verifyCommand === undefined ? {} : { testCommand: policy.pipeline.verifyCommand }), runsDir: RUNS_DIR },
+      runner: spawnSyncCommand,
+    }
+    verdict = gateCurrentPhase(options, sandbox)
+  } catch (error) {
+    return `0→1 PIPELINE — the ${phase} gate could not be checked: ${error instanceof Error ? error.message : String(error)}`
+  }
+  if (verdict.pass) {
+    return `0→1 PIPELINE — the ${phase} gate now passes. The loop moves you on; do not stop here.`
+  }
+  return [
+    `0→1 PIPELINE — you stopped, but the ${phase} phase is not finished.`,
+    '',
+    `Its gate is NOT satisfied: ${verdict.detail}`,
+    '',
+    'Finish that first, then continue. Do not summarise the run as done until the gate passes.',
+    '',
+    phaseNotice(phase) ?? '',
+  ].join('\n')
+}
+
+/**
+ * A cheap stamp for "has this run already been continued".
+ *
+ * @param policy - the run's policies.
+ * @returns a string that changes when the pipeline moves on.
+ */
+function turnStamp(policy: FeatureLoopPolicy): string {
+  const pipeline = policy.pipeline
+  if (pipeline === undefined) return ''
+  return `${String(pipeline.run.state)}:${String(pipeline.budget.usage(pipeline.run.state as PipelinePhase).steps)}`
+}
+
+/**
+ * Run one command for a phase gate.
+ *
+ * The only shell-out on the agent path, and it is now a read-only probe: `git
+ * status`, and the operator's configured test command. The argv is fixed here and
+ * the command text comes from configuration, never from the model — and the
+ * envelope still judges it, so widening this later is denied rather than
+ * executed.
+ *
+ * @param command - the executable.
+ * @param args - its arguments.
+ * @param cwd - the directory to run in.
+ * @returns the exit code and captured streams.
+ */
+/**
+ * What the user actually asked for, in their own words.
+ *
+ * The spec's `goal` is the DEPLOYMENT's static goal — "create
+ * /tmp/fl-headless-proof.txt containing hello" — not the task in front of the
+ * run. A live run showed the model noticing the two disagreeing and reasoning
+ * about the conflict, which is a fair thing for it to do and a sign that the
+ * pipeline was pointing at the wrong goal.
+ *
+ * Read from the session's first user message rather than from anywhere the
+ * plugin could be led: it is the one string in the system that is, by
+ * construction, what the human typed.
+ *
+ * Measured against the live harness, because both plausible readings were wrong
+ * and guessing cost three runs that researched the wrong thing entirely:
+ *
+ * - `session.header` carries only `{version, id, createdAt, cwd, isSeeded}` — no
+ *   task.
+ * - `session.snapshotEvents(0)` is NOT the whole log. Its window opens at the
+ *   session's first live/lifecycle seq: on a fresh run it returns six events
+ *   (`permission/preset`, `sandbox/mode`, `approval/policy`,
+ *   `agent/inbox/spliced`, `turn/start`, `agent/inbox/spliced`) with no user turn
+ *   among them. Read again mid-turn it returns the full log, user turn included.
+ *
+ * So the read happens where the log is populated — at notice time, not when the
+ * policy is built — and the user turn's blocks live at `data.content`, not
+ * `data.message.content`. The headless app also prepends its own name, so the
+ * task arrives as "headless Say OK." and the launcher word is stripped.
+ *
+ * @param agent - the agent whose session carries the transcript.
+ * @returns the task text, or `undefined` when the session exposes none.
+ */
+function userGoalOf(agent: Agent): string | undefined {
+  const session = (agent as unknown as { readonly session?: { readonly snapshotEvents?: (from: number) => readonly { type?: unknown; data?: unknown }[] } }).session
+  if (session === undefined || typeof session.snapshotEvents !== 'function') return undefined
+  let events: readonly { type?: unknown; data?: unknown }[]
+  try {
+    events = session.snapshotEvents(0)
+  } catch {
+    return undefined
+  }
+  for (const event of events) {
+    if (event.type !== 'user/message') continue
+    // The V4 log puts a user turn's blocks at `data.content`, NOT at
+    // `data.message.content` — reading the nested form is why this always
+    // returned undefined and every pipeline adopted the deployment's static
+    // `spec.goal` instead. Both shapes are accepted because the nested one is
+    // what an assistant-shaped event carries, and a wrong guess here is
+    // invisible: the pipeline simply researches the wrong thing.
+    const data = event.data as {
+      readonly content?: readonly { type?: string; text?: string }[]
+      readonly message?: { readonly content?: readonly { type?: string; text?: string }[] }
+    } | undefined
+    for (const block of data?.content ?? data?.message?.content ?? []) {
+      const text = block?.text
+      // The runtime-context and skill blocks are harness scaffolding; the first
+      // block of prose is what the human wrote.
+      if (block?.type !== 'text' || typeof text !== 'string') continue
+      const trimmed = text.trim()
+      if (trimmed.length === 0 || trimmed.startsWith('<')) continue
+      // Harness scaffolding arrives as a user-role message too, and a live run
+      // showed the pipeline adopting one of these as its goal. These four are the
+      // blocks the harness injects; anything else in the first user turn is what
+      // the human typed.
+      if (trimmed.startsWith('Current runtime context')
+        || trimmed.startsWith('The following workspace instructions')
+        || trimmed.startsWith('The available skills')
+        || trimmed.startsWith('You are an AI agent')
+        || trimmed.includes('A skill is a reusable set of task-specific instructions')) continue
+      // The headless app prepends its own name: the task arrives as
+      // "headless Say OK." Strip it so the pipeline reads the request, not the
+      // launcher.
+      const withoutLauncher = trimmed.replace(/^(?:headless|web|tui|desktop|rescue)\s+/i, '')
+      return withoutLauncher.slice(0, 400)
+    }
+  }
+  return undefined
+}
+
+function spawnSyncCommand(
+  command: string,
+  args: string[],
+  cwd: string,
+): { code: number; stdout: string; stderr: string } {
+  // NO envelope check here, and that is deliberate rather than a loosening.
+  //
+  // The envelope exists to constrain what the MODEL reaches for, and it does
+  // that at `tools/pre-execute`. This function is the other caller, and every
+  // command it runs is one the plugin itself built: `git status --porcelain` from
+  // the observer, `sh -c <pipeline.testCommand>` from the gate. No model text
+  // reaches it — the command string comes from configuration.
+  //
+  // Judging it a second time bought nothing and cost the product its test phase.
+  // A live run failed `exit 126 — refused by the envelope: sh -c npm test` three
+  // times, bounced back to implement, and blocked — on a run whose tests already
+  // passed. The comparison could not succeed: the envelope matches the configured
+  // string `npm test`, and the invocation is `sh -c 'npm test'`, which no string
+  // equality relates to the first.
+  //
+  // Two layers doing one job, with the wrong one in the wrong place, is how a
+  // correct command ends up refused. The one that can be got wrong by a model is
+  // `tools/pre-execute`; this is not.
+  try {
+    const result = spawnSync(command, args, {
+      cwd,
+      encoding: 'utf8',
+      timeout: 120_000,
+      maxBuffer: 4 * 1024 * 1024,
+      windowsHide: true,
+    })
+    return {
+      code: result.status ?? (result.error === undefined ? 0 : 127),
+      stdout: result.stdout ?? '',
+      stderr: result.stderr ?? (result.error === undefined ? '' : result.error.message),
+    }
+  } catch (error) {
+    return { code: 127, stdout: '', stderr: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/**
+ * The phase block to deliver for this step, when the run has just entered one.
+ *
+ * Keyed on the step number rather than remembered, because a remembered "last
+ * phase" is state that can drift from the machine. Here the machine is the only
+ * source of truth, and the notice fires once per phase by construction: step 1
+ * always re-reads the current phase, so a transition is picked up by the very
+ * next turn regardless of where it happened.
+ *
+ * @param policy - the run's policies.
+ * @param turn - the harness turn number.
+ * @param step - the step about to run.
+ * @returns the notice text, or `undefined` when no pipeline is configured.
+ */
+function phaseJustEntered(policy: FeatureLoopPolicy, turn: number, step: number, goal?: string): string | undefined {
+  const pipeline = policy.pipeline
+  if (pipeline === undefined) return undefined
+  const state = pipeline.run.state
+  if (!(PHASE_ORDER as readonly string[]).includes(state)) {
+    return terminalNotice(state, 'The run stopped before this step.')
+  }
+  // Delivered when the phase CHANGES, not only on step 1. A transition happens
+  // mid-turn, and a single-turn run never reaches the next step 1 — so keying on
+  // the step number meant the PRD instructions were computed and never sent, and
+  // the run sat in a phase the model had never been told about.
+  const first = policy.noticedPhase === undefined
+  const changed = policy.noticedPhase !== state
+  if (!changed) return undefined
+  policy.noticedPhase = state
+  if (!first) return phaseNotice(state as PipelinePhase)
+  return turn === 1
+    ? `${goalNotice(goal ?? policy.spec?.goal ?? 'the stated goal')}\n\n${phaseNotice(state as PipelinePhase) ?? ''}`
+    : phaseNotice(state as PipelinePhase)
+}
+
+/**
+ * Evaluate the current phase's gate and move on if it passed.
+ *
+ * The one place a phase changes on the agent path, and deliberately best-effort
+ * in the WRAPPING direction: a gate that cannot be evaluated leaves the phase
+ * where it is, because a phase that advanced on an unevaluated gate is the exact
+ * failure the pipeline exists to prevent.
+ *
+ * @param policy - the run's policies.
+ * @returns the notice for the new state, or `undefined` when nothing moved.
+ */
+function advanceIfGated(policy: FeatureLoopPolicy, agent: Agent): { notice: string } | undefined {
+  const pipeline = policy.pipeline
+  if (pipeline === undefined) return undefined
+  const sandbox = pipeline.worktree
+  if (sandbox === undefined) return undefined
+  // The verify command MUST come from the deployment's `pipeline.testCommand`.
+  // Passing an empty config here is what made the test gate answer "no verify
+  // command was run" on every attempt — so the phase could never pass, bounced
+  // back to implement three times, and blocked a run whose code was already
+  // correct and whose tests already passed. `verifyCommand` is carried on the
+  // runtime precisely so this call site cannot forget it.
+  const options = {
+    repoRoot: '', goal: '', runId: '',
+    run: pipeline.run,
+    budget: pipeline.budget,
+    config: {
+      ...(pipeline.verifyCommand === undefined ? {} : { testCommand: pipeline.verifyCommand }),
+      runsDir: '.feature-loop/runs',
+    },
+    runner: spawnSyncCommand,
+  }
+  let moved: { moved: boolean; note: string }
+  try {
+    moved = advancePhase(options, gateCurrentPhase(options, sandbox))
+  } catch (error) {
+    // Swallowing this is what made the pipeline's silence undiagnosable: an
+    // observation that throws leaves the phase exactly where it was, and the run
+    // then looks like a model that would not finish rather than a plugin that had
+    // failed. The gate still does not advance on an unreadable observation — that
+    // part is right — but the failure is now visible.
+    process.stderr.write(
+      `dsh-feature-loop: phase ${pipeline.run.state} gate could not be evaluated: `
+      + `${error instanceof Error ? error.message : String(error)}\n`,
+    )
+    return undefined
+  }
+  // Every transition and every standing gate is announced once, to stderr, for
+  // the same reason denials are: a phase change is invisible by construction
+  // (it is a notice to the model, not to the operator), and a pipeline you
+  // cannot watch is a pipeline you cannot trust to have walked its phases.
+  const last = pipeline.run.log.at(-1)
+  if (!moved.moved) {
+    return undefined
+  }
+  process.stderr.write(`dsh-feature-loop: phase ${last?.from} → ${last?.to} (${last?.reason}): ${moved.note}\n`)
+  const next = pipeline.run.state
+  // Ship runs on ENTERING the phase, because its own exit gate is the pull
+  // request url it writes. A phase that has to leave before it can pass its gate
+  // is a phase whose gate can never be reached.
+  if (next === 'ship') runPipelineShip(policy, agent)
+  return {
+    notice: (PHASE_ORDER as readonly string[]).includes(next)
+      ? `${moved.note}\n\n${phaseNotice(next as PipelinePhase) ?? ''}`
+      : moved.note,
+  }
+}
+
 export function publishPhase(state: DashboardState, runId: string, policy: FeatureLoopPolicy, armed: boolean): void {
   const pipeline = policy.pipeline
   if (pipeline === undefined) return
@@ -833,6 +1342,20 @@ function killText(state: string): string {
  * tolerate test agents that carry only an `id`, and must not take a type-level
  * dependency on one harness build's session types for two method calls.
  */
+/**
+ * The agent's pending-work inbox, declared structurally.
+ *
+ * The public `Agent` type exposes only `id`; the inbox the loop consults to
+ * decide whether a turn continues is reachable but not on the published surface.
+ * Read structurally for the same reason `SettledSession` is — the plugin must
+ * tolerate a harness build where the shape moved, and `append` is optional so an
+ * agent without one simply does not continue.
+ */
+interface SteerableInbox {
+  append(target: 'next-step' | 'next-turn', message: UserMessage): void
+  readonly nextStep?: readonly unknown[]
+}
+
 interface SettledSession {
   /** Log length — the next event's seq. */
   readonly seq?: unknown
@@ -1037,6 +1560,14 @@ interface TurnRecordInput {
   policyFor: (agent: Agent | undefined) => FeatureLoopPolicy
   state: DashboardState
   historyPath: string
+  /**
+   * The harness agent registry, used to resolve the session's agent.
+   *
+   * On the input rather than read from a module global because this function is
+   * module-level and a deployment may mount several contexts; a captured global
+   * would silently record every turn against the first context's agents.
+   */
+  agents?: AgentRegistry
 }
 
 /**
@@ -1094,16 +1625,17 @@ function outcomeOf(reasonKind: string, policy: FeatureLoopPolicy): RunOutcome {
  * @param input - the closed turn and everything the record is built from.
  */
 async function recordTurn(input: TurnRecordInput): Promise<void> {
-  const { session, event, options, policyFor, state, historyPath } = input
+  const { session, event, options, policyFor, state, historyPath, agents } = input
   const runlog = await import('./runlog.ts')
-  const agent = agentOfSession(session)
+  const agent = agentOfSession(agents, session)
   const policy = policyFor(agent)
   const snapshot = policy.budget?.snapshot()
   const spec = policy.spec ?? options.spec
   const now = Date.now()
   const steps = snapshot?.steps ?? 0
+  const runId = sessionIdOf(session)
   const record: RunRecord = {
-    runId: sessionIdOf(session),
+    runId,
     startedAt: now,
     endedAt: now,
     pass: 1,
@@ -1123,8 +1655,19 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
     judgeScores: [],
     reviewFraction: 0,
     specFingerprint: spec === undefined ? 'none' : runlog.specFingerprint(spec),
+    // Where the 0→1 pipeline got to, and what it may spend next. A phase change
+    // needs a TURN to deliver its instructions, so a run that finishes its turn
+    // mid-pipeline resumes at the next one — which means the resume point has to
+    // be on the record, or an operator reading the history sees "research → prd"
+    // and no way to tell that the PRD is waiting for someone to send another
+    // message.
+    ...pipelineFields(policy, String(runId)),
+    // The step ledger, from the observations the detectors already hold. An index
+    // that cannot reach the content it indexes is not an index.
+    ...(policy.history.length === 0 ? {} : { trajectory: policy.history.map(observationToStep) }),
   }
   runlog.appendRecord(historyPath, record)
+  writeEvidenceBundle(String(runId), record)
   // The Metrics panel reads what just landed: the roll-up is over the file,
   // not over memory, so a resumed process that never saw the earlier turns
   // still renders their history. A torn line is counted and skipped by the
@@ -1134,27 +1677,113 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
 }
 
 /**
- * The agent behind a session, when the harness can resolve one.
+ * The agent behind a session, via the harness's own registry.
  *
- * `session/event` hands the session, not the agent — but the per-agent policy
- * (budget, spec, history) is keyed by agent. Rather than importing the agents
- * service (a second service injection for one lookup), this reads the session's
- * owner structurally: the harness sets `session.owner`/`session.agentId`
- * depending on the release, and neither is stable enough to depend on. When
- * neither resolves, the record falls back to the agent-less policy — the same
- * fail-closed stance `policyFor` takes for agent-less calls: shared ceilings,
- * honestly labelled, rather than no record at all.
+ * This used to return `undefined` unconditionally, with a note describing the
+ * upgrade path. Running the loop for real showed what that cost: the
+ * `turn/end` handler looked the policy up by this, so every run record was
+ * written against the shared agent-less policy — which never sees a step,
+ * because steps land on the per-agent policy. The result was a history file full
+ * of `steps: 0, costUSD: 0` records for runs that had demonstrably done work.
  *
- * ponytail: O(n) scan over the policy map per turn is avoided by NOT caching
- * here at all — the lookup below is O(1) only when the harness exposes the
- * agent directly on the session. Ceiling: when it does not, every turn records
- * against the shared agent-less policy, so per-agent spend splits are lost and
- * concurrent agents' records share one budget's numbers. Upgrade path: inject
- * the `agents` service and resolve `session.id` through it (the
- * `goal-round-driver` precedent: `ctx.agents.get(session.id)`).
+ * That is the failure this package's own PRD names: a module that looks wired and
+ * silently does nothing. The ceiling is not worth having when it is reported as
+ * zero, and a `$0.00` history is worse than no history — it is believed.
+ *
+ * `ctx.agents.get(sessionId)` is the documented registry lookup, and this plugin
+ * already injects `agents`, so there was never a second injection to add.
+ *
+ * @param agents - the harness agent registry.
+ * @param session - the session the event belongs to.
+ * @returns the agent, or `undefined` when the session has none yet — which is a
+ *   real state for a session whose agent was never created, not an error.
  */
-function agentOfSession(_session: unknown): Agent | undefined {
-  return undefined
+/**
+ * The pipeline's slice of a run record, or nothing when there is no pipeline.
+ *
+ * Returns `{}` rather than absent fields so a record from a plain bounded loop
+ * keeps exactly the shape it had before the pipeline existed.
+ *
+ * @param policy - the run's policies.
+ * @param runId - the run's id, which names the evidence bundle.
+ * @returns the additive pipeline fields.
+ */
+/**
+ * Project one step observation onto the record's step line.
+ *
+ * The detectors already hold every field this needs, so nothing is re-measured —
+ * the trajectory in the record is the same data the policy acted on, which is the
+ * only reason it can be trusted after the fact.
+ *
+ * @param observation - the step the detectors read.
+ * @returns the record's step line.
+ */
+function observationToStep(observation: StepObservation): StepRecord {
+  return {
+    index: observation.index,
+    phase: observation.phase ?? 'unknown',
+    ...(observation.tool === undefined ? {} : { tool: observation.tool }),
+    ...(observation.error === undefined ? {} : { error: observation.error }),
+    costUSD: observation.costUSD,
+    ...(observation.latencyMs === undefined ? {} : { latencyMs: observation.latencyMs }),
+  }
+}
+
+/**
+ * Write this run's evidence bundle: REPORT.md, steps.jsonl, phases.json.
+ *
+ * This is the artifact the PRD promised — a directory a human can read months
+ * later, offline, with every step, every budget and every artifact accounted for
+ * — and for the whole life of the pipeline it existed as a function nobody called.
+ * A live run produced `.feature-loop/runs.jsonl` and nothing else.
+ *
+ * Failure is a stderr line, never a throw: the bundle is evidence, and evidence
+ * that breaks a turn has become control.
+ *
+ * @param runId - the run's id, which names the directory.
+ * @param record - the record just written, and the source of the report.
+ */
+function writeEvidenceBundle(runId: string, record: RunRecord): void {
+  try {
+    const dir = join(RUNS_DIR, runId)
+    writeBundle(dir, record)
+    for (const step of record.trajectory ?? []) appendStep(dir, step)
+  } catch (error) {
+    process.stderr.write(
+      `dsh-feature-loop: evidence bundle for ${runId} could not be written: `
+      + `${error instanceof Error ? error.message : String(error)}\n`,
+    )
+  }
+}
+
+function pipelineFields(policy: FeatureLoopPolicy, runId: string): Record<string, unknown> {
+  const pipeline = policy.pipeline
+  if (pipeline === undefined) return {}
+  const usage = pipeline.budget.allUsage()
+  return {
+    phase: pipeline.run.state,
+    evidenceDir: `${RUNS_DIR}/${runId}`,
+    phases: usage.map(u => ({
+      phase: u.phase,
+      steps: u.steps,
+      costUSD: u.spentUSD,
+      budgetUSD: u.maxSpendUSD,
+      maxSteps: u.maxSteps,
+      outcome: u.steps === 0 ? 'pending' : u.phase === pipeline.run.state ? 'current' : 'passed',
+      wallMs: u.wallMs,
+    })),
+    ...(policy.worktreeRoot === undefined ? {} : { worktree: policy.worktreeRoot }),
+  }
+}
+
+function agentOfSession(agents: AgentRegistry | undefined, session: unknown): Agent | undefined {
+  if (agents === undefined) return undefined
+  const id = sessionIdOf(session)
+  if (id === undefined || id.length === 0) return undefined
+  // The registry is keyed by a branded `SessionId`. The id read here is that
+  // brand at runtime — a string that came from the session itself — so it needs
+  // no cast and no re-validation.
+  return agents.get(id as Parameters<AgentRegistry['get']>[0]) ?? undefined
 }
 
 /**
@@ -1358,6 +1987,17 @@ export function apply(
     if (policy === undefined) {
       policy = fresh()
       policies.set(agent, policy)
+      // The sandbox is created HERE, on the run's first contact, rather than at
+      // load: a policy is per-agent and an agent only exists once a turn is
+      // running, so this is the first moment a run has a cwd and an id to name a
+      // worktree after.
+      //
+      // It must happen before the first tool call, and `attachSandbox` is
+      // idempotent precisely so that a run which is created but never steps still
+      // gets its containment. `gateEnforce` reads `policy.worktreeRoot`, so an
+      // un-sandboxed YOLO run denies every write — the fail-closed direction, and
+      // the reason that gap would be safe even if this call were removed.
+      attachContainment(policy, agent, options)
     }
     return policy
   }
@@ -1540,6 +2180,16 @@ export function apply(
   // below cannot see that — so the path is captured once, inside the branch,
   // rather than asserted at the call site. A `!` here would trade a load-time
   // guarantee for a reader's trust exercise.
+  // Resolved once here rather than per turn: `agents` is a service this plugin
+  // already injects, and a listener closure can read it directly. Without it,
+  // every record falls to the shared agent-less policy and reports zero steps
+  // and zero cost for runs that did work.
+  //
+  // Read defensively rather than with a bare `ctx.get`: a deployment that mounts
+  // no agent registry, and a test harness that stubs the context, both land here,
+  // and neither should crash the plugin on the way to a fail-closed record.
+  const agents = typeof ctx.get === 'function' ? ctx.get('agents') as AgentRegistry | undefined : undefined
+
   const disposeSession = !historyEnabled ? undefined : (() => {
     const path: string = historyPath
     return ctx.on('session/event', (session: unknown, event: unknown) => {
@@ -1548,7 +2198,14 @@ export function apply(
       const key = `${sessionIdOf(session)}#${String(end.turn)}`
       if (recordedTurns.has(key)) return
       recordedTurns.add(key)
-      void recordTurn({ session, event: end, options, policyFor, state, historyPath: path })
+      // The gate is checked ONE more time here, because a phase can be finished
+      // by the turn's very last step and a step-boundary check never gets to see
+      // it. Without this a run that wrote a perfectly good research note and then
+      // finished its turn left the pipeline in `research` with the note sitting
+      // there, and the next turn re-entered a phase that was already done.
+      const turnAgent = agentOfSession(agents, session)
+      if (turnAgent !== undefined) advanceIfGated(policyFor(turnAgent), turnAgent)
+      void recordTurn({ session, event: end, options, policyFor, state, historyPath: path, agents })
         .catch((error: unknown) => {
           // A failed append must never fail the turn: the record is
           // evidence, not control. The feed line says so in the harness's
@@ -1582,7 +2239,22 @@ export function apply(
     const pipelineGuard = pipelinePreCallGuard(policy)
     if (pipelineGuard !== undefined) return pipelineGuard
 
+    // The phase the run has just entered, if it changed since the last step. A
+    // state machine nobody is told about is not a pipeline: a live run did all
+    // the work correctly and produced no research note, no PRD and no pull
+    // request, because nothing ever told the model a phase existed.
+    const entered = phaseJustEntered(policy, turn, step, agent === undefined ? undefined : userGoalOf(agent))
     const base = await next()
+    // The gate is evaluated after the step, because a phase can only have passed
+    // it once the step has run. Injecting the next phase's rules here means the
+    // model reads them with the result of the previous phase in context.
+    // Evaluated on EVERY step, after the model has acted — not on the step that
+    // announces the phase. A phase's gate can only have passed once the work
+    // happened, so checking it on the way IN finds nothing written yet, the gate
+    // fails, and the phase never leaves. That is exactly what a live run did:
+    // research produced a perfectly good `docs/0-research.md` and the pipeline
+    // sat on it until the ceiling stopped the run.
+    const advanced = advanceIfGated(policy, agent)
     if (base.kind === 'reject') return base
     const { decision, notices, signals, judgeScore, budget } = await reviewStep(policy, step)
     // The step ran, so it counts against the phase's own step ceiling. Counted
@@ -1611,9 +2283,19 @@ export function apply(
     // requests — in the harness's own words. One feed line each.
     for (const text of notices) state.note('note', text, runId)
     if (decision.kind === 'reject') return decision
-    return notices.length === 0
+    // The phase block rides with whatever else the step produced, so the model
+    // reads it as one continuation rather than three interruptions.
+    //
+    // `entered` is DELIVERED, not merely used to decide whether to evaluate the
+    // gate. The first version computed it and dropped it on the floor: the run did
+    // the work correctly and produced no research note and no PRD, because
+    // nothing ever reached the model. A state machine nobody is told about is
+    // not a pipeline.
+    const blocks = [entered, advanced?.notice].filter((t): t is string => t !== undefined && t.length > 0)
+    const all = [...(decision.messages ?? []), ...blocks.map(notice)]
+    return all.length === 0
       ? base
-      : { ...base, messages: [...base.messages, ...(decision.messages ?? [])] }
+      : { ...base, messages: [...base.messages, ...all] }
   })
 
   const disposeRequest = ctx.on('agent/request', async ({ agent, step }, next) => {
@@ -1638,6 +2320,17 @@ export function apply(
     return routed === undefined ? resolved : { ...resolved, ...routed }
   })
 
+  // The loop asks this at the moment it is about to end a turn, and breaks only
+  // if the inbox is still empty afterwards. It is the seam that lets a
+  // five-phase pipeline actually run five phases in one turn instead of stopping
+  // wherever the model chooses to summarise.
+  const disposeTurnStopping = ctx.on(
+    'agent/turn-stopping',
+    ({ agent }: { agent: Agent }) => {
+      continueIfMidPipeline(agent, policyFor(agent))
+    },
+  )
+
   const disposeTools = ctx.on(
     'tools/pre-execute',
     async ({ agent, name: toolName, arguments: rawArgs }: ToolExecution, next: () => Promise<PreToolDecision>) => {
@@ -1658,10 +2351,25 @@ export function apply(
       // dropped so the assistant's tool-call block still gets a result and
       // session replay stays valid.
       //
-      // A blocked call is a step that made no progress, so `error-cascade`
-      // counts it. Treating a block as success would let a repeatedly-blocked
-      // loop read as a healthy one.
-      policy.pending.error = true
+      // A denial is NOT an error for `error-cascade`, and a live run showed what
+      // the old behaviour cost. Three refusals — a `/dev/null` write outside the
+      // worktree, a `pwd;`-prefixed command, an interpreter — tripped the
+      // cascade guard and ended a healthy research phase mid-flight, with the
+      // model narrating: "3 consecutive failing steps". Those were the POLICY
+      // working: the model read each denial, adapted, and kept going, which is
+      // exactly what an unattended run must be able to do.
+      //
+      // A guard that fires because the loop was correctly told no three times is
+      // the guard preventing the behaviour it exists to protect.
+      //
+      // The protection is not lost, it moves to the detector that owns it: a loop
+      // hammering the SAME refused call is `tool-cycle`, which reads the pending
+      // record set below. A denial is visible on the feed and on stderr either
+      // way.
+      // The refused call stays in the pending record, so `tool-cycle` still sees a
+      // loop hammering the same denied command — the protection the cascade used
+      // to give, now owned by the detector that is actually about repetition.
+      if (policy.pending !== undefined) policy.pending.argsKey = `${argsKey(rawArgs)}#denied`
       // Only blocks hit the feed: logging every `auto` call would bury the
       // decisions a human opened this page to see.
       state.recordGate(
@@ -1679,6 +2387,7 @@ export function apply(
   return () => {
     disposeStep()
     disposeRequest()
+    disposeTurnStopping()
     disposeTools()
     disposeSession?.()
     disposeApproval?.()

@@ -107,6 +107,12 @@ install: ## Build, add to a DSH profile, and verify the plugin is NOT inert
 	@echo "  peers resolve"
 	@echo "==> adding to profile '$(PROFILE)'"
 	@dsh plugin --profile $(PROFILE) add -w file:$(CURDIR)
+	@# Installing is not enough: a plugin composes only when it is listed in the
+	@# profile's `dsh.profile.bundles`. `dsh plugin add` adds the dependency and
+	@# nothing else, so without this the package is present, `--dump-config` has
+	@# none of its rows, and the deployment looks installed while governing
+	@# nothing — which is exactly the state the `web` profile was in.
+	@node scripts/add-bundle.mjs "$(HOME)/.dsh/profiles/$(PROFILE)/package.json" '@freepeak/dsh-feature-loop'
 	@echo "==> verifying composition"
 	@if dsh --profile $(PROFILE) --dump-config 2>/dev/null | grep -q 'feature-loop'; then \
 	  echo "  the 'feature-loop' row composed"; \
@@ -282,6 +288,7 @@ CI_FILES := src/agent-policy.ts src/budget.ts src/dashboard.ts \
             src/judge.ts src/laya.ts src/llm.ts src/messages.ts src/metrics.ts \
             src/optimize.ts src/optimizer.ts src/phases.ts src/phase-budget.ts \
             src/pipeline.ts src/sandbox.ts src/ship.ts src/yolo.ts \
+            src/observation.ts src/driver.ts \
             src/brief.ts src/approval-bridge.ts src/prompts.ts src/questioner.ts \
             src/refine.ts src/review.ts src/routing.ts src/runlog.ts \
             src/runner.ts src/signals.ts src/spec.ts src/tools.ts

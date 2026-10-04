@@ -48,7 +48,16 @@ export type PipelineState = PipelinePhase | 'done' | 'stopped' | 'blocked'
  */
 export type ExitGate =
   /** A file exists and its text matches. Fails closed when the file is unreadable. */
-  | { kind: 'artifact'; path: string; label: string; mustContain?: readonly string[]; minMatches?: number }
+  | {
+      kind: 'artifact'
+      path: string
+      label: string
+      /** Substrings the text must contain. */
+      mustContain?: readonly string[]
+      /** Patterns the text must match, for anything a substring cannot express. */
+      mustMatch?: readonly RegExp[]
+      minMatches?: number
+    }
   /** At least `min` tracked files changed. */
   | { kind: 'changed'; min: number; label: string }
   /** The phase's `verifyCommand` exited 0. Fails closed when it was never run. */
@@ -194,8 +203,17 @@ export const PRD_PHASE: PipelinePhaseDef = {
   gate: {
     kind: 'artifact',
     path: 'docs/PRD.md',
-    label: 'PRD with scope, exclusions, success criteria and metrics',
-    mustContain: ['## Scope', '## Success', '## Metrics'],
+    label: 'PRD with scope, success criteria and metrics',
+    // Matched as CONCEPTS anywhere in the document, not as exact headings. Two
+    // live runs wrote `## 2. Scope` and then `## In scope (the MVP)`, and failed
+    // their own gate both times — the PRD was complete and the heading was not
+    // the one the regex wanted.
+    //
+    // This is the third version of this gate and the lesson is the same each
+    // time: a gate that measures form gets worked around. What it must measure is
+    // whether the four things a PRD has to settle are settled — what is in scope,
+    // what is explicitly out, what success is, and what will be watched.
+    mustMatch: [/\bscope\b/i, /\bsuccess\b/i, /\bmetrics?\b/i],
   },
   produces: ['docs/PRD.md'],
 }
@@ -284,7 +302,16 @@ export const SHIP_PHASE: PipelinePhaseDef = {
     read: 'read',
     bash: 'reversible-write',
   },
-  gate: { kind: 'artifact', path: '.feature-loop/artifacts/pr-url.txt', label: 'a pull request URL was recorded' },
+  // The file must hold a URL, not merely exist. A run whose ship phase could not
+  // reach git wrote a careful, honest explanation into pr-url.txt — and the gate
+  // passed, because it checked that the file was there. A gate that accepts prose
+  // where it expects a link is not a gate.
+  gate: {
+    kind: 'artifact',
+    path: '.feature-loop/artifacts/pr-url.txt',
+    label: 'a pull request URL was recorded',
+    mustMatch: [/https?:\/\/\S+\/pull\/\d+/],
+  },
   produces: ['pull request'],
 }
 
@@ -371,6 +398,10 @@ export function evaluateGate(gate: ExitGate, obs: PhaseObservation): GateResult 
     if (missing.length > 0) {
       return { pass: false, detail: `${gate.label}: ${gate.path} is missing ${missing.map(m => `"${m}"`).join(', ')}` }
     }
+    const unmatched = (gate.mustMatch ?? []).filter(pattern => !pattern.test(text))
+    if (unmatched.length > 0) {
+      return { pass: false, detail: `${gate.label}: ${gate.path} has no heading for ${unmatched.map(p => p.source).join(', ')}` }
+    }
     return { pass: true, detail: `${gate.label}: ${gate.path} present` }
   }
   if (gate.kind === 'changed') {
@@ -383,9 +414,16 @@ export function evaluateGate(gate: ExitGate, obs: PhaseObservation): GateResult 
   if (obs.verify === undefined) {
     return { pass: false, detail: `${gate.label}: no verify command was run` }
   }
-  return obs.verify.exitCode === 0
-    ? { pass: true, detail: `${gate.label}: exit 0` }
-    : { pass: false, detail: `${gate.label}: exit ${obs.verify.exitCode}` }
+  if (obs.verify.exitCode === 0) return { pass: true, detail: `${gate.label}: exit 0` }
+  // The command's own last line of output, because an exit code alone sent the
+  // investigation in the wrong direction twice: 126 is npm's "script failed to
+  // execute" and this function's own refusal code, and the two are
+  // indistinguishable from the code alone.
+  const tail = (obs.verify.output ?? '').trim().split('\n').filter(l => l.trim().length > 0).at(-1)
+  return {
+    pass: false,
+    detail: `${gate.label}: exit ${obs.verify.exitCode}${tail === undefined ? '' : ` — ${tail.slice(0, 160)}`}`,
+  }
 }
 
 /**

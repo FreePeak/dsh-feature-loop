@@ -115,6 +115,30 @@ export function ship(options: ShipOptions): ShipResult {
     }
   }
 
+  // The branch has to EXIST before it can be pushed to. A live run produced
+  // `error: src refspec fl/… does not match any` because the run's branch name
+  // was assumed rather than created — the work was committed on whatever branch
+  // the workspace was on, and then pushed to a name that had never existed.
+  //
+  // Created BEFORE staging, so the commit lands on it. `-b` fails if the branch is
+  // already there, which is the normal case on a resumed run, so the checkout is
+  // a separate step rather than something whose failure aborts the phase.
+  const existing = invoke('git', ['rev-parse', '--verify', options.branch])
+  if (existing.code !== 0) {
+    const created = invoke('git', ['checkout', '-b', options.branch])
+    if (created.code !== 0) {
+      return {
+        branch: options.branch,
+        outcome: 'committed',
+        log,
+        detail: `could not create branch ${options.branch} (exit ${created.code}): `
+          + `${(created.stderr || created.stdout).trim() || 'no output'}. The work is still unstaged.`,
+      }
+    }
+  } else {
+    invoke('git', ['checkout', options.branch])
+  }
+
   invoke('git', ['add', ...(options.paths ?? ['-A'])])
 
   const staged = invoke('git', ['diff', '--cached', '--quiet'])

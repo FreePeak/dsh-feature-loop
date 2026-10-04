@@ -186,11 +186,19 @@ test('the handler is registered on the harness tool-boundary event', async () =>
   // first (it owns the asks), then the session/event recorder, then the
   // step/request/tool hooks. The answerer is always present now — the in-UI
   // page is a claimer, and an unwatched ask must still delegate downstream.
+  //
+  // `agent/turn-stopping` sits between the request and tool hooks because it is
+  // the seam that keeps a 0→1 run going: the loop asks it at the moment it is
+  // about to end a turn and breaks only if the inbox is still empty, so a
+  // listener there can queue the next phase's instructions. It must come after
+  // `agent/pre-step` — the hot path — and before `tools/pre-execute`, which
+  // answers a different event entirely and so has no ordering relationship.
   assert.deepEqual(registered(), [
     'approval/request',
     'session/event',
     'agent/pre-step',
     'agent/request',
+    'agent/turn-stopping',
     'tools/pre-execute',
   ])
   dispose()

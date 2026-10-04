@@ -38,8 +38,13 @@ function fakeRun(over: Record<string, { code: number; stdout?: string; stderr?: 
     calls,
     run: (command, args, cwd) => {
       calls.push({ command, args: [...args], cwd })
-      const answer = over[command]
+      // Keyed on the git SUBCOMMAND, not the binary: `git rev-parse --verify`
+      // and `git rev-parse HEAD` are different questions and a test that cannot
+      // tell them apart cannot test either.
+      const key = command === 'git' ? `git ${args[0] ?? ''}` : command
+      const answer = over[key] ?? over[command]
       if (answer !== undefined) return { code: answer.code, stdout: answer.stdout ?? '', stderr: answer.stderr ?? '' }
+      // `git diff --cached --quiet` exits 0 when nothing is staged.
       if (command === 'git' && args[0] === 'diff') return { code: 1, stdout: '', stderr: '' }
       return { code: 0, stdout: 'abc1234\n', stderr: '' }
     },
@@ -62,17 +67,25 @@ function opts(over: Partial<ShipOptions> = {}): ShipOptions {
   }
 }
 
+/** The first call whose args start with `head`, so assertions do not depend on position. */
+function callFor(calls: Call[], head: string): { command: string; args: string[] } | undefined {
+  return calls.find(c => c.args[0] === head)
+}
+
 describe('the happy path', () => {
   it('stages, commits, pushes and opens a PR — in that order', () => {
     const { run, calls } = fakeRun(ghOk())
     const result = ship(opts({ run }))
-    // add · diff --cached --quiet · commit · rev-parse · push, then gh.
-    assert.deepEqual(calls.map(c => c.command), ['git', 'git', 'git', 'git', 'git', 'gh'])
-    assert.deepEqual(calls[0]?.args, ['add', '-A'])
-    assert.deepEqual(calls[2]?.args, ['commit', '-m', 'feat: Add a CSV converter'])
-    assert.deepEqual(calls[4]?.args, ['push', '-u', 'origin', 'fl/add-a-csv-tool'])
-    assert.equal(calls[5]?.args[0], 'pr')
-    assert.equal(calls[5]?.args[1], 'create')
+    // The branch is created before staging, so the commit lands on it — a live
+    // run pushed `fl/…` and got `src refspec does not match any` because the name
+    // was assumed rather than made.
+    assert.deepEqual(calls.map(c => c.command), ['git', 'git', 'git', 'git', 'git', 'git', 'git', 'gh'])
+    assert.deepEqual(callFor(calls, 'add')?.args, ['add', '-A'])
+    assert.deepEqual(callFor(calls, 'commit')?.args, ['commit', '-m', 'feat: Add a CSV converter'])
+    assert.deepEqual(callFor(calls, 'push')?.args, ['push', '-u', 'origin', 'fl/add-a-csv-tool'])
+    assert.ok(calls.some(c => c.args[0] === 'checkout' || c.args[0] === 'switch'),
+      'the run branch must be created or checked out before the push')
+    assert.equal(callFor(calls, 'pr')?.args[1], 'create')
     assert.equal(result.outcome, 'shipped')
     assert.equal(result.prUrl, 'https://github.com/o/r/pull/42')
   })
@@ -86,34 +99,69 @@ describe('the happy path', () => {
   it('stages the paths it was given rather than everything', () => {
     const { run, calls } = fakeRun(ghOk())
     ship(opts({ run, paths: ['src', 'docs'] }))
-    assert.deepEqual(calls[0]?.args, ['add', 'src', 'docs'])
+    assert.deepEqual(callFor(calls, 'add')?.args, ['add', 'src', 'docs'])
   })
 
   it('records the commit sha from rev-parse, and reads it from that call alone', () => {
     const { run, calls } = fakeRun(ghOk())
     const result = ship(opts({ run }))
     assert.equal(result.commitSha, 'abc1234')
-    const revParse = calls.find(c => c.args[0] === 'rev-parse')
-    assert.deepEqual(revParse?.args, ['rev-parse', 'HEAD'])
+    const revParse = calls.filter(c => c.args[0] === 'rev-parse' && c.args[1] === 'HEAD')
+    assert.equal(revParse.length, 1, 'the sha comes from rev-parse HEAD and nothing else')
   })
 
   it('puts the goal in the subject, prefixed once', () => {
     const { run, calls } = fakeRun(ghOk())
     ship(opts({ run, goal: 'feat: already prefixed' }))
-    assert.equal(calls[2]?.args[2], 'feat: already prefixed', 'a doubled prefix reads as a mistake')
+    assert.equal(callFor(calls, 'commit')?.args[2], 'feat: already prefixed', 'a doubled prefix reads as a mistake')
   })
 
   it('collapses a multi-line goal into one commit subject', () => {
     const { run, calls } = fakeRun(ghOk())
     ship(opts({ run, goal: 'line one\nline two' }))
-    assert.equal(calls[2]?.args[2], 'feat: line one line two')
+    assert.equal(callFor(calls, 'commit')?.args[2], 'feat: line one line two')
   })
 
   it('bounds a very long subject', () => {
     const { run, calls } = fakeRun(ghOk())
     ship(opts({ run, goal: 'x'.repeat(300) }))
-    const subject = calls[2]?.args[2] ?? ''
+    const subject = callFor(calls, 'commit')?.args[2] ?? ''
     assert.ok(subject.length <= 78, `subject too long: ${subject.length}`)
+  })
+})
+
+describe('creating the run branch', () => {
+  it('creates the branch when it does not exist, before staging', () => {
+    // A live run pushed `fl/…` and got `error: src refspec fl/… does not match
+    // any`: the branch name was assumed rather than made, so there was nothing to
+    // push. The commit lands on the branch only if the branch comes first.
+    const { run, calls } = fakeRun({
+      'git rev-parse': { code: 128, stderr: 'unknown revision' },
+      'git diff': { code: 1 },
+      gh: { code: 0, stdout: 'https://github.com/o/r/pull/3\n' },
+    })
+    ship(opts({ run }))
+    const createdAt = calls.findIndex(c => c.args[0] === 'checkout' && c.args[1] === '-b')
+    const addAt = calls.findIndex(c => c.args[0] === 'add')
+    assert.ok(createdAt >= 0, 'the branch must be created')
+    assert.ok(createdAt < addAt, 'before staging, so the commit lands on it')
+  })
+
+  it('checks out an existing branch instead of failing on -b', () => {
+    const { run, calls } = fakeRun({ 'git diff': { code: 1 }, gh: { code: 0, stdout: 'https://x/pull/1\n' } })
+    ship(opts({ run }))
+    assert.ok(calls.some(c => c.args[0] === 'checkout' && c.args[1] === 'fl/add-a-csv-tool' && c.args.length === 2))
+  })
+
+  it('reports plainly when the branch cannot be created', () => {
+    const { run } = fakeRun({
+      'git rev-parse': { code: 128, stderr: 'unknown revision' },
+      'git checkout': { code: 128, stderr: 'fatal: cannot switch' },
+    })
+    const result = ship(opts({ run }))
+    assert.equal(result.outcome, 'committed')
+    assert.match(result.detail, /could not create branch/)
+    assert.match(result.detail, /fatal: cannot switch/)
   })
 })
 
@@ -205,9 +253,8 @@ describe('degrading instead of failing', () => {
   it('logs every command it ran, so the report can show them', () => {
     const { run } = fakeRun(ghOk())
     const result = ship(opts({ run }))
-    assert.equal(result.log.length, 6)
-    assert.equal(result.log[4]?.command, 'git')
-    assert.deepEqual(result.log[4]?.args.slice(0, 2), ['push', '-u'])
+    assert.equal(result.log.length, 8)
+    assert.deepEqual(result.log.find(l => l.args[0] === 'push')?.args.slice(0, 2), ['push', '-u'])
   })
 })
 

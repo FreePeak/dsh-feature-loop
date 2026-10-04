@@ -187,6 +187,33 @@ describe('renderReport', () => {
   })
 })
 
+describe('the bundle the plugin actually writes', () => {
+  // The bundle existed as a function nobody called: a live run produced
+  // `.feature-loop/runs.jsonl` and nothing else, so the artifact the PRD promised
+  // — a directory a human can read months later, offline — was never produced by
+  // the thing that ran the loop.
+  it('round-trips a record through disk into a readable report', () => {
+    const dir = join(scratch(), 'runs', 'run-9')
+    writeBundle(dir, record({ evidenceDir: '.feature-loop/runs/run-9' }))
+    const report = readFileSync(join(dir, EVIDENCE_FILES.report), 'utf8')
+    assert.match(report, /# Run run-1/)
+    assert.match(report, /\| Phase \| Outcome \| Steps \| Spent \| Budget \| Exit gate \|/)
+    assert.match(report, /docs\/0-research\.md present/)
+    assert.ok(readFileSync(join(dir, EVIDENCE_FILES.phases), 'utf8').includes('"research"'))
+  })
+
+  it('reads a step ledger that says which phase each step was spent in', () => {
+    // Without the phase on the observation the trajectory cannot answer the only
+    // question it exists for: where did the money go.
+    const dir = scratch()
+    appendStep(dir, { index: 1, phase: 'research', tool: 'read', costUSD: 0.001 })
+    appendStep(dir, { index: 2, phase: 'implement', tool: 'edit', costUSD: 0.004 })
+    const steps = readFileSync(join(dir, EVIDENCE_FILES.steps), 'utf8')
+      .trim().split('\n').map(line => JSON.parse(line) as { phase: string })
+    assert.deepEqual(steps.map(s => s.phase), ['research', 'implement'])
+  })
+})
+
 describe('writeBundle', () => {
   it('writes the report and the phase ledger, and creates artifacts/', () => {
     const dir = join(scratch(), 'runs', 'run-1')
