@@ -1819,9 +1819,21 @@ function turnStartTime(session: unknown, turn: number): number | undefined {
   } | null | undefined
   const at = typed?.eventAt
   const seq = typed?.seq
-  if (typeof at !== 'function' || typeof seq !== 'number') return undefined
+  // BOUND, not detached. `Session.eventAt` reads `this.log`, so hoisting the
+  // method out of the object and calling it later gives `this === undefined` and
+  // throws `Cannot read properties of undefined (reading 'log')` — verbatim, on
+  // every closed turn, inside the listener, where the harness contained it and
+  // logged it below the level the web app surfaces.
+  //
+  // That single unbound reference is why no harness-path run record has ever
+  // been written, and why every figure in KNOWN-ISSUES §1bp–§1bv was wrong. It
+  // took four rounds of live instrumentation to find, and the throw string was in
+  // the feed the whole time — printed by the synchronous guard added in 864dc80,
+  // which is why it was findable at all (§1bw).
+  const read = typeof at === 'function' ? (cursor: number) => at.call(typed, cursor) : undefined
+  if (read === undefined || typeof seq !== 'number') return undefined
   for (let cursor = seq - 1; cursor >= 0 && cursor >= seq - 200; cursor -= 1) {
-    const event = at(cursor)
+    const event = read(cursor)
     if (event === undefined || event === null || typeof event !== 'object') continue
     if (event.type !== 'turn/start') continue
     const data = event.data as { readonly turn?: unknown } | null | undefined

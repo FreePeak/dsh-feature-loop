@@ -519,6 +519,60 @@ test('the history listener is reachable from a SCOPED session event', async () =
   dispose()
 })
 
+test('a session whose eventAt needs its `this` still yields a wall clock', async () => {
+  // The regression test for §1bw. `Session.eventAt` reads `this.log`, so a
+  // detached reference throws
+  //   Cannot read properties of undefined (reading 'log')
+  // on every call — which is exactly the string measured live, thrown on every
+  // closed turn inside the listener where the harness contained it and logged it
+  // below the level the web app surfaces. No harness-path run record has ever
+  // been written as a result.
+  //
+  // The fixture below uses a CLASS rather than an object literal precisely so a
+  // detached call fails here: a literal with a `log` property would not.
+  class LoggedSession {
+    readonly id: string
+    seq: number
+    private readonly log: { type: string, time: number, data: unknown }[]
+    constructor(id: string, log: { type: string, time: number, data: unknown }[]) {
+      this.id = id
+      this.log = log
+      this.seq = log.length
+    }
+    eventAt(seq: number): { type: string, time: number, data: unknown } | undefined {
+      return this.log[seq]
+    }
+  }
+
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-bound-'))
+  const historyPath = join(dir, 'runs.jsonl')
+  const opened = 1_700_000_000_000
+  const closed = opened + 4_125
+  const session = new LoggedSession('sess-bound', [
+    { type: 'turn/start', time: opened, data: { turn: 1 } },
+    { type: 'turn/end', time: closed, data: { turn: 1, reason: { kind: 'completed' } } },
+  ])
+  const { ctx, handler } = fakeCtx()
+  const dispose = apply(ctx as never, {
+    spec: { ...SPEC, maxSteps: 99 },
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+  })
+  const fn = handler('session/event') as unknown as (s: unknown, e: unknown) => unknown
+  fn(session, { type: 'turn/end', time: closed, data: { turn: 1, reason: { kind: 'completed' } } })
+
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline && !existsSync(historyPath)) {
+    await new Promise(resolve => { setTimeout(resolve, 10) })
+  }
+  assert.ok(existsSync(historyPath), 'the record must land')
+  const [line] = readFileSync(historyPath, 'utf8').trim().split('\n')
+  const record = JSON.parse(line!) as Record<string, unknown>
+  assert.equal(record.wallMs, 4_125, 'read through a bound eventAt, so the log was reachable')
+  assert.equal(record.startedAt, opened)
+  dispose()
+})
+
 test('a re-delivered turn closer never double-records', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-hist-'))
   const historyPath = join(dir, 'runs.jsonl')

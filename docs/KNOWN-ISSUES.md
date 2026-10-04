@@ -79,7 +79,8 @@ rather than a list of letters:
 | 1bt | Zero milliseconds, round-trip |
 | 1bu | The speed axis, empty since the day it was written |
 | 1bv | The plugin path's wall clock, hiding in the event it was already reading |
-| 1bw | Open: the run record still does not land on the harness path |
+| 1bw | One unbound method call, and it was the reason no run record existed |
+
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
 
@@ -1013,6 +1014,10 @@ path has no seam that times anything. That was true — and it was also only hal
 the finding. The **CLI runner** does time every step, and has since it was
 written:
 
+> **Superseded in part by §1bw.** The plugin path does have a wall clock: the
+> harness stamps `time` on every `SessionEvent`, and §1bv wired it up. What kept
+> it empty was an unbound `eventAt` throwing before the record was assembled.
+
 ```ts
 const callStartedAt = performance.now()
 // … the model call …
@@ -1083,120 +1088,70 @@ exist. `undefined` on both is the finding from §1bt, not a leftover.
 turn it closed. That is what the field has always meant on this path (one record
 per closed turn) and it is the duration a reader of the record is asking about.
 
-### 1bw. Open: the run record still does not land on the harness path
+### 1bw. One unbound method call, and it was the reason no run record existed
 
-**Status: unresolved. What follows is what four rounds of instrumentation
-established, including two wrong conclusions of my own.**
-
-**The one thing that is certain.** The listener runs, `asTurnEnd` accepts a real
-`turn/end`, and `recordTurn` is called — and in the runs where it was observed,
-it threw:
+**Observed.** On a real `dsh web` run (2026-10-04, generated profile, real
+model, real browser): the listener fired, `asTurnEnd` accepted a real
+`turn/end`, `recordTurn` was called — and threw
 
 ```
 run history record threw: Cannot read properties of undefined (reading 'log')
 ```
 
-Two hours and four instrumentation rounds to see that string, because a
-**synchronous throw inside a `session/event` listener is contained by the
-harness and logged below the level the web app surfaces.** Nothing appeared in
-the feed, nothing appeared in the log, and the plugin carried on as if it had
-recorded the turn.
+on **every** closed turn, for the entire life of this plugin. No record was
+written. The Metrics panel never had a harness-path run to read, and every
+figure in §1bp–§1bv was a property of a file nothing had ever appended to.
 
-**How it got there, and the part I got wrong twice.** `turnStartTime` calls
-`session.eventAt(...)`, and `SessionStore.eventAt` reads `this.log`. The throw
-says the object it was called on has no `log`. I concluded the listener had been
-handed a cordis **scope carrier** instead of the Session, read the harness's
-declared type (`'session/event'(this: Scoped<Session>, session: Session, …)`),
-changed the signature to three arguments — and broke it further.
+**Why nobody saw it.** A **synchronous throw inside a `session/event` listener is
+contained by the harness** (`invokeContainedSessionObservers`) and logged below
+the level the web app surfaces. Nothing in the feed, nothing in the log, and the
+plugin carried on as if it had recorded the turn. The string above was only ever
+visible because commit 864dc80 added a synchronous `try`/`catch` that turns a
+lost record into a feed line — the guard, not the fix.
 
-Then I measured the payload instead of trusting the type signature, with a
-rest-parameter probe:
+**The bug.** One line in `turnStartTime`:
+
+```ts
+const at = typed?.eventAt   // hoisted out of the session
+...
+const event = at(cursor)   // `this` is undefined
+```
+
+`Session.eventAt` is `return this.log[seq]`. Detached, `this` is `undefined` and
+every call throws. Reproduced in isolation: a detached `eventAt` produces that
+exact string, the bound one works.
+
+Fixed by calling it bound: `at.call(typed, cursor)`.
+
+**Four rounds of instrumentation to find it, and the order was wrong every time.**
+
+1. I blamed a missing wall clock and made `wallMs` optional (§1bt) — which was
+   *caused* by this bug, since the clock is exactly what the broken call
+   produced.
+2. I read the harness's declared type as the call shape, concluded the listener
+   had been handed a cordis **scope carrier**, and changed the signature to three
+   arguments — **wrong, and it broke the working path further.** A rest-parameter
+   probe then measured what actually arrives: `n=2`, shapes
+   `log+surfaceManager+header / type+seq+time`. `Events.dispatch` shifts the
+   receiver off the argument list before `cb(...args)`; the type signature
+   describes the dispatch, not the call.
+3. Only after the sync guard existed did the throw string surface, and the four-
+   line reproduction above identified it.
+
+The lesson is the one this file has now written six times, and I had it available
+while making it: **read the failing expression, not the architecture around it.**
+`this.log` is three characters away from the call site.
+
+**Verified, live.** After the bound call, on the same kind of run:
 
 ```
-n=2   shapes= log+surfaceManager+header / type+seq+time
+wallMs 9044,  wallMs 1776      ← real harness-clock spans, first time ever
+metrics PRESENT: 17 runs, 2 measured, goalMetRate 0.765
 ```
 
-**Two arguments**, and the first is the Session. `Events.dispatch` shifts the
-receiver off the argument list before calling `cb(...args)`; the type signature
-describes the dispatch, not the call. My carrier theory was wrong, the three-arg
-signature was worse, and both are reverted.
-
-**Where the `log` throw really comes from: not yet established.** With the
-two-argument signature restored the unit suites pass (48/48) and the live run
-still writes nothing, and the error is no longer reproduced — which means the
-throw I captured came from the three-argument version I had just introduced, not
-from the original code. **The original cause is therefore still unknown**, and
-this entry says so rather than crediting a fix that is not there.
-
-**What is kept, because each is right on its own merits:**
-
-- `global: true` — the documented switch for "receive regardless of context
-  filter checks", so the registration does not depend on the root context being
-  untagged.
-- the **synchronous** `try`/`catch` around the call, so a throw in this listener
-  becomes a feed line instead of a silent loss. That guard is why the error was
-  ever visible at all, and it is the thing a next fix needs.
-- `runlog.ts` statically imported — a load that can never settle loses a record
-  with no rejection to catch.
-
-**Status: unresolved.** Recorded so the next person does not re-derive it.
-
-**Measured on a real `dsh web` run** (2026-10-04, generated web profile, real
-model, real browser, five asks settled, three files written):
-
-| observation | value |
-|---|---|
-| `session/event` listener reached? | **yes** — 70 events for one session |
-| `turn/end` among them? | **yes** — exactly 1 |
-| `asTurnEnd` verdict on it | **accepted** |
-| `recordTurn` entered? | **yes** — its first statement printed a feed line |
-| run record written? | **no** — the history file is unchanged, and `metrics` is absent from `/api/state` |
-
-**What narrowed it, by reading the harness rather than by probing again.** Two
-facts, both from source:
-
-- `Session.append` dispatches `session/event` **synchronously**, inside the
-  append, and `invokeContainedSessionObservers` wraps each callback in
-  try/catch — so a throw before the first `await` would be swallowed with a
-  warning in the harness's own log. There is no such warning.
-- In a **web** run the turn stays open while the page sits idle. `Agent.turn()`
-  appends `turn/end` in its `finally`, after the step loop drains, and a web
-  session is not finished until the next message or teardown. So the record
-  lands when the *next* turn starts — not while the run is being watched.
-
-That second fact explains the live runs on its own, and it is consistent with the
-one run in which a `turn/end` *did* arrive during measurement. It is the reason
-no probe fired in the later runs: `turn/end` had not happened yet, so
-`recordTurn` was never entered — which is exactly what the feed shows.
-
-**Still not established:** whether the append completes once a turn does end. The
-measurement above stops at "the turn had not ended", and closing that gap needs a
-second turn in the same session, which the probe scripts do not send. Recorded as
-the open half rather than guessed.
-
-**What the fix is for, then, if not for this.** Both changes stand on their own
-and neither is cosmetic: a listener that a scope filter can drop is a silent
-failure, and a dynamic load that can never settle is a worse one. But the entry
-above is honest that neither is the cause of the missing record — which is what
-makes them worth keeping. A fix that does not fix the thing it is named after is
-either a different fix or a lie.
-
-**What this changes about the earlier entries.** §1bp through §1bv each read a
-figure off a file and found it wrong. That work stands on its own — the figures
-were wrong. What is **not** established is the causal claim I attached to them:
-that the harness path had never written a record at all. That was an inference
-from "no record exists", and the listener is demonstrably running. Correct the
-chain, do not discard it.
-
-**What did change, and is verified:** the listener is now registered with
-`{ global: true }` (the documented switch for "receive regardless of context
-filter checks"), and `runlog.ts` is imported **statically** rather than through
-`await import(...)` inside the turn closer. The dynamic import was justified as
-keeping `node:fs` out of the plugin's graph — which stopped being true when
-`readFileSync` became a static import at the top of the file — and a load that
-never settles loses the record with no rejection, so nothing catches it. A
-static import resolves at load, before any run. Both are improvements either way;
-neither is the cause, because both were in place for the run above.
+And a regression test uses a **class** rather than an object literal for its
+session fixture, precisely because a literal with a `log` property would pass
+against the broken code; removing `.call(typed, …)` fails it.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
