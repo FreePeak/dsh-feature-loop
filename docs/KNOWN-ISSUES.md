@@ -80,6 +80,7 @@ rather than a list of letters:
 | 1bu | The speed axis, empty since the day it was written |
 | 1bv | The plugin path's wall clock, hiding in the event it was already reading |
 | 1bw | One unbound method call, and it was the reason no run record existed |
+| 1bx | Three ways to lose an agent, one class |
 
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
@@ -1109,7 +1110,8 @@ plugin carried on as if it had recorded the turn. The string above was only ever
 visible because commit 864dc80 added a synchronous `try`/`catch` that turns a
 lost record into a feed line — the guard, not the fix.
 
-**The bug.** One line in `turnStartTime`:
+**The bug.** One line in `turnStartTime` (the other two shapes of the same class
+are §1bx):
 
 ```ts
 const at = typed?.eventAt   // hoisted out of the session
@@ -1152,6 +1154,55 @@ metrics PRESENT: 17 runs, 2 measured, goalMetRate 0.765
 And a regression test uses a **class** rather than an object literal for its
 session fixture, precisely because a literal with a `log` property would pass
 against the broken code; removing `.call(typed, …)` fails it.
+
+### 1bx. Three ways to lose an agent, one class
+
+**Observed.** §1bw's fix produced the plugin's first harness-path records — and
+those records said `steps: 0`, `costUSD: 0`, `reviewFraction: 0`, on a run whose
+feed showed real gate asks and real spends. One cause fits all three fields.
+
+**The cause, in three shapes.** `resolveAgent` could not find the session's
+agent, so `policyFor(undefined)` returned the **agent-less** policy: a fresh
+budget, a zero-counting router, no ladder. Three distinct ways that happened,
+each of which returned `undefined` and each of which was therefore invisible:
+
+| | shape | what it did |
+|---|---|---|
+| §1bw | `const at = session.eventAt` then `at(cursor)` | `this` undefined → threw on `this.log` |
+| here | `const get = ctx.agents.get` then `get.call(agents, id)` | `ctx.agents` is a **proxy**; calling it with the proxy as `this` threw inside the getter |
+| here | `ctx.agents` read directly | on a fiber without the dependency the proxy **throws** `cannot get property "agents" without inject` |
+
+Every one was wrapped in a `try`/`catch` that returned `undefined` — the honest
+answer for "no agent found", and the reason each bug looked like a policy
+default rather than a failure.
+
+**Fix:** `ctx.reflect.get('agents', false)`. That is cordis's OWN lookup — the
+service or `undefined`, never a throw — verified against the harness's cordis
+(2026-10-04), where `ctx.agents.get` and the hoisted accessor both throw.
+
+**Verified, live, both halves.**
+
+```
+before:  wallMs 9044  steps 0  cost 0      (agent-less policy)
+after:   wallMs 17119 steps 2  cost 0.00312273
+         byRoute { onegw/execution: { steps 2, usd 0.00312273 } }
+         metrics: 19 runs, 3 measured, goalMetRate 0.737
+```
+
+The first harness-path record with a **priced route**. `firstPassRate` is
+`undefined` in that summary — which is §1bq working: with no record reporting a
+pass above 1, an alias of `goalMetRate` would have been a second fake number.
+
+**Tests.** Two fixtures now model the cordis runtime rather than a guess: a
+`ctx` whose `agents` getter **throws** with a `reflect.get` that answers, and the
+existing ones given a `reflect` alongside `agents`. Reverting to
+`ctx.agents.get` fails three.
+
+**The lesson, which is the same one three times now.** Every one of these was a
+*lookup* dressed as a property read. `this.log`, `this.store`, and the proxy
+itself all answer the same question — *where is the service* — and all three
+were read as though the answer were already in hand. `reflect.get` is the
+question asked properly, and it is one call.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 

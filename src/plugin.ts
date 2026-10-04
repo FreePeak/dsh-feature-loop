@@ -2260,14 +2260,32 @@ export function apply(
   // already a supported answer (the agent-less policy), so a throwing getter is
   // the same answer with extra noise, not a lost record.
   const resolveAgent = (sessionId: string): Agent | undefined => {
-    try {
-      const agents = (ctx as { agents?: { get?: (id: string) => Agent | undefined } }).agents
-      const get = agents?.get
-      if (typeof get !== 'function') return undefined
-      return get.call(agents, sessionId)
-    } catch {
-      return undefined
-    }
+    // `ctx.reflect.get('agents', false)` is cordis's OWN lookup: the service or
+    // `undefined`, and it does not throw for a missing one. Verified 2026-10-04
+    // against the harness's cordis, where the obvious spellings all fail:
+    //
+    //   `ctx.agents.get(id)`  THROWS `cannot get property "agents" without
+    //                         inject` on a fiber without the dependency
+    //   `const g = ctx.agents.get; g(id)`  same throw, via `this.store`
+    //
+    // THREE shapes of the same mistake in this file, each of which returned
+    // `undefined` and each of which was therefore invisible:
+    //
+    //   §1bw  a session method hoisted off its object   (`this.log`)
+    //   here  a proxy accessor hoisted off the proxy     (`this.store`)
+    //   here  reading `ctx.agents` itself, which throws  (no `this` at all)
+    //
+    // And the consequence was the same every time: `resolveAgent` answered
+    // "no agent", `policyFor(undefined)` returned the AGENT-LESS policy — a fresh
+    // budget, zero steps, zero cost, a router that never saw a step — and every
+    // harness-path turn record was built from it. Measured with a probe
+    // reporting `agent=UNRESOLVED` on every closed turn.
+    const registry = (ctx as unknown as {
+      reflect?: {
+        get?: (name: string, strict?: boolean) => { get?: (id: string) => Agent | undefined } | undefined
+      }
+    }).reflect?.get?.('agents', false)
+    return registry?.get?.(sessionId)
   }
 
   // The dashboard is process-wide (one server, one feed), not per agent — it

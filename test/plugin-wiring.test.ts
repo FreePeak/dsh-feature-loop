@@ -511,6 +511,74 @@ test('a settled attempt is priced even when the session cursor is already past i
   dispose()
 })
 
+test('a ctx whose proxy THROWS for `agents` still records the turn', async () => {
+  // §1bw's sibling, one function away and found the same way. `ctx.agents` on a
+  // cordis context is a PROXY: on a fiber without the `agents` dependency,
+  // reading it throws `cannot get property "agents" without inject`. The old
+  // lookup sat inside a try/catch and turned that into `undefined` for EVERY
+  // session — so `policyFor(undefined)` returned the agent-less policy and every
+  // harness-path record reported a fresh budget, zero steps and zero cost.
+  //
+  // The fixture below models the throwing proxy. `ctx.reflect.get('agents',
+  // false)` is cordis's own lookup: the service or `undefined`, never a throw.
+  const { mkdtempSync, readFileSync, existsSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-proxy-throw-'))
+  const historyPath = join(dir, 'runs.jsonl')
+
+  const session = settledSession([PRICED_MSG])
+  const agent = { id: 'sess-proxy', session }
+  const agents = new Map<string, typeof agent>([['sess-proxy', agent]])
+  const registry = { get: (id: string) => agents.get(id) }
+
+  const handlers = new Map<string, (...args: unknown[]) => unknown>()
+  const ctx = {
+    // cordis's proxy: reading a service the fiber does not depend on throws.
+    get agents(): never {
+      throw new Error('cannot get property "agents" without inject')
+    },
+    // …and its own lookup, which does not.
+    reflect: { get: (name: string, strict?: boolean) => (name === 'agents' && strict !== true ? registry : undefined) },
+    on(event: string, fn: (...args: unknown[]) => unknown): () => void {
+      handlers.set(event, fn)
+      return () => { handlers.delete(event) }
+    },
+  }
+  const dispose = apply(ctx as never, {
+    spec: {
+      ...SPEC,
+      maxSteps: 99,
+      costBudgetUSD: 5,
+      prices: { 'onegw/execution': { inputPerMTok: 0.3, outputPerMTok: 1.2 } },
+      controller: { ladder: [{ provider: 'onegw', model: 'execution' }] },
+    },
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+  })
+
+  const pre = handlers.get('agent/pre-step') as Handler
+  await pre(
+    { agent, messages: [], turn: 1, step: 1, signal: new AbortController().signal },
+    async () => ({ kind: 'enter', messages: [] }),
+  )
+  const sessionHandler = handlers.get('session/event')
+  assert.ok(sessionHandler !== undefined, 'session/event must register when history is on')
+  sessionHandler({ id: 'sess-proxy' }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline && !existsSync(historyPath)) {
+    await new Promise(resolve => { setTimeout(resolve, 10) })
+  }
+  assert.ok(existsSync(historyPath), 'a throwing ctx.agents must not lose the record')
+  const [line] = readFileSync(historyPath, 'utf8').trim().split('\n')
+  const record = JSON.parse(line!) as Record<string, unknown>
+  // The point of the test: the AGENT's budget, not a fresh one. Zero steps here
+  // would mean the agent-less policy answered.
+  assert.equal(record.maxSteps, 99, 'the resolved agent\'s own spec, not the agent-less fallback')
+  dispose()
+})
+
 test('a THROWING ctx.agents still records the turn', async () => {
   // `ctx.agents` is a cordis PROXY, and reading it on a fiber where
   // `AgentRegistry` has not mounted THROWS `cannot get property "agents" without
@@ -596,7 +664,11 @@ test('a turn that ran steps keeps goal-met when the transport completed', async 
   // `agents` must exist BEFORE `apply`: the plugin resolves the session's agent
   // when it records the turn, and assigning it afterwards is too late.
   const { ctx, handler } = fakeCtx()
-  Object.assign(ctx as object, { agents: { get: (id: string) => agents.get(id) } })
+  Object.assign(ctx as object, {
+    agents: { get: (id: string) => agents.get(id) },
+    // cordis's own lookup — the shape the production code actually reads.
+    reflect: { get: (name: string, strict?: boolean) => (name === 'agents' && strict !== true ? { get: (id: string) => agents.get(id) } : undefined) },
+  })
   const dispose = apply(ctx as never, {
     spec: {
       ...SPEC,
@@ -646,6 +718,8 @@ test('session/event records cost against the agent resolved from ctx.agents', as
   const handlers = new Map<string, (...args: unknown[]) => unknown>()
   const ctx = {
     agents: { get: (id: string) => agents.get(id) },
+    // cordis's own lookup — the shape the production code actually reads.
+    reflect: { get: (name: string, strict?: boolean) => (name === 'agents' && strict !== true ? { get: (id: string) => agents.get(id) } : undefined) },
     on(event: string, fn: (...args: unknown[]) => unknown): () => void {
       handlers.set(event, fn)
       return () => { handlers.delete(event) }
