@@ -93,8 +93,24 @@ const SPEC: NonNullable<CreatePolicyOptions['spec']> = {
   prices: {},
 }
 
-/** One agent object, shared by the hooks of a single run. */
-const AGENT = {}
+/**
+ * One agent object, shared by the hooks of a single run.
+ *
+ * `id` is real because `resolveAgent` looks the agent up BY SESSION ID through
+ * the `agents` service: a session whose id resolves to nothing is recorded
+ * against the agent-less policy, which is a different object from the one the
+ * hooks wrote to. `AGENT_ID` is the id the session fixtures below carry.
+ */
+const AGENT = { id: 'sess-signals' }
+
+/** The session id that resolves to {@link AGENT}. */
+const AGENT_ID = 'sess-signals'
+
+/** The agent id, structural: the fixtures are plain objects, not harness Agents. */
+function agentId(agent: unknown): string {
+  const id = (agent as { id?: unknown } | null)?.id
+  return typeof id === 'string' && id !== '' ? id : 'agentless'
+}
 
 /** Mount the plugin with the dashboard off (it would bind a port per test). */
 /**
@@ -962,10 +978,22 @@ test('a harness-path record carries the detectors real signals, not one placehol
     const historyPath = join(dir, 'runs.jsonl')
 
     const handlers = new Map<string, (...args: unknown[]) => unknown>()
+    // `reflect.get('agents', false)` — Cordis's own optional lookup, which
+    // `policyFor` and `resolveAgent` both read (§1bx/§1bx's follow-up). Without
+    // it every hook resolves the AGENT-LESS policy: a DIFFERENT policy object
+    // from the one `reviewStep` wrote its signals to, so `recordTurn` reads
+    // `undefined` from a policy that was never told anything. The first draft of
+    // this test had no registry and recorded `signals: []`, which read as "no
+    // detector fired" — the same false negative in a different costume.
+    const registry = new Map<string, unknown>([[agentId(AGENT), AGENT]])
     const ctx = {
       on(event: string, fn: (...args: unknown[]) => unknown): () => void {
         handlers.set(event, fn)
         return () => { handlers.delete(event) }
+      },
+      reflect: {
+        get: (name: string, strict?: boolean): unknown =>
+          (name === 'agents' && strict !== true) ? registry : undefined,
       },
     }
     const dispose = apply(ctx as never, {
@@ -974,35 +1002,41 @@ test('a harness-path record carries the detectors real signals, not one placehol
       optimize: { history: historyPath },
     } as never)
 
-    // Four failing steps in a row: `error-cascade` is a detector whose verdict is
-    // deterministic, so the closed turn must carry its REAL kind — and the
-    // cycle alert must be able to see it.
+    // Five boundaries, each: pre-step (which COMMITS the previous step's
+    // observation), then a tool call that runs and FAILS. The order is the
+    // point — a failing tool call is only visible to the detectors on the NEXT
+    // pre-step, because that is where the observation is committed. Three
+    // consecutive failures are what `error-cascade` needs, so five boundaries
+    // reach it; writing this the obvious way (four pre-steps with no tool call)
+    // produces an empty history and a record with nothing in it, which is how
+    // the first draft of this test passed for the wrong reason.
     const pre = handlers.get('agent/pre-step') as Handler
+    const preTool = handlers.get('tools/pre-execute') as Handler
+    const post = handlers.get('tools/post-execute') as Handler
     const sessionHandler = handlers.get('session/event')
     assert.ok(sessionHandler !== undefined)
-    for (let step = 1; step <= 4; step += 1) {
+    for (let step = 1; step <= 5; step += 1) {
       await pre(
         { agent: AGENT, messages: [], turn: 1, step, signal: new AbortController().signal },
         async () => ({ kind: 'enter', messages: [] }),
       )
-      // A tool that RAN and failed is what the cascade detector counts.
-      handlers.get('tools/post-execute')?.(
-        { agent: AGENT },
-        { isError: true },
-        async () => undefined,
-      )
-      handlers.get('tools/pre-execute')?.(
+      await preTool(
         { agent: AGENT, name: 'write_file', arguments: {} },
-        async () => ({ kind: 'deny', reason: 'blocked' }),
+        async () => ({ kind: 'allow' }),
       )
+      await post({ agent: AGENT }, { isError: true }, async () => undefined)
     }
-    sessionHandler({ id: 'sess-signals' }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    sessionHandler(
+      { id: agentId(AGENT) },
+      { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+    )
 
     const deadline = Date.now() + 5000
     while (Date.now() < deadline && !readFileSync(historyPath, 'utf8').includes('signals')) {
       await new Promise(resolve => { setTimeout(resolve, 10) })
     }
-    const record = JSON.parse(readFileSync(historyPath, 'utf8').trim().split('\n')[0]!) as {
+    const lines = readFileSync(historyPath, 'utf8').trim().split('\n').filter(Boolean)
+    const record = JSON.parse(lines[lines.length - 1]!) as {
       signals: { kind: string, severity: string }[]
     }
     assert.ok(Array.isArray(record.signals), 'a record must carry a signals array')

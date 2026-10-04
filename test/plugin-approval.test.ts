@@ -473,6 +473,26 @@ test('a closed turn records the judge\'s answers, not an empty list', async () =
   const [line] = readFileSync(historyPath, 'utf8').trim().split('\n')
   const record = JSON.parse(line!) as Record<string, unknown>
   assert.deepEqual(record.judgeScores, [1.1, 1.1, 1.1], 'every score the turn collected')
+
+  // A SECOND turn on the same agent must not carry the first turn's scores.
+  // The policy is keyed by agent and an agent outlives a turn, so the drain in
+  // `recordTurn` is what keeps one turn's evidence out of the next record.
+  const second = handler('agent/pre-step') as unknown as (
+    p: unknown, n: () => Promise<unknown>,
+  ) => Promise<unknown>
+  await second(
+    { agent, messages: [], turn: 2, step: 1, signal: new AbortController().signal },
+    async () => ({ kind: 'enter', messages: [] }),
+  )
+  fn(agent, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } })
+  const until = Date.now() + 5000
+  while (Date.now() < until && readFileSync(historyPath, 'utf8').trim().split('\n').length < 2) {
+    await new Promise(resolve => { setTimeout(resolve, 10) })
+  }
+  const lines = readFileSync(historyPath, 'utf8').trim().split('\n')
+  assert.equal(lines.length, 2, 'both turns are recorded')
+  const [second_] = lines.slice(1).map(line => JSON.parse(line) as Record<string, unknown>)
+  assert.deepEqual(second_.judgeScores, [1.1], 'the second turn scored once, not four times')
   dispose()
 })
 

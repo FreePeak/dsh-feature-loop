@@ -24,6 +24,10 @@
 #   * each process owns its own approval registry AND its own dashboard port, so
 #     the headless twin gets a different port from the web one.
 #
+#   * a `file:` dependency is a SNAPSHOT taken at install time, so a rebuilt
+#     `lib/` does not reach an already-installed profile — it keeps running the
+#     bytes pnpm copied. This script therefore builds before it installs.
+#
 # ponytail: writes four files and shells out to pnpm once. The upgrade path is
 # `dsh plugin --profile X add`, which does the install but not the peers, the
 # bundle row, or the patch — which is why this exists.
@@ -285,6 +289,16 @@ YAML
 sed -i.bak -e "s/__DASHBOARD_PORT__/${DASH}/" -e "s/__GATE_MODE__/${GATE_MODE}/" "$PROFILE_DIR/cordis.patch.yml"
 rm -f "$PROFILE_DIR/cordis.patch.yml.bak"
 
+# Build BEFORE the install. `file:` copies `lib/` at install time, so a profile
+# generated from a repo whose `lib/` is stale runs the stale plugin — and the
+# symptom is a fix that measures as still-broken, because the live run reads the
+# OLD behaviour. Measured 2026-10-04: after fixing `reviewText`, rebuilding the
+# repo's `lib/` and restarting the profile, the harness still emitted the old
+# "stop and report" wording; `grep` on the profile's own virtual-store copy found
+# no trace of the new text.
+echo "==> build (the profile installs a snapshot of lib/, not the source)"
+npm run build >/dev/null
+
 echo "==> install (pnpm 9 — a v11 re-resolve drops the peer wiring)"
 # `--prefer-offline` is the difference between a hang and an install when the
 # registry is slow or unreachable: every package the profile needs is already in
@@ -352,9 +366,9 @@ esac
 # `@deepseek-ai/*` peers resolve through the profile's node_modules, so
 # importing it from anywhere else fails with ERR_MODULE_NOT_FOUND for
 # `@deepseek-ai/schemastery` — which says nothing about where it actually runs.
-echo "==> build + import check (an unimportable plugin gates nothing)"
-( cd "$REPO" && npm run --silent build >/dev/null ) \
-  || { echo "error: the plugin did not build — lib/ is what a profile imports" >&2; exit 1; }
+# The build already happened above, BEFORE the install — rebuilding here would be
+# too late: pnpm has already copied the snapshot into the virtual store.
+echo "==> import check (an unimportable plugin gates nothing)"
 ( cd "$PROFILE_DIR" \
     && node -e "import('@freepeak/dsh-feature-loop').then(() => console.log('   the plugin IMPORTS inside this profile'), e => { console.error('   import FAILED: ' + String(e.message).split('\\n')[0]); process.exit(1) })" ) \
   || { echo "error: the plugin is installed but INERT — the row composes, the" >&2

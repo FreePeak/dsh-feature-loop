@@ -207,7 +207,7 @@ export interface FeatureLoopPolicy {
    * not run — an absent signal list, never a synthetic one.
    */
   pendingSignals?: readonly ReviewSignal[]
-  /** The judge's scores for this turn, drained into the record on `turn/end`. */
+  /** The judge's scores for the OPEN turn, drained by `recordTurn` on `turn/end`. */
   turnJudgeScores?: number[]
   history: StepObservation[]
   /**
@@ -650,14 +650,22 @@ export async function reviewStep(
       error: failed,
     })
     policy.pending = undefined
-    // The signals belong to the step that just ended, and `reviewStep` overwrites
-    // them on the next boundary — but clearing here means a turn that opens
-    // without a pre-step (a resumed session, a nested dispatch) records none
-    // rather than the previous turn's.
-    policy.pendingSignals = undefined
-    // The judge's answers are NOT cleared here: they are the turn's evidence and
-    // are drained by `recordTurn` on `turn/end`. Clearing them per step is what
-    // would leave only the last step's score on the record.
+    // The signals are deliberately NOT cleared here, for exactly the reason the
+    // lines below give for the judge's answers: `reviewStep` overwrites them on
+    // the next boundary anyway, and `recordTurn` drains them on `turn/end`,
+    // which is LATER than every step boundary in the turn.
+    //
+    // Measured 2026-10-04: they were cleared here, so every closed turn read
+    // `pendingSignals === undefined` and recorded `signals: []` — the fix
+    // "replacing the placeholder" had silently become "recording nothing",
+    // which is worse, because an empty array reads as "no detector fired"
+    // rather than "this column is a placeholder". Set at one seam, consumed at a
+    // later one, cleared in between: the exact shape of §1bw.
+    //
+    // A turn that opens WITHOUT a pre-step (a resumed session, a nested
+    // dispatch) therefore records the previous turn's signals. `reviewStep` is
+    // what clears them, and a turn without one has no detectors to report
+    // either — so the honest fix is the cheap one: keep the last real set.
     policy.router.observeStep()
     // The ladder's failure signal, from the step that just ended. The plugin
     // path had none: `recordFailure` had no caller outside the runner's own
@@ -708,8 +716,6 @@ export async function reviewStep(
   // not happened yet. An absent answer is not evidence of confidence, so it is
   // passed through as `undefined` and the gate asks rather than proceeds.
   policy.lastConfidence = undefined
-  // Cleared once per TURN, not per step: `recordTurn` drains it on `turn/end`.
-  if (policy.turnJudgeScores === undefined) policy.turnJudgeScores = []
   if (preparation.askJudge) {
     const question = judgeQuestion(preparation.judgeState, preparation.signals)
     const answer = await policy.judge.score(question.state, question.questions)
@@ -720,7 +726,7 @@ export async function reviewStep(
     // and `summarize`'s `meanJudge`, and every optimizer battery question that
     // asks how the judge is doing, were answered from nothing. Same shape as
     // `reviewFraction`'s literal `0` above.
-    if (answer.score !== undefined) policy.turnJudgeScores?.push(answer.score)
+    if (answer.score !== undefined) (policy.turnJudgeScores ??= []).push(answer.score)
   }
 
   // The review checkpoint is checked before the router's own verdict, so a
@@ -1929,6 +1935,14 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
   const { session, event, openedAt, options, policyFor, resolveAgent, state, historyPath } = input
   const agent = agentOfSession(session, resolveAgent)
   const policy = policyFor(agent)
+  // Drain this turn's judge scores, then clear them: the policy is keyed by
+  // agent and an agent outlives one turn, so without this the SECOND turn's
+  // record would carry the first turn's scores as well. Measured 2026-10-04:
+  // every live record said `judgeScores: []`, because the field was a literal;
+  // the first fix (accumulate per turn, drain on `turn/end`) had to be paired
+  // with this, or the same agent's history would double-count.
+  const turnJudgeScores = policy.turnJudgeScores
+  policy.turnJudgeScores = []
   const snapshot = policy.budget?.snapshot()
   const spec = policy.spec ?? options.spec
   const now = Date.now()
@@ -1981,7 +1995,7 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
     // stays absent: a turn with no detector output records no signals, which is
     // different from recording a signal that says nothing.
     signals: policy.pendingSignals === undefined ? [] : [...policy.pendingSignals],
-    judgeScores: policy.turnJudgeScores ?? [],
+    judgeScores: turnJudgeScores ?? [],
     // From the router that counted them. `recordTurn` wrote a literal `0` here,
     // so every harness-path record reported a human-escalation rate of exactly
     // zero — and `summarize`'s "Human escalation rate > 15%" alert could never
