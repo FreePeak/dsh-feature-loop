@@ -302,7 +302,16 @@ export const SHIP_PHASE: PipelinePhaseDef = {
     read: 'read',
     bash: 'reversible-write',
   },
-  gate: { kind: 'artifact', path: '.feature-loop/artifacts/pr-url.txt', label: 'a pull request URL was recorded' },
+  // The file must hold a URL, not merely exist. A run whose ship phase could not
+  // reach git wrote a careful, honest explanation into pr-url.txt — and the gate
+  // passed, because it checked that the file was there. A gate that accepts prose
+  // where it expects a link is not a gate.
+  gate: {
+    kind: 'artifact',
+    path: '.feature-loop/artifacts/pr-url.txt',
+    label: 'a pull request URL was recorded',
+    mustMatch: [/https?:\/\/\S+\/pull\/\d+/],
+  },
   produces: ['pull request'],
 }
 

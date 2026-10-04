@@ -196,6 +196,33 @@ describe('artifact gates', () => {
   })
 })
 
+describe('the ship gate', () => {
+  const gate = PIPELINE_PHASES.ship.gate
+  assert.equal(gate.kind, 'artifact')
+
+  it('fails when no pull request file exists', () => {
+    assert.equal(evaluateGate(gate, obs({ phase: 'ship' })).pass, false)
+  })
+
+  it('fails on a file that explains rather than links', () => {
+    // A run whose ship phase could not reach git wrote a careful, honest
+    // explanation into pr-url.txt — and the gate passed, because it only checked
+    // that the file was there. The file existed; the pull request did not.
+    const prose = {
+      '.feature-loop/artifacts/pr-url.txt':
+        'NO PR WAS OPENED — no pull request URL exists for this run.\nCommit sha: none.',
+    }
+    const result = evaluateGate(gate, obs({ phase: 'ship', artifacts: prose }))
+    assert.equal(result.pass, false)
+    assert.match(result.detail, /no heading|pr-url/)
+  })
+
+  it('passes on a real pull request URL', () => {
+    const link = { '.feature-loop/artifacts/pr-url.txt': 'https://github.com/o/r/pull/42\n' }
+    assert.equal(evaluateGate(gate, obs({ phase: 'ship', artifacts: link })).pass, true)
+  })
+})
+
 describe('changed gates', () => {
   const gate = PIPELINE_PHASES.implement.gate
   assert.equal(gate.kind, 'changed')

@@ -73,6 +73,7 @@ import type { GatePolicy } from './review.ts'
 import { detectSignals } from './signals.ts'
 import type { ReviewSignal, StepObservation } from './signals.ts'
 import { envelope } from './yolo.ts'
+import { branchFor } from './sandbox.ts'
 import type { Sandbox } from './sandbox.ts'
 import { existsSync } from 'node:fs'
 import { parseDashboardConfig, pendingIdFor, startDashboard, DashboardState } from './dashboard.ts'
@@ -893,7 +894,16 @@ function attachContainment(policy: FeatureLoopPolicy, agent: Agent, options: { g
     // Recorded so the report can name the directory a run was confined to. The
     // branch is empty because none was created here — claiming one would be the
     // same theatre the worktree version was.
-    policy.pipeline.worktree = { worktreeRoot: root, branch: '', stopSentinel: join(root, STOP_SENTINEL) }
+    // A REAL branch name, not an empty one. `attachContainment` roots the run at
+    // the session's own directory rather than a worktree beside it, but the branch
+    // is still needed: ship pushes it, and an empty ref made `git push -u origin ''`
+    // fail, which is why a run that completed all five phases reported "NO PR WAS
+    // OPENED" on work that was perfectly ready to be pushed.
+    policy.pipeline.worktree = {
+      worktreeRoot: root,
+      branch: branchFor(policy.taskGoal ?? policy.spec?.goal ?? 'feature-loop run', String(policy.taskGoal ?? 'run').slice(0, 8)),
+      stopSentinel: join(root, STOP_SENTINEL),
+    }
   }
 }
 
@@ -909,20 +919,45 @@ function attachContainment(policy: FeatureLoopPolicy, agent: Agent, options: { g
  * @param policy - the run's policies.
  * @returns one line for the feed, or `undefined` when there was no sandbox.
  */
-function runPipelineShip(policy: FeatureLoopPolicy): string | undefined {
+function runPipelineShip(policy: FeatureLoopPolicy, agent: Agent): string | undefined {
   const pipeline = policy.pipeline
   const sandbox = pipeline?.worktree
-  if (pipeline === undefined || sandbox === undefined) return undefined
+  if (pipeline === undefined || sandbox === undefined) {
+    process.stderr.write('dsh-feature-loop: ship skipped — the run has no sandbox to work in\n')
+    return undefined
+  }
+  // Read once: the branch and the PR body must be named for the same goal.
+  const goal = userGoalOf(agent) ?? policy.taskGoal ?? policy.spec?.goal ?? 'feature-loop run'
   try {
     const result = runShip({
-      repoRoot: '', goal: policy.taskGoal ?? policy.spec?.goal ?? 'feature-loop run', runId: '',
+      repoRoot: '',
+      // The TASK, not the deployment's spec.goal, and the session log is read
+      // FRESH here rather than reusing `policy.taskGoal`: that field was captured
+      // at containment time, when the log still held no user turn, so it was
+      // seeded from the spec and the branch came out as
+      // `fl/create-tmp-fl-headless-proof-txt-…`. By ship time the log is fully
+      // populated and the reader returns what the human actually typed.
+      goal,
+      runId: '',
       run: pipeline.run, budget: pipeline.budget,
-      config: { runsDir: '.feature-loop/runs' },
+      config: { runsDir: RUNS_DIR },
       runner: spawnSyncCommand,
-    }, sandbox, [], 0)
+      // The branch is RE-derived here, not read off the sandbox. The sandbox
+      // captured it at containment time, when the session log still held no user
+      // turn, so it was seeded from the deployment's `spec.goal` and every run
+      // pushed `fl/create-tmp-fl-headless-proof-txt-…`. By ship time the log is
+      // populated and the reader returns the task.
+    }, { ...sandbox, branch: branchFor(goal, String(policy.taskGoal ?? 'run').slice(0, 8)) }, [], 0)
+    // Every ship attempt is announced. A run that reached `ship` and produced no
+    // pull request looked identical to one that never tried, which is the same
+    // silence that has cost hours three times now: denials, gate evaluations and
+    // phase transitions all needed a stderr line before they could be debugged.
+    process.stderr.write(`dsh-feature-loop: ship — branch=${sandbox.branch} outcome=${result.outcome}: ${result.detail}\n`)
     return result.detail
   } catch (error) {
-    return `ship failed: ${error instanceof Error ? error.message : String(error)}`
+    const reason = error instanceof Error ? error.message : String(error)
+    process.stderr.write(`dsh-feature-loop: ship threw: ${reason}\n`)
+    return `ship failed: ${reason}`
   }
 }
 
@@ -1213,7 +1248,7 @@ function phaseJustEntered(policy: FeatureLoopPolicy, turn: number, step: number,
  * @param policy - the run's policies.
  * @returns the notice for the new state, or `undefined` when nothing moved.
  */
-function advanceIfGated(policy: FeatureLoopPolicy): { notice: string } | undefined {
+function advanceIfGated(policy: FeatureLoopPolicy, agent: Agent): { notice: string } | undefined {
   const pipeline = policy.pipeline
   if (pipeline === undefined) return undefined
   const sandbox = pipeline.worktree
@@ -1262,7 +1297,7 @@ function advanceIfGated(policy: FeatureLoopPolicy): { notice: string } | undefin
   // Ship runs on ENTERING the phase, because its own exit gate is the pull
   // request url it writes. A phase that has to leave before it can pass its gate
   // is a phase whose gate can never be reached.
-  if (next === 'ship') runPipelineShip(policy)
+  if (next === 'ship') runPipelineShip(policy, agent)
   return {
     notice: (PHASE_ORDER as readonly string[]).includes(next)
       ? `${moved.note}\n\n${phaseNotice(next as PipelinePhase) ?? ''}`
@@ -2113,7 +2148,8 @@ export function apply(
       // it. Without this a run that wrote a perfectly good research note and then
       // finished its turn left the pipeline in `research` with the note sitting
       // there, and the next turn re-entered a phase that was already done.
-      advanceIfGated(policyFor(agentOfSession(agents, session)))
+      const turnAgent = agentOfSession(agents, session)
+      if (turnAgent !== undefined) advanceIfGated(policyFor(turnAgent), turnAgent)
       void recordTurn({ session, event: end, options, policyFor, state, historyPath: path, agents })
         .catch((error: unknown) => {
           // A failed append must never fail the turn: the record is
@@ -2163,7 +2199,7 @@ export function apply(
     // fails, and the phase never leaves. That is exactly what a live run did:
     // research produced a perfectly good `docs/0-research.md` and the pipeline
     // sat on it until the ceiling stopped the run.
-    const advanced = advanceIfGated(policy)
+    const advanced = advanceIfGated(policy, agent)
     if (base.kind === 'reject') return base
     const { decision, notices, signals, judgeScore, budget } = await reviewStep(policy, step)
     // The step ran, so it counts against the phase's own step ceiling. Counted
