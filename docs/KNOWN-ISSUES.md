@@ -81,6 +81,7 @@ rather than a list of letters:
 | 1bv | The plugin path's wall clock, hiding in the event it was already reading |
 | 1bw | One unbound method call, and it was the reason no run record existed |
 | 1bx | Three ways to lose an agent, one class |
+| 1by | What the panel says about a history this plugin actually wrote |
 
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
@@ -838,6 +839,10 @@ This is the sixth instance of this file's shape, and the first one where the
 *number* is the defect rather than the code: nothing crashed, nothing was
 silently skipped, and the arithmetic was exact.
 
+> **Recomputed 2026-10-04 against records this plugin actually wrote:** 0.667
+> over three real harness-path runs, against the 0.867 below, which was 13 turns
+> that did nothing. §1by has the full table.
+
 **Fix:** `outcomeOf` takes the step count, and a turn with no steps is
 `model-stop`. Measured on the same 15 records:
 
@@ -1203,6 +1208,53 @@ existing ones given a `reflect` alongside `agents`. Reverting to
 itself all answer the same question — *where is the service* — and all three
 were read as though the answer were already in hand. `reflect.get` is the
 question asked properly, and it is one call.
+
+### 1by. What the panel says about a history this plugin actually wrote
+
+**Observed.** §1bw and §1bx made the harness path write records. Before either,
+it wrote none, so there was nothing to summarise. These are the first numbers
+computed over records **this plugin produced on a real deployment** — the three
+harness-path records in the history file, on their own:
+
+```
+runs 3   measuredRuns 2   goalMetRate 0.667   firstPassRate undefined
+reviewFraction 0.222
+steps p50 4          cost per run p50 $0.004535
+wallMs p50 62314 ms  goalMetCost $0.006153
+routes: onegw/execution (10 steps)
+```
+
+Every figure is a claim about the loop, and none of them is a claim about a
+policy default:
+
+| | before §1bw/§1bx | now |
+|---|---|---|
+| records written by this plugin on a harness path | **0** | 3 |
+| steps | 0 (agent-less policy) | 4, 6 |
+| cost | $0 | $0.0045, $0.0078 |
+| byRoute | `{}` | `onegw/execution`, priced |
+| reviewFraction | 0 (a router that never saw a step) | 0.167, **0.5** |
+| wallMs | absent (the call that produced it threw) | 62s, 195s |
+
+`reviewFraction 0.5` is the one worth stopping on: half the steps in that run
+surfaced for review — the checkpoint, the signal notices — and the "Human
+escalation rate > 15%" alert of §1bs has a real input for the first time.
+
+**And the figures the six earlier entries produced, now confirmed against real
+data rather than a CLI-runner history.** `firstPassRate` is `undefined` here for
+exactly the reason §1bq gave (§1bq's own guard: no record reports a pass above 1,
+so the number would have been an alias of `goalMetRate`). `goalMetRate 0.667` is
+not the `0.867` of §1bp — the 87% was computed from 13 turns that did nothing.
+`measuredRuns` separates the two, which is §1br's fix doing its job.
+
+**What is still absent, and why.** `stepLatencyMs` is `[]` on these records: the
+plugin has no seam around a model call, only the turn boundary (§1bu gave the
+*runner* per-step samples; a harness session does not expose one to a plugin).
+`latencyKind` is absent for the same reason, and `summarize` therefore reports no
+latency axis for this path rather than a zero. That is §1bt's shape working, not
+a gap — but it does mean the plugin path has no per-step speed figure, and the
+two `latency`/`steps` alerts that DO fire come from the CLI-runner records in the
+same file.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
