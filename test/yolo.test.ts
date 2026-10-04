@@ -408,6 +408,21 @@ describe('the shell cannot escape the worktree', () => {
     assert.equal(shell('npm publish', 'npm test').kind, 'deny')
   })
 
+  it('names the exact command to run when it refuses a variant', () => {
+    // A live run denied `npm test 2>&1 | tail -20` and the model had no way to
+    // learn that plain `npm test` would have been allowed. The denial is the only
+    // channel it gets — there is no approval card — so it has to be actionable.
+    const r = shell('npm test 2>&1 | tail -20', 'npm test')
+    assert.equal(r.kind, 'deny')
+    assert.match(r.reason, /Run exactly: npm test/)
+  })
+
+  it('says what to configure when there is no verify command yet', () => {
+    const r = shell('npm test')
+    assert.equal(r.kind, 'deny')
+    assert.match(r.reason, /Set pipeline\.testCommand/)
+  })
+
   it('reports why a command was refused', () => {
     const r = shell('cat ~/.ssh/id_rsa')
     assert.equal(r.kind, 'deny')

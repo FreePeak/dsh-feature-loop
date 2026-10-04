@@ -66,8 +66,6 @@ import type { GatePolicy } from './review.ts'
 import { detectSignals } from './signals.ts'
 import type { ReviewSignal, StepObservation } from './signals.ts'
 import { envelope, envelopeCommand } from './yolo.ts'
-import { startSandbox } from './driver.ts'
-import { spawnSync } from 'node:child_process'
 import type { Sandbox } from './sandbox.ts'
 import { existsSync } from 'node:fs'
 import { parseDashboardConfig, pendingIdFor, startDashboard, DashboardState } from './dashboard.ts'
@@ -787,132 +785,83 @@ export function gateEnforce(
     ...(policy.pipeline?.verifyCommand === undefined ? {} : { verifyCommand: policy.pipeline.verifyCommand }),
   })
   return decision.kind === 'deny'
-    ? { kind: 'deny', reason: `YOLO ENVELOPE — ${decision.reason}` }
+    ? { kind: 'deny', reason: denyReason(toolName, decision.reason, policy) }
     : { kind: 'proceed' }
 }
 
 /**
- * Run one command in the plugin, for the sandbox's `git worktree add`.
+ * The reason a YOLO denial is reported, on stderr as well as to the model.
  *
- * The one shell-out this package makes on the agent path, and it exists for a
- * containment property that cannot be had any other way. The command is a fixed
- * argv — no model text reaches it — and `envelopeCommand` is still consulted so
- * a future edit that widened it would be denied rather than executed.
+ * A denial under `auto` is invisible by construction: there is no approval card,
+ * no dashboard watcher, and the harness's own feed may be off. A live run showed
+ * what that costs — a run blocked one step in, with a correct-looking history
+ * record, and nothing anywhere saying a single tool call had been refused. The
+ * operator's first question is always "what was it trying to do", and answering
+ * it should not require reproducing the run with a dashboard attached.
  *
- * @param command - the executable.
- * @param args - its arguments.
- * @param cwd - the directory to run in.
- * @returns the exit code and captured streams.
+ * One line per denial to stderr, which is where an unattended run's output
+ * already goes. Deliberately not `console.log`: this runs inside a host process
+ * that owns stdout.
+ *
+ * @param toolName - the tool that was refused.
+ * @param reason - the envelope's reason.
+ * @param policy - the run's policies, for the containment root.
+ * @returns the reason handed to the model.
  */
-function spawnCommand(command: string, args: string[], cwd: string): { code: number; stdout: string; stderr: string } {
-  if (envelopeCommand([command, ...args].join(' ')).kind === 'deny') {
-    return { code: 126, stdout: '', stderr: `refused by the envelope: ${command} ${args.join(' ')}` }
-  }
-  try {
-    const result = spawnSync(command, args, {
-      cwd,
-      encoding: 'utf8',
-      timeout: 60_000,
-      maxBuffer: 4 * 1024 * 1024,
-      windowsHide: true,
-    })
-    return {
-      code: result.status ?? (result.error === undefined ? 0 : 127),
-      stdout: result.stdout ?? '',
-      stderr: result.stderr ?? (result.error === undefined ? '' : result.error.message),
-    }
-  } catch (error) {
-    return { code: 127, stdout: '', stderr: error instanceof Error ? error.message : String(error) }
-  }
+function denyReason(toolName: string, reason: string, policy: FeatureLoopPolicy): string {
+  const root = policy.worktreeRoot ?? '<none — every write and every shell command is denied>'
+  process.stderr.write(`dsh-feature-loop: YOLO denied ${toolName} — ${reason} (root: ${root})\n`)
+  return `YOLO ENVELOPE — ${reason}`
 }
 
 /**
- * Say, once, that a YOLO run has no containment.
+ * Give a YOLO run the directory its writes are confined to.
  *
- * Written to stderr rather than the dashboard feed because the dashboard may not
- * be mounted, and this is the single line that separates "the gate is broken"
- * from "there is no worktree to contain writes in" when someone reads a log.
- */
-function noteSandboxFailure(policy: FeatureLoopPolicy, error: unknown): void {
-  const reason = error instanceof Error ? error.message : String(error)
-  process.stderr.write(
-    `dsh-feature-loop: YOLO run "${runIdLabel(policy)}" has no worktree — every write will be DENIED. ${reason}\n`,
-  )
-}
-
-/** A stable label for a policy's run, for one line of diagnostics. */
-function runIdLabel(policy: FeatureLoopPolicy): string {
-  return policy.spec?.goal.slice(0, 60) ?? 'untitled'
-}
-
-/**
- * Project the run's current phase onto the dashboard row.
+ * Only `gateMode: 'auto'` runs need one. A supervised run is already contained by
+ * the harness's own file policy and gains nothing here.
  *
- * A no-op for a policy with no pipeline, which is what keeps the rail off the
- * page entirely for an ordinary bounded loop rather than showing five stages
- * that will never change.
- *
- * The phase's own spend is published beside the run's total because the two
- * answer different questions, and the rail's meter reads the phase's: "can this
- * phase afford another step" is the question a five-phase run actually stalls
- * on, because the run total only ever goes up.
- *
- * `evidenceDir` and `prUrl` are deliberately NOT published here. Neither is
- * known until the run has produced them — the bundle path depends on the run's
- * id and the URL arrives at the very end — and a rail that shows a link to a
- * directory that does not exist yet is worse than one that shows the link once
- * there is something behind it.
- *
- * @param state - the dashboard state to write.
- * @param runId - the run's row.
- * @param policy - the agent's policies.
- * @param armed - whether the kill switch is set.
- */
-/**
- * Give a YOLO run its worktree, once.
- *
- * Only `gateMode: 'auto'` runs get one. A supervised run is already contained by
- * the harness's own file policy and gains nothing from a throwaway checkout, so
- * creating one would spend a branch and a directory on a run that never needed
- * it.
+ * Rooted at the directory the agent ACTUALLY operates in — the session's cwd.
+ * This used to create a git worktree and make that the root; a live run showed it
+ * to be theatre. The worktree was created beside the session, but the session's
+ * cwd never changed, so the agent kept reading and writing the original checkout
+ * while the envelope compared every path against the worktree. Every write
+ * denied, the run blocked after one step, and the worktree held nothing the agent
+ * had ever looked at. A worktree the agent never entered is worse than none — a
+ * branch, a directory and a false impression of isolation for no containment.
+ * Relocating a session mid-run is the host's decision, so the honest root today is
+ * where the agent really works. `createSandbox` stays available for a caller that
+ * starts a session INSIDE a worktree: then the cwd is the worktree and this
+ * resolves to the same answer with no special case.
  *
  * Idempotent, because `policyFor` can be reached more than once for the same
- * agent — a second `git worktree add` on the same path fails, and a failed
- * containment attempt must not be retried into a different path.
- *
- * Failure is a **feed line, not a throw**. A `SandboxError` means this machine
- * is not a git repository, or git refused; either way the run continues with no
- * `worktreeRoot`, and the envelope then denies every write. Refusing to start
- * would be safer, but the harness has no seam to refuse a turn from here, and a
- * loop that silently writes to the user's checkout is the outcome that must not
- * happen — so the envelope's fail-closed default is what carries it.
+ * agent, and a second attempt must not replace a root a write has already been
+ * judged against.
  *
  * @param policy - the run's policy, mutated in place.
  * @param agent - the agent whose session carries the workspace path.
  * @param options - the deployment config, for the gate mode.
  */
-function attachSandbox(policy: FeatureLoopPolicy, agent: Agent, options: { gateMode?: GateMode }): void {
+function attachContainment(policy: FeatureLoopPolicy, agent: Agent, options: { gateMode?: GateMode }): void {
   if (policy.gateMode !== 'auto') return
   if (policy.worktreeRoot !== undefined) return
-  if (policy.pipeline === undefined) return
-  const root = sessionCwdOf(agent)
-  if (root === undefined || root.length === 0) return
-  try {
-    const sandbox = startSandbox({
-      repoRoot: root,
-      goal: policy.spec?.goal ?? 'feature-loop run',
-      runId: runIdOf(agent),
-      run: policy.pipeline.run,
-      budget: policy.pipeline.budget,
-      config: {},
-      runner: spawnCommand,
-    })
-    policy.worktreeRoot = sandbox.worktreeRoot
-    if (policy.pipeline !== undefined) policy.pipeline.worktree = sandbox
-  } catch (error) {
-    // Recorded where an operator will see it. The run keeps going with no
-    // containment, which the envelope reads as "deny every write".
-    noteSandboxFailure(policy, error)
+  // The session header is the authoritative cwd, and when it carries one this is
+  // exact. It does not always: a headless run created before the first turn has
+  // no header yet, and the header's shape has moved between harness releases.
+  //
+  // Falling back to the PROCESS cwd is what a plugin can honestly offer here —
+  // the harness starts the process in the session's directory, and it is the same
+  // directory every tool call resolves against. Returning early instead left
+  // `worktreeRoot` undefined, which the envelope reads as "deny every write and
+  // every shell command" — and a YOLO run that denied its first tool call simply
+  // ended, `blocked`, one step in, with nothing in the log to explain it.
+  const root = sessionCwdOf(agent) ?? process.cwd()
+  if (root.length === 0) return
+  policy.worktreeRoot = root
+  if (policy.pipeline !== undefined && policy.pipeline.worktree === undefined) {
+    // Recorded so the report can name the directory a run was confined to. The
+    // branch is empty because none was created here — claiming one would be the
+    // same theatre the worktree version was.
+    policy.pipeline.worktree = { worktreeRoot: root, branch: '', stopSentinel: join(root, STOP_SENTINEL) }
   }
 }
 
@@ -1501,7 +1450,7 @@ export function apply(
       // gets its containment. `gateEnforce` reads `policy.worktreeRoot`, so an
       // un-sandboxed YOLO run denies every write — the fail-closed direction, and
       // the reason that gap would be safe even if this call were removed.
-      attachSandbox(policy, agent, options)
+      attachContainment(policy, agent, options)
     }
     return policy
   }

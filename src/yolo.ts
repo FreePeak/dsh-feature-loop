@@ -367,14 +367,21 @@ export function envelopeCommand(command: string, policy: ShellPolicy = {}): Enve
     return { kind: 'allow', reason: 'the configured verify command' }
   }
   if (!(READ_ONLY_COMMANDS.has(words[0]!))) {
+    // The denial is the ONLY channel a refused command has — under `auto` there
+    // is no approval card and no watcher — so it has to say what to run instead.
+    // A live run refused `npm test 2>&1 | tail -20` and the model had no way to
+    // learn that plain `npm test` would have been allowed.
+    const hint = policy.verifyCommand === undefined
+      ? ' Set pipeline.testCommand to the one command the loop is allowed to execute.'
+      : ` Run exactly: ${policy.verifyCommand}`
     return {
       kind: 'deny',
       reason: `"${words[0]}" is not on the shell allow-list. YOLO runs unattended, and a shell can do anything `
-        + 'a deny-list failed to name — so the list is of what it MAY run, not what it may not. '
+        + 'a deny-list failed to name — so the list is of what it MAY run, not what it may not.'
         + (INTERPRETERS.has(words[0]!)
           ? ' An interpreter is not on the list because it can compute its own paths at runtime, which no '
-            + 'reading of the command can contain.'
-          : ' Set pipeline.testCommand to the one command the loop is allowed to execute.'),
+            + 'reading of the command can contain.' + hint
+          : hint),
     }
   }
   const escape = escapesWorktree(words, policy.worktreeRoot)
