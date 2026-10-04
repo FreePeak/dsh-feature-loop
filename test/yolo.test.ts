@@ -13,6 +13,7 @@
 
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { detectSignals } from '../src/signals.ts'
 import { describe, it } from 'node:test'
 
 import {
@@ -471,6 +472,74 @@ describe('escapesWorktree', () => {
 
   it('allows an absolute path inside the worktree', () => {
     assert.equal(escapesWorktree(['cat', '/wt/src/a.ts'], '/wt'), undefined)
+  })
+})
+
+describe('the pipeline goal is the user request, not the deployment spec', () => {
+  // Three live runs researched "create /tmp/fl-headless-proof.txt containing
+  // hello" — the PROFILE's static `spec.goal` — because `userGoalOf` read the
+  // user turn at `data.message.content` and the V4 log puts it at `data.content`.
+  // The function returned undefined, every run fell back to the spec, and the
+  // research gate then correctly failed for lack of anything to cite. A silent
+  // fallback that is always taken is not a fallback.
+  it('reads the user turn from the field the session log actually uses', () => {
+    const source = readFileSync(new URL('../src/plugin.ts', import.meta.url), 'utf8')
+    assert.match(source, /data\?\.content \?\? data\?\.message\?\.content/,
+      'user text lives at data.content; the nested form is the assistant shape')
+  })
+
+  it('skips the harness scaffolding it would otherwise adopt as the goal', () => {
+    const source = readFileSync(new URL('../src/plugin.ts', import.meta.url), 'utf8')
+    for (const scaffold of ['Current runtime context', 'The following workspace instructions']) {
+      assert.match(source, new RegExp(scaffold.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+    }
+  })
+
+  it('documents the measured limit: snapshotEvents starts AFTER the user turn', () => {
+    // Measured, not assumed. A probe on a fresh headless run returned six events
+    // — permission/preset, sandbox/mode, approval/policy, agent/inbox/spliced,
+    // turn/start, agent/inbox/spliced — so the opening user turn is outside the
+    // snapshot window and this reader returns undefined today. The function says
+    // so, names the two accessors that do hold it, and points at the command that
+    // already receives the task.
+    const source = readFileSync(new URL('../src/plugin.ts', import.meta.url), 'utf8')
+    assert.match(source, /KNOWN LIMIT/)
+    assert.match(source, /eventsSnapshot/)
+    assert.match(source, /header/)
+  })
+
+  it('still falls back to the spec goal when the session exposes no user turn', () => {
+    const source = readFileSync(new URL('../src/plugin.ts', import.meta.url), 'utf8')
+    assert.match(source, /goal \?\? policy\.spec\?\.goal/)
+  })
+})
+
+describe('a policy denial is not a loop error', () => {
+  // Found by a live run that ended mid-research with "3 consecutive failing
+  // steps". All three were our own envelope refusing a write outside the
+  // worktree, a malformed command, and an interpreter — the model read each
+  // denial, adapted, and carried on, and the cascade guard killed it for that.
+  //
+  // A guard that fires because the loop was correctly told no three times is the
+  // guard preventing the behaviour it exists to protect.
+  it('does not mark a denied step as an error', () => {
+    const source = readFileSync(new URL('../src/plugin.ts', import.meta.url), 'utf8')
+    assert.doesNotMatch(source, /policy\.pending\.error = true/, 'a gate denial must not set error')
+  })
+
+  it('keeps the refused call in the step record, so tool-cycle still sees a loop hammering one', () => {
+    // The protection the cascade used to give moves to the detector that is
+    // actually about repetition. Repeating the SAME refused command is a cycle;
+    // being refused three DIFFERENT commands and adapting is not.
+    const source = readFileSync(new URL('../src/plugin.ts', import.meta.url), 'utf8')
+    assert.match(source, /#denied/)
+  })
+
+  it('still counts a genuinely repeated refused call as a cycle', () => {
+    const repeated = Array.from({ length: 3 }, () => ({
+      index: 0, tool: 'bash', argsKey: 'rm -rf /#denied', costUSD: 0,
+    }))
+    assert.ok(detectSignals(repeated, {}).some(s => s.kind === 'tool-cycle'))
   })
 })
 

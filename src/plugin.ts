@@ -945,6 +945,20 @@ function runPipelineShip(policy: FeatureLoopPolicy): string | undefined {
  * plugin could be led: it is the one string in the system that is, by
  * construction, what the human typed.
  *
+ * KNOWN LIMIT, measured against the live harness rather than assumed:
+ * `session.snapshotEvents(0)` does NOT return the whole log. Its window starts
+ * at the session's first live/lifecycle seq, so a probe on a fresh headless run
+ * returns six events — `permission/preset`, `sandbox/mode`, `approval/policy`,
+ * `agent/inbox/spliced`, `turn/start`, `agent/inbox/spliced` — and the user's
+ * opening turn is BEFORE it. This function therefore returns `undefined` on
+ * every real run today, and the pipeline falls back to `spec.goal`.
+ *
+ * The session carries two accessors this does not yet use: `header` (which is
+ * where `sessionCwdOf` already reads `cwd`) and `eventsSnapshot`. One of them
+ * holds the opening user turn. Until that is found, the honest options are to
+ * read it from `header`/`eventsSnapshot`, or to have the caller pass the task in
+ * explicitly — the `/loop` command already receives it.
+ *
  * @param agent - the agent whose session carries the transcript.
  * @returns the task text, or `undefined` when the session exposes none.
  */
@@ -959,8 +973,17 @@ function userGoalOf(agent: Agent): string | undefined {
   }
   for (const event of events) {
     if (event.type !== 'user/message') continue
-    const data = event.data as { readonly message?: { readonly content?: readonly { type?: string; text?: string }[] } } | undefined
-    for (const block of data?.message?.content ?? []) {
+    // The V4 log puts a user turn's blocks at `data.content`, NOT at
+    // `data.message.content` — reading the nested form is why this always
+    // returned undefined and every pipeline adopted the deployment's static
+    // `spec.goal` instead. Both shapes are accepted because the nested one is
+    // what an assistant-shaped event carries, and a wrong guess here is
+    // invisible: the pipeline simply researches the wrong thing.
+    const data = event.data as {
+      readonly content?: readonly { type?: string; text?: string }[]
+      readonly message?: { readonly content?: readonly { type?: string; text?: string }[] }
+    } | undefined
+    for (const block of data?.content ?? data?.message?.content ?? []) {
       const text = block?.text
       // The runtime-context and skill blocks are harness scaffolding; the first
       // block of prose is what the human wrote.
@@ -2072,10 +2095,25 @@ export function apply(
       // dropped so the assistant's tool-call block still gets a result and
       // session replay stays valid.
       //
-      // A blocked call is a step that made no progress, so `error-cascade`
-      // counts it. Treating a block as success would let a repeatedly-blocked
-      // loop read as a healthy one.
-      policy.pending.error = true
+      // A denial is NOT an error for `error-cascade`, and a live run showed what
+      // the old behaviour cost. Three refusals — a `/dev/null` write outside the
+      // worktree, a `pwd;`-prefixed command, an interpreter — tripped the
+      // cascade guard and ended a healthy research phase mid-flight, with the
+      // model narrating: "3 consecutive failing steps". Those were the POLICY
+      // working: the model read each denial, adapted, and kept going, which is
+      // exactly what an unattended run must be able to do.
+      //
+      // A guard that fires because the loop was correctly told no three times is
+      // the guard preventing the behaviour it exists to protect.
+      //
+      // The protection is not lost, it moves to the detector that owns it: a loop
+      // hammering the SAME refused call is `tool-cycle`, which reads the pending
+      // record set below. A denial is visible on the feed and on stderr either
+      // way.
+      // The refused call stays in the pending record, so `tool-cycle` still sees a
+      // loop hammering the same denied command — the protection the cascade used
+      // to give, now owned by the detector that is actually about repetition.
+      if (policy.pending !== undefined) policy.pending.argsKey = `${argsKey(rawArgs)}#denied`
       // Only blocks hit the feed: logging every `auto` call would bury the
       // decisions a human opened this page to see.
       state.recordGate(
