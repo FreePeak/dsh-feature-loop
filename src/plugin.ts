@@ -94,7 +94,7 @@ import { normalizeBrief } from './brief.ts'
 import { createOnegwClient } from './llm.ts'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { budgetStopText, budgetWarnText, escalationText, reviewText } from './messages.ts'
 // Type-only: `summarize` reads data, never the disk, so that module ships no
 // fs imports of its own. `runlog.ts` — which does touch the disk — is imported
@@ -367,18 +367,61 @@ function dashboardURLOnceBound(dashboard: DashboardHandle): Record<string, unkno
 }
 
 /**
- * Absolute workspace cwd from a live agent session header.
- * Structural read: `Agent` type only guarantees `id`; ReactLoopAgent also
- * carries `session.header.cwd`. Tests/fakes without a session stay ungrouped.
+ * Absolute workspace cwd from a live agent or session.
+ *
+ * Structural read, BOTH shapes: `Agent` only guarantees `id` (ReactLoopAgent
+ * carries `session`), and `Session` carries the header itself — so reading one
+ * shape would force every caller to unwrap the other. Tests/fakes with neither
+ * stay ungrouped.
+ *
+ * @param source - the agent or the session, as the call site received it.
+ * @returns the absolute cwd, or `undefined` when neither carries one.
  */
-function sessionCwdOf(agent: Agent | undefined): string | undefined {
-  if (agent === undefined) return undefined
-  const session = (agent as { readonly session?: { readonly header?: { readonly cwd?: unknown } } }).session
-  const cwd = session?.header?.cwd
+function sessionCwdOf(source: unknown): string | undefined {
+  if (source === null || typeof source !== 'object') return undefined
+  const holder = source as {
+    readonly session?: { readonly header?: { readonly cwd?: unknown } }
+    readonly header?: { readonly cwd?: unknown }
+  }
+  const cwd = holder.session?.header?.cwd ?? holder.header?.cwd
   if (typeof cwd !== 'string' || cwd === '') return undefined
   // Absolute POSIX or Windows drive path — reject relative junk.
   if (cwd.startsWith('/') || /^[A-Za-z]:[\\/]/.test(cwd)) return cwd
   return undefined
+}
+
+/**
+ * Where one session's records belong.
+ *
+ * The default history path is RELATIVE (`.feature-loop/runs.jsonl`), and both
+ * `appendRecord` and `readRecords` resolve a relative path against the PROCESS
+ * working directory. In a `dsh web` deployment that is the directory the
+ * server was launched from — not the workspace the task ran in — so the history
+ * grew beside the profile, the optimizer read a file the operator could not
+ * find, and the proposals panel said the battery had never run on a page full
+ * of runs. Measured 2026-10-04 on a real `dsh web` deployment: 15 records under
+ * the server's cwd, and none under the workspace the task actually ran in.
+ *
+ * An ABSOLUTE `optimize.history` is the operator's own statement about where
+ * records live and is honoured verbatim — which is also how one file is
+ * deliberately collected from several workspaces. A relative one resolves
+ * against the session's OWN workspace, falling back to the process cwd only
+ * when the session carries none, so the old behaviour still holds for every
+ * deployment that never had a per-session cwd.
+ *
+ * ponytail: resolved per turn, so the single metrics/proposals slot on the page
+ * shows the LAST workspace that recorded. Keying those by workspace is the
+ * upgrade path if one process ever serves several at once.
+ *
+ * @param session - the session whose turn is closing.
+ * @param agent - its agent, when the harness resolved one.
+ * @param configured - the `optimize.history` value, default or explicit.
+ * @returns an absolute path, so the append, the roll-up and the battery cannot
+ *   disagree about which file they are talking about.
+ */
+function historyPathFor(session: unknown, agent: Agent | undefined, configured: string): string {
+  if (isAbsolute(configured)) return configured
+  return resolve(sessionCwdOf(session) ?? sessionCwdOf(agent) ?? process.cwd(), configured)
 }
 
 /** Project session/workspace meta onto the dashboard run row. */
@@ -1784,6 +1827,12 @@ interface TurnRecordInput {
   /** Live agent lookup keyed by session id (`ctx.agents.get`). */
   resolveAgent: (sessionId: string) => Agent | undefined
   state: DashboardState
+  /**
+   * The CONFIGURED `optimize.history` value, default or explicit — NOT a
+   * resolved path. `historyPathFor` resolves it against this session's
+   * workspace, so the append, the roll-up and the battery are all derived from
+   * one call rather than each resolving a relative path on their own.
+   */
   historyPath: string
   /**
    * The harness agent registry, used to resolve the session's agent.
@@ -1932,9 +1981,13 @@ export const RECOMMENDATION_MIN_RUNS = 5
 let advisoryInFlight = 0
 
 async function recordTurn(input: TurnRecordInput): Promise<void> {
-  const { session, event, openedAt, options, policyFor, resolveAgent, state, historyPath } = input
+  const { session, event, openedAt, options, policyFor, resolveAgent, state } = input
   const agent = agentOfSession(session, resolveAgent)
   const policy = policyFor(agent)
+  // Once, here: the append, the metrics roll-up and the battery below all read
+  // THIS path, so a workspace-relative default can never send one of them to a
+  // different file than the other two.
+  const historyPath = historyPathFor(session, agent, input.historyPath)
   // Drain this turn's judge scores, then clear them: the policy is keyed by
   // agent and an agent outlives one turn, so without this the SECOND turn's
   // record would carry the first turn's scores as well. Measured 2026-10-04:
@@ -2610,12 +2663,18 @@ export function apply(
   // (zeros/empties), never invented — the same honesty rule `refine.ts`
   // follows when it writes records from `LoopRunResult`.
   const optimize: OptimizeConfig | undefined = options.optimize
-  // On by default: omitting `optimize` records to `.feature-loop/runs.jsonl`
-  // under the process working directory. An explicit `history` overrides the
-  // path; an explicit `history: ''` disables recording. The default keeps the
-  // loopback posture (a file next to the process, not a service), and records
-  // are evidence, never control — a failed append is a feed line, not a
-  // failed turn.
+  // On by default: omitting `optimize` records to `.feature-loop/runs.jsonl`.
+  // An explicit `history` overrides the path; an explicit `history: ''`
+  // disables recording. The default keeps the loopback posture (a file next to
+  // the work, not a service), and records are evidence, never control — a
+  // failed append is a feed line, not a failed turn.
+  //
+  // LEFT RELATIVE on purpose. `recordTurn` resolves it against the closing
+  // session's own workspace (`historyPathFor`), which is what put a `dsh web`
+  // deployment's records under the server's cwd instead of the task's. The
+  // feed line below therefore names the CONFIGURED path — which is exactly
+  // what the operator wrote, and what the records will be found under, relative
+  // to the workspace the run happened in.
   const historyPath = optimize?.history ?? '.feature-loop/runs.jsonl'
   const historyEnabled = historyPath.trim() !== ''
   if (historyEnabled) {

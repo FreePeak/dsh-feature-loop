@@ -703,6 +703,94 @@ test('a re-delivered turn closer never double-records', async () => {
   }
 })
 
+test("a turn's records land in its OWN workspace, not the process's", async () => {
+  // The defect. The default history path is RELATIVE, and `appendRecord` /
+  // `readRecords` resolve a relative path against the PROCESS cwd. In a
+  // `dsh web` deployment that is the directory the server was launched from,
+  // never the workspace a task runs in — measured 2026-10-04: 15 records under
+  // the server's cwd, none under the workspace, so the optimizer read a
+  // history the operator could not find and the proposals panel said the
+  // battery had never run beside a page full of runs.
+  //
+  // Two workspaces, one process, one `apply`: the check that matters is not
+  // "does a file appear" (it always did, in the wrong place) but "does each
+  // session's record land under ITS OWN cwd". `process.cwd()` is asserted on
+  // so a harness run from an unrelated directory still fails the test rather
+  // than passing by coincidence.
+  const cwd = process.cwd()
+  const processDir = mkdtempSync(join(tmpdir(), 'dsh-procdir-'))
+  const alpha = mkdtempSync(join(tmpdir(), 'dsh-ws-alpha-'))
+  const beta = mkdtempSync(join(tmpdir(), 'dsh-ws-beta-'))
+
+  const { ctx, handler } = fakeCtx()
+  const dispose = apply(ctx as never, {
+    spec: SPEC,
+    dashboard: { enabled: false },
+    // The DEFAULT, unconfigured — the case that was broken.
+  })
+  const fn = handler('session/event') as unknown as (s: unknown, e: unknown) => unknown
+  const end = (turn: number) => ({
+    type: 'turn/end',
+    data: { turn, reason: { kind: 'completed' } },
+  })
+  fn({ id: 'sess-alpha', header: { cwd: alpha } }, end(1))
+  fn({ id: 'sess-beta', header: { cwd: beta } }, end(1))
+
+  const want = [join(alpha, '.feature-loop/runs.jsonl'), join(beta, '.feature-loop/runs.jsonl')]
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline && want.some(p => !existsSync(p))) {
+    await new Promise(resolve => { setTimeout(resolve, 10) })
+  }
+  dispose()
+
+  assert.ok(existsSync(want[0]!), `alpha's record is missing under its own workspace: ${want[0]}`)
+  assert.ok(existsSync(want[1]!), `beta's record is missing under its own workspace: ${want[1]}`)
+  // No collision: each workspace holds exactly ITS OWN run.
+  assert.equal(readFileSync(want[0]!, 'utf8').trim().split('\n').length, 1, 'alpha sees only alpha')
+  const betaLine = JSON.parse(readFileSync(want[1]!, 'utf8').trim()) as { runId?: unknown }
+  assert.equal(betaLine.runId, 'sess-beta', "beta's record is beta's")
+  // And nothing leaked into the process's own tree — the defect, stated as a
+  // negative so it cannot pass by a workspace that happens to be the cwd.
+  assert.equal(
+    existsSync(join(processDir, '.feature-loop/runs.jsonl')),
+    false,
+    'no record may be written beside the process',
+  )
+  assert.notEqual(alpha, cwd, 'the fixture workspace must not be the process cwd')
+  assert.notEqual(beta, cwd, 'the fixture workspace must not be the process cwd')
+})
+
+test('an explicit absolute history path is the operator\'s, verbatim', async () => {
+  // The counter-case, so the fix above cannot become "we always moved the
+  // file": collecting many workspaces into one file on purpose is a supported
+  // shape (the CLI's `--history` is exactly it), and resolving it against a
+  // session cwd would silently split it back apart.
+  const shared = mkdtempSync(join(tmpdir(), 'dsh-shared-'))
+  const historyPath = join(shared, 'all-runs.jsonl')
+  const alpha = mkdtempSync(join(tmpdir(), 'dsh-ws-alpha2-'))
+
+  const { ctx, handler } = fakeCtx()
+  const dispose = apply(ctx as never, {
+    spec: SPEC,
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+  })
+  const fn = handler('session/event') as unknown as (s: unknown, e: unknown) => unknown
+  fn({ id: 'sess-one', header: { cwd: alpha } }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline && !existsSync(historyPath)) {
+    await new Promise(resolve => { setTimeout(resolve, 10) })
+  }
+  dispose()
+  assert.ok(existsSync(historyPath), 'the configured absolute path is where the record goes')
+  assert.equal(
+    existsSync(join(alpha, '.feature-loop/runs.jsonl')),
+    false,
+    'a configured absolute path must not be re-resolved into the workspace',
+  )
+})
+
 test('a non-turn event records nothing', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-hist-'))
   const historyPath = join(dir, 'runs.jsonl')

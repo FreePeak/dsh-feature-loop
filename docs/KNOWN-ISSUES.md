@@ -87,6 +87,7 @@ rather than a list of letters:
 | 1cb | A composer answering in the open was denied as "nobody is watching" |
 | 1cd | The first three proposals, read against the history they came from |
 | 1cc | `recommendations` was forwarded by nobody, set by nobody, and configured by nobody |
+| 1ce | The run history was written next to the server, not next to the work |
 
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
@@ -1652,6 +1653,58 @@ client". An idle browser tab satisfies it, and the ask then waits for the full
 failure. ponytail: a boolean beats a connect/disconnect stream protocol, and the
 upgrade path is a client generation counter on the gateway if the wait ever
 matters.
+
+### 1ce. The run history was written next to the server, not next to the work
+
+**Observed:** on a real `dsh web` deployment the page showed runs, the Metrics
+panel had numbers, and the proposals panel said the battery had never run.
+Meanwhile the history file an operator would look for — in the workspace the
+task ran in — did not exist at all. The records were real, correctly shaped,
+and in the wrong place.
+
+**Why:** the default history path is RELATIVE
+(`runlog.ts`'s `DEFAULT_HISTORY` = `.feature-loop/runs.jsonl`), and both
+`appendRecord` and `readRecords` hand that string to `node:fs`, which resolves
+a relative path against the **PROCESS** working directory. In a web deployment
+that is the directory `dsh web` was launched from — the checkout or the profile
+— and never the workspace a task runs in.
+
+Measured 2026-10-04 on the live instance rather than assumed: the server's cwd
+was `/Users/linh.doan/work/harvey/freepeak/dsh-feature-loop`, its sessions
+lived under `~/.dsh/sessions/--Users-linh.doan-work-harvey-freepeak--`, and all
+15 harness-path records had been appended to
+`dsh-feature-loop/.feature-loop/runs.jsonl`. Nothing under a task workspace.
+
+**Why that survived so long, and why §1cd read as a win.** §1cd saw three
+proposals on the live page and recorded the panel as working. They were
+computed from the process-cwd file — the same file, and the numbers in it were
+right, so every check passed. The defect is not a wrong number; it is a file
+that is in the right SHAPE in the wrong PLACE, which is why only a person
+looking for the records in the workspace could have found it. The class here is
+§1bz's one layer over: not "the data is absent" but "the data is real, and the
+thing that should have consumed it is pointed elsewhere".
+
+**Fix:** `historyPathFor(session, agent, configured)` resolves the path per
+turn — an absolute `optimize.history` verbatim (that is how one file is
+deliberately collected from several workspaces), otherwise against the closing
+session's OWN workspace, `process.cwd()` only as the fallback for a session
+that carries none. `sessionCwdOf` was widened to read both shapes, because
+`session/event` hands the listener a **Session** (which has `header.cwd`
+itself) while `recordAgentMeta` hands it an **Agent** (which carries
+`session.header.cwd`) — the same fact, one wrapper apart, and reading only one
+of them is how a fix would have shipped as a no-op on half the call sites.
+
+The test is two workspaces in one process, not one, because "a file appeared"
+passed throughout: the assertion is that alpha's record is under alpha's cwd,
+beta's under beta's, neither file holds the other's run, and nothing was written
+beside the process. Reverting the fix makes it fail on the first assertion,
+which is the check the other fifteen entries in this family never had.
+
+**One thing this does NOT fix, recorded rather than hidden:** the page's metrics
+and proposals are one slot each, so with several workspaces in one process the
+panel shows the LAST workspace that recorded. Keying those by workspace is the
+upgrade path; today every deployment runs one workspace per process, and this is
+the same loopback posture the default already documented.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 

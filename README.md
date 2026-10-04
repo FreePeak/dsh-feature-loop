@@ -587,7 +587,9 @@ the field and the 3–10 band):
     optimize:
       loops: 3              # refinement passes, integer 3–10 (CLI `runRefined` only)
       # derive: true         # accepted, READ BY NOTHING — see the note in src/plugin.ts
-      history: .feature-loop/runs.jsonl   # run-history file: the plugin appends one line per closed turn and feeds Metrics from it
+      history: .feature-loop/runs.jsonl   # run-history file: the plugin appends one line per closed turn and feeds Metrics from it.
+                                       # RELATIVE resolves against the TASK's workspace (not the server's cwd);
+                                       # an absolute path is used verbatim
       # judge: chat         # none | chat | laya — cross-pass judge, read by nothing (CLI's runRefined takes it)
       # totalBudgetUSD: 3.00  # refinement budget; default derived × loops × 0.6 (CLI only)
 ```
