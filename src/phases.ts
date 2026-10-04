@@ -48,7 +48,16 @@ export type PipelineState = PipelinePhase | 'done' | 'stopped' | 'blocked'
  */
 export type ExitGate =
   /** A file exists and its text matches. Fails closed when the file is unreadable. */
-  | { kind: 'artifact'; path: string; label: string; mustContain?: readonly string[]; minMatches?: number }
+  | {
+      kind: 'artifact'
+      path: string
+      label: string
+      /** Substrings the text must contain. */
+      mustContain?: readonly string[]
+      /** Patterns the text must match, for anything a substring cannot express. */
+      mustMatch?: readonly RegExp[]
+      minMatches?: number
+    }
   /** At least `min` tracked files changed. */
   | { kind: 'changed'; min: number; label: string }
   /** The phase's `verifyCommand` exited 0. Fails closed when it was never run. */
@@ -194,8 +203,12 @@ export const PRD_PHASE: PipelinePhaseDef = {
   gate: {
     kind: 'artifact',
     path: 'docs/PRD.md',
-    label: 'PRD with scope, exclusions, success criteria and metrics',
-    mustContain: ['## Scope', '## Success', '## Metrics'],
+    label: 'PRD with scope, success criteria and metrics',
+    // Matched as headings, optionally numbered, and case-insensitively. A literal
+    // `## Scope` is not a stronger PRD than `## 2. Scope` — it is the same section
+    // with a counter, and a live run wrote exactly that and failed its own gate.
+    // A gate that measures formatting is a gate that gets worked around.
+    mustMatch: [/^#{1,3}\s*(?:\d+[.)]\s*)?scope\b/im, /^#{1,3}\s*(?:\d+[.)]\s*)?success\b/im, /^#{1,3}\s*(?:\d+[.)]\s*)?metrics\b/im],
   },
   produces: ['docs/PRD.md'],
 }
@@ -370,6 +383,10 @@ export function evaluateGate(gate: ExitGate, obs: PhaseObservation): GateResult 
     const missing = (gate.mustContain ?? []).filter(needle => !text.includes(needle))
     if (missing.length > 0) {
       return { pass: false, detail: `${gate.label}: ${gate.path} is missing ${missing.map(m => `"${m}"`).join(', ')}` }
+    }
+    const unmatched = (gate.mustMatch ?? []).filter(pattern => !pattern.test(text))
+    if (unmatched.length > 0) {
+      return { pass: false, detail: `${gate.label}: ${gate.path} has no heading for ${unmatched.map(p => p.source).join(', ')}` }
     }
     return { pass: true, detail: `${gate.label}: ${gate.path} present` }
   }

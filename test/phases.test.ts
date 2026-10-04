@@ -143,7 +143,34 @@ describe('artifact gates', () => {
     const partial = { 'docs/PRD.md': '## Scope\n## Metrics\n' }
     const result = evaluateGate(prdGate, obs({ artifacts: partial }))
     assert.equal(result.pass, false)
-    assert.match(result.detail, /"## Success"/)
+    assert.match(result.detail, /no heading for/)
+  })
+
+  it('accepts a PRD whose headings are numbered', () => {
+    // A live run wrote `## 2. Scope`, `## 3. Success criteria`, `## 4. Metrics`
+    // and failed its own gate on the literal string. Numbering a section is not
+    // a weaker PRD; a gate that measures formatting gets worked around.
+    const prdGate = PIPELINE_PHASES.prd.gate
+    const numbered = {
+      'docs/PRD.md': '## 1. Fit test\n## 2. Scope\n## 3. Success criteria\n## 4. Metrics\n',
+    }
+    assert.equal(evaluateGate(prdGate, obs({ artifacts: numbered })).pass, true)
+  })
+
+  it('accepts a PRD whose headings are lower-case or deeper', () => {
+    const prdGate = PIPELINE_PHASES.prd.gate
+    assert.equal(
+      evaluateGate(prdGate, obs({ artifacts: { 'docs/PRD.md': '### scope\n### SUCCESS\n### metrics\n' } })).pass,
+      true,
+    )
+  })
+
+  it('still fails a PRD that genuinely lacks the sections', () => {
+    const prdGate = PIPELINE_PHASES.prd.gate
+    assert.equal(
+      evaluateGate(prdGate, obs({ artifacts: { 'docs/PRD.md': '# PRD\nSome prose about the idea.\n' } })).pass,
+      false,
+    )
   })
 })
 

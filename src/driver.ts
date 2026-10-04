@@ -27,6 +27,7 @@ import { PIPELINE_PHASE_NAMES } from './spec.ts'
 import type { GateResult, PhaseObservation, PipelinePhase, VerifyResult } from './phases.ts'
 import { canTransition, transition } from './pipeline.ts'
 import type { PipelineRun, TransitionReason } from './pipeline.ts'
+import type { PipelineState } from './phases.ts'
 import { observe } from './observation.ts'
 import type { ObserveOptions } from './observation.ts'
 import { createSandbox, SandboxError } from './sandbox.ts'
@@ -183,7 +184,24 @@ export function advancePhase(options: DriverOptions, gate: GateResult): { moved:
   }
   transition(options.run, next, 'gate-passed', now())
   if (next !== 'done') options.budget.enterPhase(next)
-  return { moved: true, note: `${state} gate passed — now ${next}` }
+  // `note` is both the model's next instruction and the operator's log line, so
+  // it has to say which gate passed — the plugin prints it on every transition.
+  const label = gateLabel(options, state)
+  return { moved: true, note: `${state} gate passed (${label}) — now ${next}` }
+}
+
+/**
+ * Name the gate that was checked, for the transition note.
+ *
+ * @param options - the driver options.
+ * @param state - the phase being left.
+ * @returns a short description of what had to be true.
+ */
+function gateLabel(options: DriverOptions, state: PipelineState): string {
+  const gate = pipelinePhaseOf(state as PipelinePhase).gate
+  return gate.kind === 'artifact' ? `${gate.path} written and checked`
+    : gate.kind === 'changed' ? `${options.config.testCommand ?? 'working tree'} shows changed files`
+      : `${options.config.testCommand ?? 'the verify command'} exits 0`
 }
 
 /**

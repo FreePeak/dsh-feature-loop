@@ -296,10 +296,39 @@ export function envelope(request: EnvelopeRequest): EnvelopeDecision {
     return envelopeCommand(command, { worktreeRoot: request.worktreeRoot, verifyCommand: request.verifyCommand })
   }
 
-  return {
-    kind: 'deny',
-    reason: `tool "${tool}" is not in the envelope — YOLO allows only what it has been told about`,
-  }
+  // An unrecognised tool is ALLOWED, and named on stderr.
+  //
+  // The first version denied it, which reads defensible and is not: the harness
+  // mounts forty-odd tools, and a live run had every MCP call and every web tool
+  // refused — `mcp__leankg__status`, `web_search`, `web_fetch` — with the model
+  // narrating its fallback. Safety does not rest here. It rests on the three
+  // layers that actually work: the shell allow-list (the real escape hatch), the
+  // path containment on every write this envelope can see, and the harness's own
+  // file sandbox, which confines writes to the workspace for tools this module
+  // never sees.
+  //
+  // Denying the long tail bought nothing and cost the run its reach, so the tail
+  // is allowed and REPORTED — an operator can see what a run reached for without
+  // having to stop it from reaching.
+  noteUnlistedTool(tool)
+  return { kind: 'allow', reason: `${tool}: not listed, allowed under the harness sandbox` }
+}
+
+/** The tools an operator has already seen a run reach for, so the log stays one line per tool. */
+const unlistedTools = new Set<string>()
+
+/**
+ * Name an unlisted tool once, to stderr.
+ *
+ * Not to the model: the model is doing the work, and a note about policy it
+ * cannot act on is a distraction in the context it re-reads every step.
+ *
+ * @param tool - the tool that was allowed without being listed.
+ */
+function noteUnlistedTool(tool: string): void {
+  if (unlistedTools.has(tool)) return
+  unlistedTools.add(tool)
+  process.stderr.write(`dsh-feature-loop: YOLO allowed an unlisted tool: ${tool} (the harness file sandbox still applies)\n`)
 }
 
 /**
