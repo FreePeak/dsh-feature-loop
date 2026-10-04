@@ -481,7 +481,7 @@ html.fl-standalone #root {
   flex-direction: column;
   gap: 1px;
   padding: 6px 8px;
-  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-soft) 70%, transparent);
   border-radius: 6px;
   min-width: 0;
 }

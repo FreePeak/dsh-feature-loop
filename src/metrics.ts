@@ -37,6 +37,21 @@ export interface AxisMetric {
   baseline?: number
   /** The alert fired on this axis, mirrored from `alerts` so a dashboard rendering one axis can show why it is red without scanning the list. */
   alert?: string
+  /**
+   * How many samples the percentiles are drawn from.
+   *
+   * A median over one sample IS that sample, and a median over two is a coin
+   * toss between them — so a surface rendering `p50` without this cannot tell
+   * "the loop typically costs $0.005" from "one run cost $0.005". Measured
+   * 2026-10-04 (§1ca): a live e2e printed a 1203s "Wall clock" for a run it had
+   * itself timed at 268s, because the history held exactly ONE timed run and the
+   * figure wore the same label a 40-run median would.
+   *
+   * Absent only for an axis computed from a fixed constant; it is 0, not
+   * undefined, when the axis is genuinely empty — "nothing to draw a percentile
+   * from" is a fact, unlike an absent measurement (§1bq's rule).
+   */
+  samples?: number
 }
 
 /**
@@ -155,12 +170,13 @@ function percentile(sorted: readonly number[], p: number): number {
 }
 
 /** p50/p95/latest over values in chronological (record) order. */
-function axisOf(values: readonly number[]): { p50: number; p95: number; latest: number } {
+function axisOf(values: readonly number[]): AxisMetric {
   const sorted = [...values].sort((a, b) => a - b)
   return {
     p50: percentile(sorted, 50),
     p95: percentile(sorted, 95),
     latest: values.length > 0 ? values[values.length - 1] : 0,
+    samples: values.length,
   }
 }
 
@@ -203,7 +219,17 @@ export function summarize(
   // Over the records that timed anything: `wallMs` is `undefined` when nothing
   // was timed, and counting those would put a 0 in the distribution for an
   // absence (§1bs's shape).
-  const timed = ran.filter(r => r.wallMs !== undefined)
+  //
+  // And `> 0`, because a record written BEFORE §1bv gave this path a clock
+  // carries `wallMs: 0` — and those records never leave the file. Measured
+  // 2026-10-04 (§1ca): a live history of 3 timed runs reported `wallMs p50 0`
+  // because two of the three predated the clock, so a zero out of three
+  // samples was the MEDIAN and the panel said "a typical turn takes 0s" while
+  // `latest` showed 193561. The same rule `ran` uses for `steps > 0`: a
+  // measurement of zero is an absence wearing a number, and it must not be
+  // counted as a sample. `samples` reports how many survived, so the axis stays
+  // honest about its own thinness.
+  const timed = ran.filter(r => r.wallMs !== undefined && r.wallMs > 0)
   const wallAxis: AxisMetric = axisOf(timed.map(r => r.wallMs ?? 0))
   const latencyValues = records.flatMap(r => r.stepLatencyMs)
   const latencyAxis: AxisMetric = { ...axisOf(latencyValues), baseline: base.latencyMs }

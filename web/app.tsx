@@ -1083,6 +1083,13 @@ function MetricsPanel({ snapshot }: { snapshot: DashboardSnapshot }) {
   // step. Without both, a rate over mostly-empty turns reads as a score (§1br).
   const pct = (value: number): string => `${(value * 100).toFixed(0)}%`
   const usd = (value: number): string => `$${value.toFixed(4)}`
+  // §1ca: a median over ONE sample is that sample. The figure is still drawn —
+  // it is the latest real measurement and hiding it would be §1bq's mistake in
+  // reverse — but it is marked as the sample it is, so nobody reads one run as a
+  // distribution.
+  const thin = (samples: number | undefined): string => (
+    samples !== undefined && samples < 3 ? ` (${String(samples)} run${samples === 1 ? '' : 's'})` : ''
+  )
   const tiles: { label: string, value: string, title: string }[] = [
     {
       label: 'Goal met',
@@ -1091,13 +1098,18 @@ function MetricsPanel({ snapshot }: { snapshot: DashboardSnapshot }) {
     },
     {
       label: 'Cost / run',
-      value: usd(metrics.cost.perRun.p50),
-      title: 'Median across the runs that took a step',
+      value: `${usd(metrics.cost.perRun.p50)}${thin(metrics.cost.perRun.samples)}`,
+      title: `Median across the ${String(metrics.cost.perRun.samples ?? 0)} run(s) that took a step`,
     },
     {
       label: 'Wall clock',
-      value: metrics.speed.wallMs.p50 > 0 ? `${String(Math.round(metrics.speed.wallMs.p50 / 1000))}s` : '—',
-      title: 'Median turn duration, from the harness clock',
+      // §1ca's exact case: a single 20-minute turn printed as "1203s" beside a
+      // run the e2e had timed at 268s, because nothing said the median was one
+      // point long. Same figure, named for what it is.
+      value: metrics.speed.wallMs.p50 > 0
+        ? `${String(Math.round(metrics.speed.wallMs.p50 / 1000))}s${thin(metrics.speed.wallMs.samples)}`
+        : '—',
+      title: `Median of ${String(metrics.speed.wallMs.samples ?? 0)} timed turn(s), from the harness clock`,
     },
     {
       label: 'Reviews',

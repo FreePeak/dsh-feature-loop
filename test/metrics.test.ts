@@ -369,3 +369,50 @@ test('summarize mirrors the baseline onto the axes it measured', () => {
   assert.equal(s.speed.wallMs.baseline, undefined, 'wall time has no baseline to compare against')
   assert.equal(s.alerts.length, 0)
 })
+
+
+test('every axis says how many samples its median is drawn from', () => {
+  // §1ca: a live run printed "1203s" beside a turn the e2e had itself timed at
+  // 268s. The number was a median over ONE sample and nothing on the wire said
+  // so — the figure wore the same label a 40-run median wears.
+  const summary = summarize([record({ steps: 4, costUSD: 0.005, wallMs: 1_203_287 })])
+  assert.equal(summary.speed.wallMs.p50, 1_203_287, 'the median IS the sample')
+  assert.equal(summary.speed.wallMs.samples, 1,
+    'and the axis must report that it is drawn from one sample')
+  assert.equal(summary.cost.perRun.samples, 1)
+  assert.equal(summary.speed.steps.samples, 1)
+  assert.equal(summary.speed.wallMs.samples, 1)
+
+  // An axis nobody measured is zero samples, not absent: "nothing to draw a
+  // percentile from" is a fact. That is §1bq's rule, not its exception.
+  const untimed = summarize([record({ wallMs: undefined })])
+  assert.equal(untimed.speed.wallMs.samples, 0)
+  assert.equal(untimed.cost.perRun.samples, 1, 'the cost axis was still measured')
+
+  // §1ca: records written BEFORE this path had a clock carry `wallMs: 0`, and
+  // they never leave the file. Two zeros out of three samples made the ZERO the
+  // median, so the panel said "a typical turn takes 0s" while `latest` read
+  // 193561. A zero measurement is an absence wearing a number.
+  const mixed = summarize([
+    record({ wallMs: 0 }),
+    record({ wallMs: 0 }),
+    record({ wallMs: 193_561 }),
+  ])
+  assert.equal(mixed.speed.wallMs.samples, 1,
+    'the pre-clock zeros are not samples')
+  assert.equal(mixed.speed.wallMs.p50, 193_561,
+    'and the median is the one real measurement, not the zero beside it')
+  // `latest` is the last RECORD's value. Left alone deliberately: it documents
+  // "what the loop is doing now", and rewriting it to hide a record would be
+  // the roll-up inventing a measurement. Here the last record IS the real one.
+  assert.equal(mixed.speed.wallMs.latest, 193_561)
+
+  // Two runs are a coin toss, not a median — so the count is reported verbatim
+  // and the PANEL decides what is too thin to label, never the roll-up.
+  const two = summarize([
+    record({ wallMs: 100, steps: 2 }),
+    record({ wallMs: 9_000, steps: 8 }),
+  ])
+  assert.equal(two.speed.wallMs.samples, 2)
+  assert.equal(two.speed.wallMs.p50, 100, 'n=2 nearest-rank p50 is index ceil(1)-1 = 0: the lower value')
+})

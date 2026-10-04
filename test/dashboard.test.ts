@@ -1115,8 +1115,27 @@ test('the in-UI page renders the roll-up, and only what the roll-up computed', (
     'and it must draw nothing when nothing was measured: "no data" and "zero" '
     + 'are different facts and only one belongs on a screen')
   assert.match(app, /aria-label="Measurements"/, 'and it must be a labelled region')
+  // §1ca: the axis knows how many samples its median is drawn from, and a thin
+  // one must SAY SO beside the figure. Drawn from the count, not from a fixed
+  // number, so it tracks the axis rather than restating today's history.
+  assert.match(app, /samples !== undefined && samples < 3/,
+    'the panel must decide thinness FROM the count, not from a constant that '
+    + 'describes today\'s history')
+  assert.match(app, /thin\(metrics\.speed\.wallMs\.samples\)/,
+    'the wall-clock figure must carry its sample count — a median over one run '
+    + 'is that run, and §1ca measured it wearing the label of a distribution')
+  assert.match(app, /thin\(metrics\.cost\.perRun\.samples\)/,
+    'and so must the cost figure')
 
-  const panel = app.slice(app.indexOf('function MetricsPanel'), app.indexOf('function MetricsPanel') + 2400)
+  // Bounded by a NAME, not a character count. The count was 2400 when written,
+  // the component grew past it, and the failure was a confusing "did not match
+  // /reviewFraction/" — a window that silently stops covering the code it was
+  // written to inspect is worse than no window at all.
+  const panelStart = app.indexOf('function MetricsPanel')
+  const panelEnd = app.indexOf('/** Left sidebar activity ledger', panelStart)
+  assert.ok(panelStart > 0 && panelEnd > panelStart,
+    'MetricsPanel must be defined, and followed by the left-sidebar ledger')
+  const panel = app.slice(panelStart, panelEnd)
   // No arithmetic on a figure the roll-up already decided. A comparison here is
   // a threshold invented by the page, which is exactly how the alert came to
   // print one quantity beside another's name.

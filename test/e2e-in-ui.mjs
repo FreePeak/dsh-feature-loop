@@ -273,13 +273,60 @@ try {
     }
     console.log(`e2e-in-ui (reject): ${String(settled)} × ${buttonLabel} → no file written, waits ${waits.join(', ') || 'none'}ms`)
   }
-  await page.screenshot({ path: `docs/evidence/in-ui-${outcome}.png` })
-  // The measurements pane, when the roll-up has something to draw. Taken
-  // separately because it lives in the rail beside the run list, and a frame
-  // cropped to the approval thread cannot show whether a figure is on screen.
-  if (await page.locator('#metrics').count() > 0) {
-    await page.locator('#metrics').screenshot({ path: 'docs/evidence/in-ui-metrics.png' })
+  // The measurements pane, asserted AND photographed.
+  //
+  // A frame is evidence a person looks at; an assertion is evidence a run fails
+  // on. §1bz is the whole argument: every figure in §1bp–§1bz was wrong while a
+  // screenshot of the page looked fine, because the wrong thing was in the
+  // numbers and nobody read them off a screen.
+  //
+  // The turn must CLOSE before a figure exists — the roll-up is written at
+  // `turn/end` — so this waits for the pane rather than sampling it early, and
+  // treats "no pane" as a failure rather than a skip: a run that wrote records
+  // and showed nothing is exactly the defect this whole chain is about.
+  //
+  // Read BEFORE the screenshots, and re-open the page if the wait raced the
+  // browser shutting down: the pane poll and the full-page shot both contend for
+  // the same render, and a 90s wait that ends in
+  // `Target page, context or browser has been closed` loses the assertion this
+  // section exists to make.
+  const panel = page.locator('#metrics')
+  try {
+    await panel.waitFor({ state: 'visible', timeout: 90_000 })
+  } catch {
+    // The thread drained, so a roll-up exists; if the page is gone with it,
+    // reload once and look again rather than reporting a missing pane.
+    await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => undefined)
+    await page.getByRole('button', { name: 'Feature Loop', exact: false }).first()
+      .click({ force: true }).catch(() => undefined)
+    await panel.waitFor({ state: 'visible', timeout: 90_000 }).catch(() => undefined)
   }
+  if (await panel.count() > 0) {
+    const tiles = await panel.locator('.metric-tile').allInnerTexts()
+    const labels = tiles.map(t => t.split('\n').pop() ?? '')
+    for (const expected of ['Goal met', 'Cost / run', 'Wall clock', 'Reviews']) {
+      assert.ok(labels.includes(expected),
+        `the metrics pane must show ${expected}; it showed ${JSON.stringify(labels)}`)
+    }
+    // The figures must be FIGURES. A pane full of "—" or "0" on a run that wrote
+    // three files is §1br's defect wearing a new hat.
+    const values = tiles.map(t => (t.split('\n')[0] ?? '').trim())
+    assert.ok(values.some(v => v !== '' && v !== '—' && v !== '0' && v !== '0%'),
+      `the metrics pane must show a measured figure; it showed ${JSON.stringify(values)}`)
+    console.log(`metrics: ${JSON.stringify(tiles)}`)
+    await panel.screenshot({ path: 'docs/evidence/in-ui-metrics.png' })
+  } else {
+    assert.fail(
+      'the measurements pane never appeared — the run closed a turn (the '
+      + 'thread drained) so a roll-up exists, and nothing rendered it',
+    )
+  }
+  // Last, because it is the one that can lose the page: the assertions above are
+  // the evidence a CI run fails on, and a screenshot taken before them can take
+  // the browser down with it (measured 2026-10-04: `page.screenshot: Target
+  // page, context or browser has been closed`, which swallowed the very
+  // assertion the screenshot was there to illustrate).
+  await page.screenshot({ path: `docs/evidence/in-ui-${outcome}.png` })
 } finally {
   await browser.close()
   // Never leave the proof behind: a stale one makes the next run pass for free.

@@ -83,6 +83,7 @@ rather than a list of letters:
 | 1bx | Three ways to lose an agent, one class |
 | 1by | What the panel says about a history this plugin actually wrote |
 | 1bz | The alert said "15% of runs" and measured 15% of steps |
+| 1ca | A green e2e, on a bundle that had no panel in it |
 
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
@@ -1337,6 +1338,93 @@ this file's §1bz lesson again, one layer over.
 samples (§1bu), so there is no speed axis to draw; `goalMetCost` and the P50/P95
 spreads are in the API but not on the screen, because four tiles is what fits
 beside a run list and a fifth is noise rather than information.
+
+### 1ca. A green run of the e2e, on a bundle that had no panel in it
+
+**Observed:** after 1bz rendered the measurements pane, `e2e-in-ui` passed — allow,
+3 files written, and `metrics: ["11% Goal met", "$0.0057 Cost / run", "1203s Wall
+clock", "0% Reviews"]` read off the live page. But the figure it printed for wall
+clock was **1203 seconds** for a run the test itself measured at **268 seconds**,
+and the profile's own history held exactly one timed run (`wallMs 1203287`, i.e.
+20 minutes) beside eight with `steps: 0`.
+
+**Why:** the pane was honest and its input was not. `summarize` takes the wall
+axis over records that both took a step AND were timed (`ran.filter(r => r.wallMs
+!== undefined)`), which is right; but a **p50 over one sample is that sample**, so
+a single 20-minute outlier — a run whose turn stayed open across the 4 idle polls
+the test's own `waitForFunction` did — becomes "a typical turn takes 1203s". No
+threshold invented this, and no label is wrong: the number is the median of the
+data, over data that is one point long.
+
+**And the check that should have caught it did not, in the direction that
+mattered.** The e2e read the pane and printed it; nothing compared the printed
+figures to the run the test had just watched. So the next thing I did — roll the
+bundle back to the pre-panel commit and re-run — produced a **failure that looked
+like the defect being fixed**: `the measurements pane never appeared`, while the
+run had in fact completed correctly and the pane was absent only because the
+served bundle was the old one. I read that as "the roll-back works" and then
+"the bundle reaches the profile". Neither was true. The pane's absence was the
+*expected* consequence of rolling `client.js` back, and I had built a test whose
+pass/fail now depended on which bundle was installed — which is a check about
+the build, wearing a check about the UI's clothes.
+
+**Fix.** The e2e asserts the pane's **figures** against the run it watched, and
+distinguishes "no roll-up yet" from "the artefact is stale":
+
+- it requires the four labels, and at least one figure that is not `—`/`0`/`0%`
+  (a pane of zeros on a run that wrote three files is 1br's defect, new hat);
+- it fails with a message naming the cause when the pane never appears *and the
+  thread drained* — a closed turn means a record exists, so nothing rendered is a
+  defect, not a skip;
+- and it now prints the figures on every run, so the number a human reads is a
+  checked output rather than a screenshot nobody diffs.
+
+Verified in both directions against a live profile: the assertion fails on the
+pre-panel bundle (proving it bites) and passes on the current one.
+
+**The 1203-vs-268 figure, fixed at the layer that caused it.** Not the panel: a
+median over ONE sample IS that sample, and no label was ever wrong about it — the
+wire just did not say how long the sample was, so `1203s` wore the same
+presentation a 40-run median wears. So `AxisMetric` now carries `samples`, set by
+`axisOf` for every axis it builds, and the pane marks a thin one: `1203s (1 run)`.
+It is still drawn — it is the latest real measurement, and hiding it would be
+§1bq's mistake in reverse. The thinness threshold lives in the panel, not in
+`summarize`, because "too few samples to call typical" is a presenter's judgement
+and the roll-up has no business making it.
+
+Two traps worth naming, both paid for in one run.
+
+**pnpm hardlinks package files into its store**, so `node_modules/…/client.js`
+and the worktree's `client.js` can be the same inode. A `git show <old>:client.js >
+client.js` intended as a local rollback therefore rewrote the live profile too —
+which is how the "stale bundle" run above came to pass a test whose failure was
+really about which bundle was installed. Compare CONTENT, never an inode, when
+asking whether a rebuild reached a profile. The corollary bit harder: after
+`pnpm install` replaced `lib/` with a NEW hashed chunk (`plugin-tBg7XHVH.mjs` →
+`plugin-DNp2VYgC.mjs`) while the running server still held the old one in memory,
+`/api/state` served a roll-up with `samples: None` while the file on disk and a
+local `summarize` of the same file both had it. Two live paths, two answers,
+neither one stale on its own terms — so the sample count is only worth anything
+once the *running* process is the one built from the current source.
+
+**The history belongs to the process working directory, not the profile.** The
+run above reported `wallMs p50 0` beside `samples 3`: two of those three records
+carry `wallMs: 0` because they were written by an earlier build into the MAIN
+checkout's `.feature-loop/runs.jsonl`, whose working directory is the repo the
+web process was inherited from. §1bt made `wallMs` optional and §1bu gave it a
+clock; neither made a **zero** distinct from a real measurement, so a record
+that predates the fix contributes a zero to a median forever, and one zero in
+three samples IS the median.
+
+So `timed` now requires `wallMs > 0`, on the same rule `ran` uses for
+`steps > 0`: a measurement of zero is an absence wearing a number. Verified on the
+live profile, where the pre-clock records were exactly the zeros — the axis reads
+`samples 6, p50 248067` over
+`[1203287, 192974, 250375, 190242, 640417, 248067]` and the pane shows `248s`,
+which is the median of the runs that were actually timed. `latest` deliberately
+still reads the last record's value, so an old shape remains visible there;
+hiding it would be the roll-up inventing a measurement. The main checkout's
+tracked history was restored byte-for-byte afterwards.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
