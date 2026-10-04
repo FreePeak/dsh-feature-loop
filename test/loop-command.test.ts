@@ -10,7 +10,7 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 
-import { executeLoopCommand } from '../src/plugin.ts'
+import { executeLoopCommand, executeProductCommand } from '../src/plugin.ts'
 
 test('executeLoopCommand returns the trimmed task', () => {
   assert.deepEqual(executeLoopCommand('  fix the login bug  '), { task: 'fix the login bug' })
@@ -20,4 +20,57 @@ test('executeLoopCommand rejects a bare /loop with usage', () => {
   const outcome = executeLoopCommand('   ')
   assert.ok('kind' in outcome && outcome.kind === 'error')
   assert.match((outcome as { text: string }).text, /\/loop <task>/)
+})
+
+// ── /product: the 0→1 pipeline's front door ──────────────────────────────────
+//
+// Until this existed the pipeline was reachable only by hand-editing the patch
+// row — a configuration act, not the "one sentence starts the run" the PRD
+// promises. Every live verification of this work drove it through a `--patch`
+// overlay, which is exactly what a user will not do.
+
+test('executeProductCommand carries the user\'s own words', () => {
+  // The deployment's `spec.goal` is not the task, and three live runs researched
+  // the profile's static goal instead of the request before this was found.
+  const outcome = executeProductCommand('a CLI that converts Markdown tables to CSV')
+  assert.ok(!('kind' in outcome))
+  assert.match((outcome as { task: string }).task, /a CLI that converts Markdown tables to CSV/)
+})
+
+test('executeProductCommand names the whole phase spine, in order', () => {
+  const outcome = executeProductCommand('x')
+  assert.ok(!('kind' in outcome))
+  const task = (outcome as { task: string }).task
+  const at = ['research', 'prd', 'implement', 'test', 'ship'].map(p => task.indexOf(p))
+  assert.ok(at.every(i => i > 0), 'every phase must be named')
+  assert.deepEqual([...at].sort((a, b) => a - b), at, 'in spine order')
+})
+
+test('executeProductCommand says the loop owns the gates', () => {
+  const outcome = executeProductCommand('x')
+  assert.match((outcome as { task: string }).task, /the loop checks its\s+gate/)
+  assert.match((outcome as { task: string }).task, /exactly what is missing/)
+})
+
+test('executeProductCommand rejects a bare /product with an example', () => {
+  const outcome = executeProductCommand('   ')
+  assert.ok('kind' in outcome && outcome.kind === 'error')
+  assert.match((outcome as { text: string }).text, /\/product <goal>/)
+  assert.match((outcome as { text: string }).text, /\/product a CLI that converts/)
+})
+
+test('executeProductCommand never escalates the gate', () => {
+  // Gate changes belong in configuration, where they are visible and reversible.
+  // A command that silently turned a deployment into YOLO would be the opposite
+  // of the envelope's whole purpose.
+  const text = JSON.stringify(executeProductCommand('x'))
+  for (const forbidden of ['gateMode', 'yolo', 'always-approve', 'unlimited']) {
+    assert.doesNotMatch(text, new RegExp(forbidden, 'i'), `/product must not mention ${forbidden}`)
+  }
+})
+
+test('executeProductCommand adds the pipeline framing rather than replacing the goal', () => {
+  const outcome = executeProductCommand('fix the login bug')
+  assert.ok(!('kind' in outcome))
+  assert.ok((outcome as { task: string }).task.length > 'fix the login bug'.length)
 })

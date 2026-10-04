@@ -2437,6 +2437,50 @@ export function executeLoopCommand(rawInput: string): LoopCommandOutcome | { kin
   }
   return { task }
 }
+
+/**
+ * Build the turn text for `/product <goal>` — the 0→1 pipeline's front door.
+ *
+ * The PRD promises that one sentence starts the whole run, and until this
+ * existed there was no way to do that: the pipeline was reachable only by
+ * hand-editing the patch row, which is a configuration act, not a user one.
+ * Every live verification of this work has driven it through a `--patch` overlay,
+ * which is exactly the thing a user will not do.
+ *
+ * The text carries the phase spine so the model knows what it is in from the
+ * first step, and it says plainly that the loop decides the gates — so a phase is
+ * not mistaken for advice.
+ *
+ * It deliberately does NOT switch the deployment into YOLO or turn the pipeline
+ * on. Those are the operator's calls, made in configuration where they are
+ * visible and reversible; a command that silently escalated the gate would be the
+ * opposite of the envelope's whole purpose.
+ *
+ * @param rawInput - exact text following the command name.
+ * @returns the turn to submit, or a usage error.
+ */
+export function executeProductCommand(rawInput: string): LoopCommandOutcome | { kind: 'error'; text: string } {
+  const goal = rawInput.trim()
+  if (goal.length === 0) {
+    return {
+      kind: 'error',
+      text: 'Usage: /product <goal> — one sentence describing the product to build, e.g. '
+        + '"/product a CLI that converts Markdown tables to CSV".',
+    }
+  }
+  return {
+    task: [
+      `Build this product: ${goal}`,
+      '',
+      'Run it as the 0→1 pipeline:',
+      ...PHASE_ORDER.map((phase, i) => `${i + 1}. ${phase}`),
+      '',
+      'You will be told which phase you are in as each starts. Finish the phase you are in; the loop checks its',
+      'gate and moves you on. When a gate is not satisfied you will be told exactly what is missing.',
+      'Report what you completed, what you verified, and what remains.',
+    ].join('\n'),
+  }
+}
 /**
  * Default System One endpoint — the shared Laya sidecar on this machine.
  *

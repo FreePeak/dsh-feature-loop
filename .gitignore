@@ -5,3 +5,11 @@ dist/
 
 # Machine-local scratch with a live dashboard token in it — never commit.
 hitl-dashboard-url.txt
+
+# Run transcripts under docs/evidence/. These are captured output, not sources,
+# and they embed the running instance's ACCESS TOKEN verbatim — a transcript that
+# records "dsh web: http://127.0.0.1:4199/?token=…" is a credential, and a
+# `git add -A` stages it silently. The hand-authored files beside them
+# (loop/task.txt, standalone-dashboard.md/.png) stay tracked; only the
+# timestamped run directories are ignored.
+docs/evidence/*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]/
