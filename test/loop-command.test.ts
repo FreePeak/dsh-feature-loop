@@ -74,3 +74,47 @@ test('executeProductCommand adds the pipeline framing rather than replacing the 
   assert.ok(!('kind' in outcome))
   assert.ok((outcome as { task: string }).task.length > 'fix the login bug'.length)
 })
+
+// ── the goal a command leaves behind ─────────────────────────────────────────
+//
+// The composer submits a command's return value as the turn, so the leading
+// `/product` reaches the turn attached. Everything downstream names work after
+// the goal — the branch, the commit subject, the PR title — so a live run
+// through /product committed "feat: /product a slugify(text) function that
+// lowercases…". The goal a user typed is not "slash product a slugify".
+
+test('the goal drops the launcher and the command name', async () => {
+  const { userGoalOf } = await import('../src/plugin.ts')
+  const events = [
+    { type: 'system/message', data: {} },
+    {
+      type: 'user/message',
+      data: {
+        content: [{ type: 'text', text: 'headless /product a CLI that converts Markdown tables to CSV' }],
+      },
+    },
+  ]
+  const agent = { session: { snapshotEvents: () => events } }
+  assert.equal(userGoalOf(agent as never), 'a CLI that converts Markdown tables to CSV')
+})
+
+test('the goal drops a bare command name with no goal after it', async () => {
+  const { userGoalOf } = await import('../src/plugin.ts')
+  const events = [{
+    type: 'user/message',
+    data: { content: [{ type: 'text', text: 'headless /product' }] },
+  }]
+  const agent = { session: { snapshotEvents: () => events } }
+  // No goal is not a goal of "product" — it falls back, which is the honest answer.
+  assert.ok(userGoalOf(agent as never) === undefined || userGoalOf(agent as never) !== '/product')
+})
+
+test('the goal still skips the runtime-context scaffolding', async () => {
+  const { userGoalOf } = await import('../src/plugin.ts')
+  const events = [
+    { type: 'user/message', data: { content: [{ type: 'text', text: 'Current runtime context.' }] } },
+    { type: 'user/message', data: { content: [{ type: 'text', text: 'web build the thing' }] } },
+  ]
+  const agent = { session: { snapshotEvents: () => events } }
+  assert.equal(userGoalOf(agent as never), 'build the thing')
+})

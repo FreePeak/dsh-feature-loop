@@ -931,6 +931,17 @@ function runPipelineShip(policy: FeatureLoopPolicy, agent: Agent): string | unde
   }
   // Read once: the branch and the PR body must be named for the same goal.
   const goal = userGoalOf(agent) ?? policy.taskGoal ?? policy.spec?.goal ?? 'feature-loop run'
+  // The branch is RE-derived here, not read off the sandbox. The sandbox captured
+  // it at containment time, when the session log still held no user turn, so it
+  // was seeded from the deployment's `spec.goal` and every run pushed
+  // `fl/create-tmp-fl-headless-proof-txt-…`.
+  //
+  // One value, used for both the work and the report — an earlier version derived
+  // the branch for `runShip` but logged `sandbox.branch`, so the line announced
+  // one branch while the work landed on another. A report that names the wrong
+  // ref is worse than no report: it reads as a fact.
+  const branch = branchFor(goal, String(policy.taskGoal ?? 'run').slice(0, 8))
+  const shipping = { ...sandbox, branch }
   try {
     const result = runShip({
       repoRoot: '',
@@ -950,12 +961,12 @@ function runPipelineShip(policy: FeatureLoopPolicy, agent: Agent): string | unde
       // turn, so it was seeded from the deployment's `spec.goal` and every run
       // pushed `fl/create-tmp-fl-headless-proof-txt-…`. By ship time the log is
       // populated and the reader returns the task.
-    }, { ...sandbox, branch: branchFor(goal, String(policy.taskGoal ?? 'run').slice(0, 8)) }, [], 0)
+    }, shipping, [], 0)
     // Every ship attempt is announced. A run that reached `ship` and produced no
     // pull request looked identical to one that never tried, which is the same
     // silence that has cost hours three times now: denials, gate evaluations and
     // phase transitions all needed a stderr line before they could be debugged.
-    process.stderr.write(`dsh-feature-loop: ship — branch=${sandbox.branch} outcome=${result.outcome}: ${result.detail}\n`)
+    process.stderr.write(`dsh-feature-loop: ship — branch=${branch} outcome=${result.outcome}: ${result.detail}\n`)
     return result.detail
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
@@ -1117,7 +1128,7 @@ function turnStamp(policy: FeatureLoopPolicy): string {
  * @param agent - the agent whose session carries the transcript.
  * @returns the task text, or `undefined` when the session exposes none.
  */
-function userGoalOf(agent: Agent): string | undefined {
+export function userGoalOf(agent: Agent): string | undefined {
   const session = (agent as unknown as { readonly session?: { readonly snapshotEvents?: (from: number) => readonly { type?: unknown; data?: unknown }[] } }).session
   if (session === undefined || typeof session.snapshotEvents !== 'function') return undefined
   let events: readonly { type?: unknown; data?: unknown }[]
@@ -1154,10 +1165,25 @@ function userGoalOf(agent: Agent): string | undefined {
         || trimmed.startsWith('The available skills')
         || trimmed.startsWith('You are an AI agent')
         || trimmed.includes('A skill is a reusable set of task-specific instructions')) continue
+      // Two launchers to peel, in this order.
+      //
       // The headless app prepends its own name: the task arrives as
-      // "headless Say OK." Strip it so the pipeline reads the request, not the
-      // launcher.
-      const withoutLauncher = trimmed.replace(/^(?:headless|web|tui|desktop|rescue)\s+/i, '')
+      // "headless Say OK."
+      //
+      // Then the command name. `/product a CLI that converts Markdown tables to
+      // CSV` reaches the turn with the leading `/product` still attached when
+      // the composer submits it, and everything downstream names the work after
+      // the goal: a live run through `/product` committed
+      // `feat: /product a slugify(text) function that lowercases…`. The goal a
+      // user typed is not "slash product a slugify".
+      const withoutLauncher = trimmed
+        .replace(/^(?:headless|web|tui|desktop|rescue)\s+/i, '')
+        .replace(/^\/(?:loop|product|plan)\b\s*/i, '')
+        .trim()
+      // A command with nothing after it has no goal. Naming the run after the
+      // command would put "/product" in a commit subject and a branch name, so it
+      // falls through to the deployment's goal instead — the honest answer.
+      if (withoutLauncher.length === 0 || withoutLauncher.startsWith('/')) continue
       return withoutLauncher.slice(0, 400)
     }
   }
