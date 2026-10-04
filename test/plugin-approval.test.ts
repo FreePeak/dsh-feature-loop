@@ -433,6 +433,49 @@ test('a closed turn records the reviews its router counted', async () => {
   dispose()
 })
 
+test('a closed turn records the judge\'s answers, not an empty list', async () => {
+  // `recordTurn` wrote `judgeScores: []` on every harness-path record while the
+  // feed printed "the local judge scored this step 1.1/3" — so `meanJudge` and
+  // every optimizer battery question about the judge were answered from
+  // nothing. Measured 2026-10-04: 0 of 7 live records carried a score.
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-hist-judge-'))
+  const historyPath = join(dir, 'runs.jsonl')
+  const { ctx, handler } = fakeCtx()
+  const agent = { id: 'sess-judge', session: { id: 'sess-judge', snapshotEvents: () => [] } }
+  Object.assign(ctx as object, {
+    agents: { get: () => agent },
+    reflect: { get: (name: string, strict?: boolean) => (name === 'agents' && strict !== true ? { get: () => agent } : undefined) },
+  })
+  const dispose = apply(ctx as never, {
+    spec: { ...SPEC, maxSteps: 99 } as NonNullable<CreatePolicyOptions['spec']>,
+    // A judge that answers on every step, so the record must carry every score
+    // rather than only the last one.
+    judge: { score: async () => ({ score: 1.1 }) },
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+  } as never)
+
+  const pre = handler('agent/pre-step') as unknown as (
+    p: unknown, n: () => Promise<unknown>,
+  ) => Promise<unknown>
+  for (const step of [1, 2, 3]) {
+    await pre(
+      { agent, messages: [], turn: 1, step, signal: new AbortController().signal },
+      async () => ({ kind: 'enter', messages: [] }),
+    )
+  }
+  const fn = handler('session/event') as unknown as (s: unknown, e: unknown) => unknown
+  fn(agent, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline && !existsSync(historyPath)) {
+    await new Promise(resolve => { setTimeout(resolve, 10) })
+  }
+  const [line] = readFileSync(historyPath, 'utf8').trim().split('\n')
+  const record = JSON.parse(line!) as Record<string, unknown>
+  assert.deepEqual(record.judgeScores, [1.1, 1.1, 1.1], 'every score the turn collected')
+  dispose()
+})
+
 test('a closed turn reports the wall clock the harness logged', async () => {
   // §1bt made `wallMs` optional because the plugin path had no clock. It has
   // one: every `SessionEvent` carries `time`, and the turn's own `turn/start`

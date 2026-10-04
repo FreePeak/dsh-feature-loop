@@ -211,6 +211,9 @@ export function summarize(
   // per-step cost and no per-step latency, so including it can only drag the
   // distribution toward zero, which describes the population and not the loop.
   const ran = records.filter(r => r.steps > 0)
+  // `base.steps` is the goal-met WINDOW mean; the axis is every stepped run, so
+  // a history mixing long and short runs compares two populations. The
+  // overridden baseline below is the same population the axis is drawn from.
   const stepsAxis: AxisMetric = { ...axisOf(ran.map(r => r.steps)), baseline: base.steps }
   const perRunAxis: AxisMetric = { ...axisOf(ran.map(r => r.costUSD)), baseline: base.cost }
   const perStepAxis: AxisMetric = axisOf(
@@ -275,6 +278,32 @@ export function summarize(
   // The book: "Steps per run (P50/P95) … Alert when P95 > 2x baseline".
   // Fires at the boundary too — P95 sitting exactly at 2x baseline is already
   // the condition, matching budget.ts's own `spent >= costBudgetUSD * warnAt`.
+  // Baseline and axis over the SAME population, or the comparison answers two
+  // different questions. `base.steps` averages the last 7 goal-met runs; the
+  // axis takes its p95 over every run that took a step.
+  //
+  // Measured 2026-10-04 on a 21-record live history: the last 7 goal-met runs
+  // were 8,7,7,8,1,2,8,3,2,1 steps — mean 3.57 — because the e2e asks for one
+  // file at a time, so the window was dragged down by the short runs, while p95
+  // over the axis was 8 and p50 was 5. The panel therefore read
+  // "P95 steps per run 8 >= 2x baseline 3.57" about an axis whose median was 5:
+  // a false alarm against the population the axis is drawn from.
+  //
+  // `baseline()` is untouched — "twice as bad as what the loop recently
+  // achieved" is right for cost, and its exported contract stays as
+  // documented. The steps axis takes its own line, and it takes BOTH halves of
+  // the axis's own shape: every run that took a step (`ran`), no window. A
+  // 7-run window here did not fix the mismatch, it moved it — measured on the
+  // same live history the last 7 stepped runs were 8,1,2,8,3,2,1 (mean 3.57)
+  // while the p95 it was compared against came from all 12, so the alert kept
+  // firing about runs that had already been superseded.
+  //
+  // ponytail: the p95 of a small sample is its maximum, so this alert fires on
+  // a long tail rather than on a trend — the ceiling of the book's own rule.
+  // Ceiling: an early bad run inflates the baseline and masks later
+  // degradation. Upgrade path: bucket runs into epochs (a tuning change, a new
+  // maxSteps) and compare each bucket's p95 against the PREVIOUS bucket.
+  stepsAxis.baseline = ran.length > 0 ? mean(ran.map(r => r.steps)) : base.steps
   if (stepsAxis.baseline !== undefined && stepsAxis.p95 >= 2 * stepsAxis.baseline) {
     stepsAxis.alert = push(
       'steps',

@@ -258,6 +258,8 @@ cat > "$PROFILE_DIR/cordis.patch.yml" <<'YAML'
         job_list: read
         job_output: read
         job_kill: reversible-write
+        ask_user_question: read
+        request_user_input: read
       feedback: the verification command exits 0, and the diff is the smallest that achieves it
       termination:
         successCommand: bash verify.sh

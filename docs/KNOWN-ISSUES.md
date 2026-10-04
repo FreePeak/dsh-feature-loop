@@ -85,6 +85,7 @@ rather than a list of letters:
 | 1bz | The alert said "15% of runs" and measured 15% of steps |
 | 1ca | A green e2e, on a bundle that had no panel in it |
 | 1cb | A composer answering in the open was denied as "nobody is watching" |
+| 1cd | The first three proposals, read against the history they came from |
 | 1cc | `recommendations` was forwarded by nobody, set by nobody, and configured by nobody |
 
 
@@ -1533,6 +1534,53 @@ optimizer rule 4 doing what it says: absence of confidence is a gap, not a zero.
 judge: the key is PRESENT (the battery ran) and the list EMPTY (nothing to say),
 instead of an absent key that reads as "nothing ran".
 
+
+### 1cd. The first three proposals, read against the history they were computed from
+
+**Observed:** nothing crashed. The panel landed in 237ea70, the judge now runs,
+and the live profile produced three real proposals with real confidences. This
+entry is the next question that had not been asked: **are they any good?**
+
+Read them against the history that produced them.
+
+**Proposal 1 — `prompt-cache`:** "prompt prefix stability not tracked by the loop
+(rebuilt each step by the harness) — keep the fixed prefix … first and enable
+prompt caching". Confidence 0.6743, the highest of the three. Checked: a harness
+record carries `wallMs` and `unpricedSteps: 0`, so usage IS arriving and priced;
+the claim is about CACHE reads, which no field records at all. So the proposal is
+true in a way nothing in the record can confirm — the battery reached a real gap
+by reading the shape of the config, not the history. Correct, and not evidence
+that the loop measured it.
+
+**Proposal 2 — `escalation`:** "escalate later: `controller.stepsPerRung` 5 → …",
+confidence 0.0507. The history's steps are `8,5,8,7,7,8,1,2,8,3,2,1` over the
+runs that took a step, so 8-step runs are common and the ceiling is 8. Asking to
+escalate *later* on runs that already reach the ceiling is defensible; asking it
+at confidence 0.05 is the battery saying "I noticed a shape, I am not sure", and
+rule 4 sorts it to the end. **That rule is what made this readable at all** — it
+arrived last, on its own number, instead of beside the 0.67 one where a reader
+would have taken it as equally supported.
+
+**Proposal 3 — `tool-result-size`:** cap 20000 → 10000 bytes, confidence 0.002.
+Essentially the battery saying "I have nothing". Sorted last, as designed.
+
+**What this changes and what it does not.** Nothing is wrong here, and that is
+the point worth recording: three proposals of three different strengths are now
+produced, ordered, numbered individually, and drawn on the page with their own
+evidence. The absence of confidence is a gap rather than a zero (§1bq), so a
+0.002 reading is legible as "barely supported" instead of indistinguishable from
+a 0.6743.
+
+**The limitation this run made concrete, not hypothetical.** Every signal in
+21 records is `kind: 'detector', severity: 'info'` — `recordTurn` writes
+`policy.history.map(() => ({kind:'detector', severity:'info'}))`, a PLACEHOLDER,
+because the plugin path never computed a detector's verdict for the turn it was
+writing. So the battery is reasoning over a history whose signal column is
+uniformly "a detector exists", and any lever whose value depends on WHICH
+detector fired is being answered from the config alone. That is the same
+noisy-label family as §1bz, one level down: a field that is present, plausible,
+and carries no information. Not fixed here — it is a separate change to what a
+harness-path record can honestly claim about its own detectors.
 
 ### 1cb. A composer answering in the open was denied as "nobody is watching"
 

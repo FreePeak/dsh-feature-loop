@@ -199,6 +199,16 @@ export interface FeatureLoopPolicy {
    * for why it exists at all.
    */
   onSignals?: (signals: readonly ReviewSignal[], step: number) => void
+  /**
+   * The detectors' output for the step being closed.
+   *
+   * Set by `reviewStep` and consumed by `recordTurn`, so a record carries what
+   * the detectors actually said about that turn. `undefined` means the hook did
+   * not run — an absent signal list, never a synthetic one.
+   */
+  pendingSignals?: readonly ReviewSignal[]
+  /** The judge's scores for this turn, drained into the record on `turn/end`. */
+  turnJudgeScores?: number[]
   history: StepObservation[]
   /**
    * The tool call observed since the last step boundary, not yet committed to
@@ -640,6 +650,14 @@ export async function reviewStep(
       error: failed,
     })
     policy.pending = undefined
+    // The signals belong to the step that just ended, and `reviewStep` overwrites
+    // them on the next boundary — but clearing here means a turn that opens
+    // without a pre-step (a resumed session, a nested dispatch) records none
+    // rather than the previous turn's.
+    policy.pendingSignals = undefined
+    // The judge's answers are NOT cleared here: they are the turn's evidence and
+    // are drained by `recordTurn` on `turn/end`. Clearing them per step is what
+    // would leave only the last step's score on the record.
     policy.router.observeStep()
     // The ladder's failure signal, from the step that just ended. The plugin
     // path had none: `recordFailure` had no caller outside the runner's own
@@ -680,16 +698,29 @@ export async function reviewStep(
     budgetRemaining: policy.router.budgetRemaining(),
   })
 
+  // Kept for `recordTurn`, which closes the turn this hook began. `policy.
+  // onSignals` below is the OPTION's sink; this is the loop's own record of
+  // what it just computed.
+  policy.pendingSignals = preparation.signals
   policy.onSignals?.(preparation.signals, step)
 
   // The judge answers about the *previous* step, because the current one has
   // not happened yet. An absent answer is not evidence of confidence, so it is
   // passed through as `undefined` and the gate asks rather than proceeds.
   policy.lastConfidence = undefined
+  // Cleared once per TURN, not per step: `recordTurn` drains it on `turn/end`.
+  if (policy.turnJudgeScores === undefined) policy.turnJudgeScores = []
   if (preparation.askJudge) {
     const question = judgeQuestion(preparation.judgeState, preparation.signals)
     const answer = await policy.judge.score(question.state, question.questions)
     policy.lastConfidence = answer.score
+    // Kept for the run record. Measured 2026-10-04: `judgeScores` was a literal
+    // `[]` on every harness-path record, so 7 live records carried zero judge
+    // answers while the feed printed "the local judge scored this step 1.1/3" —
+    // and `summarize`'s `meanJudge`, and every optimizer battery question that
+    // asks how the judge is doing, were answered from nothing. Same shape as
+    // `reviewFraction`'s literal `0` above.
+    if (answer.score !== undefined) policy.turnJudgeScores?.push(answer.score)
   }
 
   // The review checkpoint is checked before the router's own verdict, so a
@@ -1931,8 +1962,26 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
     // that resolution.
     wallMs: openedAt === undefined || event.time === undefined ? undefined : event.time - openedAt,
     latencyKind: undefined,
-    signals: policy.history.length === 0 ? [] : policy.history.map(() => ({ kind: 'detector', severity: 'info' })),
-    judgeScores: [],
+    // The detectors' OWN output for this turn, not a placeholder.
+    //
+    // Measured 2026-10-04: this was `policy.history.map(() => ({kind:
+    // 'detector', severity: 'info'}))` — one synthetic `info` signal per
+    // recorded step. Every signal in 21 live records read `detector/info`, so
+    // the column was uniformly "a detector exists": present, plausible, and
+    // carrying no information. Two consequences, both real. (1) `summarize`'s
+    // cycle alert counts `kind === 'tool-cycle'` over it and can therefore
+    // NEVER fire on a harness-path record — a threshold reading a field that
+    // cannot hold its value. (2) The optimizer battery reasons over a history
+    // whose signals say nothing, so any lever depending on WHICH detector
+    // fired is answered from the config alone.
+    //
+    // The detectors are `policy.pendingSignals`, set by `reviewStep` on the
+    // pre-step hook and carried on the policy — the same place the step's
+    // errors are stashed, so it is cleared in the same place it is set. Absent
+    // stays absent: a turn with no detector output records no signals, which is
+    // different from recording a signal that says nothing.
+    signals: policy.pendingSignals === undefined ? [] : [...policy.pendingSignals],
+    judgeScores: policy.turnJudgeScores ?? [],
     // From the router that counted them. `recordTurn` wrote a literal `0` here,
     // so every harness-path record reported a human-escalation rate of exactly
     // zero — and `summarize`'s "Human escalation rate > 15%" alert could never

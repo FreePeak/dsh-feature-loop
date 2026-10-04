@@ -51,8 +51,11 @@ test('percentiles are nearest-rank: exact p50/p95 on a hand-built array', () => 
   assert.equal(s.speed.wallMs.p50, 1000)
   assert.equal(s.speed.wallMs.p95, 1900)
   assert.equal(s.speed.wallMs.latest, 2000)
-  // Baseline: mean of the last 7 goal-met runs, 14..20.
-  assert.equal(s.speed.steps.baseline, 17)
+  // Baseline: the mean over the SAME population the axis is drawn from — every
+  // run that took a step, which here is all 20. `baseline()` keeps its own
+  // 7-run goal-met window for cost; the steps axis deliberately does not reuse
+  // it (see the population note in summarize), so this is 1..20, not 14..20.
+  assert.equal(s.speed.steps.baseline, 10.5)
 })
 
 test('latency percentiles pool stepLatencyMs; empty arrays contribute to wallMs only', () => {
@@ -212,13 +215,35 @@ test('unpriced steps propagate as a non-zero sum and mark cost unknown', () => {
 })
 
 test('steps alert fires exactly at 2x baseline, silent one step below', () => {
-  // 7 goal-met runs: baseline = mean = 6, P95 = max = 12 — exactly 2x.
+  // 7 goal-met runs, all stepped: baseline = mean over all of them = 6, P95 =
+  // max = 12 — exactly 2x. The baseline is the axis's own population, so the
+  // short runs that used to be filtered out are what the long ones are judged
+  // against (see the population note in `summarize`).
   const at = summarize([5, 5, 5, 5, 5, 5, 12].map(steps => record({ steps })))
   assert.equal(at.alerts.length, 1, JSON.stringify(at.alerts))
   assert.equal(at.alerts[0].kind, 'steps')
   // Max 11: P95 11 < 2 * (41/7) ≈ 11.71 — no threshold met, no alert at all.
   const below = summarize([5, 5, 5, 5, 5, 5, 11].map(steps => record({ steps })))
   assert.equal(below.alerts.length, 0)
+})
+
+test('steps alert compares one population, not a short window against a wide axis', () => {
+  // The false alarm measured 2026-10-04 on the live 21-record history: the
+  // goal-met 7-run window averaged 3.57 (dragged down by one-file-at-a-time
+  // e2e runs) while the axis p95 was 8, so the panel alerted on a distribution
+  // whose own median was 5. Same runs, one population: 12 stepped goal-met runs
+  // with mean 5 and p95 8 — under 2x, so silent.
+  const skewed = summarize([
+    8, 5, 8, 7, 7, 8, 1, 2, 8, 3, 2, 1,
+  ].map(steps => record({ steps })))
+  assert.equal(skewed.speed.steps.baseline, 5, 'baseline is the mean of the axis population')
+  assert.equal(skewed.alerts.filter(a => a.kind === 'steps').length, 0)
+
+  // And the shape it would still catch: the same population, one run doubled.
+  const degrading = summarize([
+    8, 5, 8, 7, 7, 8, 1, 2, 8, 3, 2, 20,
+  ].map(steps => record({ steps })))
+  assert.equal(degrading.alerts.filter(a => a.kind === 'steps').length, 1)
 })
 
 test('cost alert fires exactly at budget * 0.8, silent one cent below', () => {
@@ -264,6 +289,18 @@ test('the review alert fires on the share of RUNS, and names that', () => {
   assert.match(at.alerts.find(a => a.kind === 'review-fraction')!.detail, /% of steps/)
 })
 
+test('a history with no goal-met run still baselines its steps', () => {
+  // The steps baseline is the axis's own population, so a loop that has only
+  // ever failed still has a line to judge the next run against. Cost keeps its
+  // goal-met window: a failed run spent nothing useful.
+  const allFailed = summarize([
+    record({ outcome: 'error', steps: 4 }),
+    record({ outcome: 'error', steps: 10 }),
+  ])
+  assert.equal(allFailed.speed.steps.baseline, 7, 'mean over stepped runs')
+  assert.equal(allFailed.cost.goalMetCost, undefined, 'cost stays goal-met only')
+})
+
 test('a heavy review on FEW runs is reported by both numbers, and they disagree', () => {
   // One review in a single 100-step run: 1% of steps, 100% of runs. Under the old
   // single number this read as "no human was involved" and the alert stayed
@@ -305,7 +342,10 @@ test('an empty record list summarizes to zeros without throwing', () => {
   assert.equal(s.cost.unpricedSteps, 0)
   assert.equal(s.cost.goalMetCost, undefined)
   assert.equal(s.speed.steps.p50, 0)
-  assert.equal(s.speed.steps.baseline, undefined, 'no goal-met runs, no baseline')
+  // No run took a step, so the axis has no population to average and the
+  // baseline stays absent — not 0, which a dashboard would render as a real
+  // measurement of a loop that never ran.
+  assert.equal(s.speed.steps.baseline, undefined, 'nothing stepped, no baseline')
   // Nothing was timed, so no kind is declared. This used to be 'round-trip':
   // a measurement kind asserted for a measurement that never happened.
   assert.equal(s.speed.latencyKind, undefined)

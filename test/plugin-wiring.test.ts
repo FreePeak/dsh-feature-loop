@@ -941,6 +941,85 @@ test('apply builds a Judge from the settings file, not the string in it', async 
   })
 })
 
+test('a harness-path record carries the detectors real signals, not one placeholder per step', () => {
+  // §1cd: every signal in 21 live records read `kind: 'detector',
+  // severity: 'info'`, because `recordTurn` wrote
+  // `policy.history.map(() => ({kind:'detector', severity:'info'}))` — one
+  // synthetic "a detector exists" per recorded step. The column was present,
+  // plausible, and carried nothing.
+  //
+  // Two consequences make this worth a test rather than a comment. (1)
+  // `summarize`'s cycle alert counts `kind === 'tool-cycle'` over this field, so
+  // on a harness-path record it could NEVER fire — a threshold reading a field
+  // that cannot hold its value. (2) The optimizer battery reasons over it, so
+  // every lever that depends on WHICH detector fired is answered from config
+  // alone.
+  return (async () => {
+    const { mkdtempSync, readFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-signals-'))
+    const historyPath = join(dir, 'runs.jsonl')
+
+    const handlers = new Map<string, (...args: unknown[]) => unknown>()
+    const ctx = {
+      on(event: string, fn: (...args: unknown[]) => unknown): () => void {
+        handlers.set(event, fn)
+        return () => { handlers.delete(event) }
+      },
+    }
+    const dispose = apply(ctx as never, {
+      spec: { ...SPEC, maxSteps: 99, costBudgetUSD: 5 },
+      dashboard: { enabled: false },
+      optimize: { history: historyPath },
+    } as never)
+
+    // Four failing steps in a row: `error-cascade` is a detector whose verdict is
+    // deterministic, so the closed turn must carry its REAL kind — and the
+    // cycle alert must be able to see it.
+    const pre = handlers.get('agent/pre-step') as Handler
+    const sessionHandler = handlers.get('session/event')
+    assert.ok(sessionHandler !== undefined)
+    for (let step = 1; step <= 4; step += 1) {
+      await pre(
+        { agent: AGENT, messages: [], turn: 1, step, signal: new AbortController().signal },
+        async () => ({ kind: 'enter', messages: [] }),
+      )
+      // A tool that RAN and failed is what the cascade detector counts.
+      handlers.get('tools/post-execute')?.(
+        { agent: AGENT },
+        { isError: true },
+        async () => undefined,
+      )
+      handlers.get('tools/pre-execute')?.(
+        { agent: AGENT, name: 'write_file', arguments: {} },
+        async () => ({ kind: 'deny', reason: 'blocked' }),
+      )
+    }
+    sessionHandler({ id: 'sess-signals' }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+
+    const deadline = Date.now() + 5000
+    while (Date.now() < deadline && !readFileSync(historyPath, 'utf8').includes('signals')) {
+      await new Promise(resolve => { setTimeout(resolve, 10) })
+    }
+    const record = JSON.parse(readFileSync(historyPath, 'utf8').trim().split('\n')[0]!) as {
+      signals: { kind: string, severity: string }[]
+    }
+    assert.ok(Array.isArray(record.signals), 'a record must carry a signals array')
+    assert.equal(
+      record.signals.every(sig => sig.kind === 'detector' && sig.severity === 'info'),
+      false,
+      'the placeholder shape is the defect: every signal reading '
+      + '"detector/info" is "a detector exists", which is not what a detector '
+      + 'that fired reports',
+    )
+    assert.ok(record.signals.some(sig => sig.kind === 'error-cascade'),
+      `the closed turn's real detector verdict must be in the record; got `
+      + `${JSON.stringify(record.signals.map(sig => sig.kind))}`)
+    dispose()
+  })()
+})
+
 test('the optimizer is asked only once the history is evidence, and then it writes', () => {
   // `recommendations` was forwarded by `projectLive` (a65257b) and set by NOBODY:
   // `setRecommendations` had no production caller in the repo, so the key could

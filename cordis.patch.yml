@@ -207,6 +207,15 @@
             job_list: read
             job_output: read
             job_kill: reversible-write
+            # The model's OWN question tools. A question has no side effect,
+            # so the irreversible default made the human click to let the model
+            # ask what it wanted — and on an unwatched run it was DENIED, so a
+            # clarifying question read as a refusal and the turn ended with
+            # nothing written. Measured 2026-10-04 on a composer-only run:
+            # ask 1 (bash) settled in 48ms, then `ask_user_question` was
+            # denied for want of a watcher.
+            ask_user_question: read
+            request_user_input: read
 
           feedback: "the verification command exits 0, and the diff is the smallest that achieves it"
 
