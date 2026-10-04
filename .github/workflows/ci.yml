@@ -264,3 +264,24 @@ jobs:
             src/refine.ts src/review.ts src/routing.ts src/runlog.ts src/runner.ts \
             src/sandbox.ts src/ship.ts src/signals.ts src/spec.ts src/tools.ts \
             src/watcher-ttl.ts src/yolo.ts
+            src/agent-policy.ts             src/approval-bridge.ts             src/approvals.ts \
+            src/brief.ts             src/budget.ts             src/dashboard-page.ts \
+            src/dashboard.ts             src/envelope.ts             src/evidence.ts \
+            src/explainer.ts             src/judge.ts             src/laya.ts \
+            src/llm.ts             src/messages.ts             src/metrics.ts \
+            src/optimize.ts             src/optimizer.ts             src/phase-budget.ts \
+            src/phases.ts             src/pipeline.ts             src/prompts.ts \
+            src/questioner.ts             src/refine.ts             src/review.ts \
+            src/routing.ts             src/runlog.ts             src/runner.ts \
+            src/sandbox.ts             src/ship.ts             src/signals.ts \
+            src/spec.ts             src/tools.ts             src/watcher-ttl.ts \
+            src/yolo.ts
+      # The list is hand-maintained and has already drifted twice — see the
+      # `change-event` note above — so this step recomputes it and fails on a
+      # module that has fallen off. Rule: a module belongs in the list unless it
+      # (or anything it reaches) imports or augments an `@deepseek-ai/*` module.
+      # `plugin.ts`, `index.ts`, `remote.ts`, `command.ts` and `change-event.ts`
+      # are the five excluded today, and each exclusion is named in
+      # `scripts/check-typecheck-list.mjs`, so a new one has to be written down.
+      - name: The typecheck list is not stale
+        run: node scripts/check-typecheck-list.mjs
