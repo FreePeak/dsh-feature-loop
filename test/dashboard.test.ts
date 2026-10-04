@@ -1097,6 +1097,52 @@ test('a /api/state poll counts as a watcher and says so', async (t) => {
 
 // ── the watcher TTL and the page poll must not drift apart ─────────────────
 // The in-UI page claims an ask only while it counts as a watcher, and this poll
+test('the in-UI page renders the roll-up, and only what the roll-up computed', () => {
+  // §1bz fixed the label the alert prints, and found the projection dropping
+  // `metrics` so the page could not receive it at all (a65257b). Nothing rendered
+  // it. These assertions are about the two things that went wrong:
+  //
+  //  1. the panel is MOUNTED in the page, not merely defined beside it;
+  //  2. it computes NOTHING — every threshold in §1bp…§1bz was a number whose
+  //     label disagreed with it, and the fix that stuck was reading names.
+  const here = dirname(fileURLToPath(import.meta.url))
+  const app = readFileSync(join(here, '..', 'web', 'app.tsx'), 'utf8')
+
+  assert.match(app, /<MetricsPanel snapshot=\{snapshot\} \/>/,
+    'the page must MOUNT the metrics panel — a defined-but-unused component is '
+    + 'the shape this defect took')
+  assert.match(app, /if \(metrics === undefined\) return null/,
+    'and it must draw nothing when nothing was measured: "no data" and "zero" '
+    + 'are different facts and only one belongs on a screen')
+  assert.match(app, /aria-label="Measurements"/, 'and it must be a labelled region')
+
+  const panel = app.slice(app.indexOf('function MetricsPanel'), app.indexOf('function MetricsPanel') + 2400)
+  // No arithmetic on a figure the roll-up already decided. A comparison here is
+  // a threshold invented by the page, which is exactly how the alert came to
+  // print one quantity beside another's name.
+  assert.equal(/quality\.goalMetRate\s*[<>]=?/.test(panel), false,
+    'the panel must not re-threshold goalMetRate')
+  assert.equal(/reviewRunRate\s*[<>]=?/.test(panel), false,
+    'the panel must not re-threshold reviewRunRate')
+  // It names both review readings, because §1bz was those two being conflated.
+  assert.match(panel, /reviewRunRate/)
+  assert.match(panel, /reviewFraction/)
+})
+
+test('the CSS the metrics panel uses exists, and the runs pane keeps the rail', () => {
+  // A half-styled pane is worse than an absent one, and a pane that takes the
+  // rail's flex would leave the run list it summarises with a few rows.
+  const here = dirname(fileURLToPath(import.meta.url))
+  const css = readFileSync(join(here, '..', 'web', 'shell.css'), 'utf8')
+  for (const selector of ['.rail .pane-metrics', '.metric-tiles', '.metric-tile', '.metric-alert']) {
+    assert.ok(css.includes(selector), `shell.css must style ${selector}`)
+  }
+  assert.match(css, /\.rail \.pane-metrics \{\s*flex: 0 0 auto/,
+    'the metrics pane is sized by its content')
+  assert.match(css, /\.rail \.pane-runs \{\s*flex: 1 1 auto/,
+    'and the run list keeps the remaining space')
+})
+
 // is what keeps it one. A poll at or above the TTL leaves the page a watcher
 // part of the time, so a gate firing in the gap hands its ask to the composer
 // instead — from the page the operator is watching.

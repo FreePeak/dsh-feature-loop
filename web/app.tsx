@@ -1061,6 +1061,95 @@ function GroupedRunPanels({
   )
 }
 
+/**
+ * The measurement roll-up, above the run list.
+ *
+ * Only renders what `summarize` already computed, and only figures it says are
+ * present. A Metrics panel that renders its own thresholds is how §1bz happened:
+ * the alert printed "15% of runs" over a number that was a share of steps. So
+ * this one has no arithmetic — it reads names and prints them, and a figure that
+ * is `undefined` is not drawn, because "measured nothing" and "measured zero"
+ * are different facts and only one of them belongs on a screen.
+ *
+ * The numbers chosen are the ones an operator asks for when they open the page
+ * mid-run: did it work, what did it cost, how long did it take, how often did it
+ * stop for me.
+ */
+function MetricsPanel({ snapshot }: { snapshot: DashboardSnapshot }) {
+  const metrics = snapshot.metrics
+  if (metrics === undefined) return null
+  const { runs: measuredRuns, quality } = metrics
+  // `goalMetRate` counts every closed turn, `measuredRuns` the ones that took a
+  // step. Without both, a rate over mostly-empty turns reads as a score (§1br).
+  const pct = (value: number): string => `${(value * 100).toFixed(0)}%`
+  const usd = (value: number): string => `$${value.toFixed(4)}`
+  const tiles: { label: string, value: string, title: string }[] = [
+    {
+      label: 'Goal met',
+      value: pct(quality.goalMetRate),
+      title: `${String(metrics.runs)} closed turn(s), ${String(measuredRuns)} of which took a step`,
+    },
+    {
+      label: 'Cost / run',
+      value: usd(metrics.cost.perRun.p50),
+      title: 'Median across the runs that took a step',
+    },
+    {
+      label: 'Wall clock',
+      value: metrics.speed.wallMs.p50 > 0 ? `${String(Math.round(metrics.speed.wallMs.p50 / 1000))}s` : '—',
+      title: 'Median turn duration, from the harness clock',
+    },
+    {
+      label: 'Reviews',
+      // Two readings, both named: §1bz's alert said "15% of runs" over a share
+      // of steps, so the page does not get to make that mistake.
+      value: quality.reviewRunRate === undefined
+        ? '—'
+        : pct(quality.reviewRunRate),
+      title: quality.reviewRunRate === undefined
+        ? 'No run reported a review'
+        : `${pct(quality.reviewRunRate)} of runs surfaced a step for review; `
+          + `${pct(quality.reviewFraction)} of steps were reviewed`,
+    },
+  ]
+  return (
+    <section id="metrics" className="pane pane-metrics" aria-label="Measurements">
+      <div className="section-head pane-head">
+        <h2>Measurements</h2>
+        {metrics.provisional ? (
+          <span className="tag tag-ghost" title={`Only ${String(metrics.runs)} run(s) so far`}>
+            early
+          </span>
+        ) : null}
+      </div>
+      <div className="pane-scroll scroll-beauty">
+        <div className="metric-tiles">
+          {tiles.map(tile => (
+            <div key={tile.label} className="metric-tile" title={tile.title}>
+              <span className="metric-value">{tile.value}</span>
+              <span className="metric-label">{tile.label}</span>
+            </div>
+          ))}
+        </div>
+        {metrics.alerts.length > 0 ? (
+          <ul className="metric-alerts">
+            {metrics.alerts.map((alert, index) => (
+              <li key={`${alert.kind}-${String(index)}`} className="metric-alert">
+                {alert.detail}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {quality.firstPassRate === undefined ? null : (
+          <p className="metric-note">
+            {pct(quality.firstPassRate)} met the goal on the first pass.
+          </p>
+        )}
+      </div>
+    </section>
+  )
+}
+
 /** Left sidebar activity ledger — filtered feed, independent scroll. */
 function ActivityFeed({
   snapshot,
@@ -1140,7 +1229,8 @@ export function DashboardApp({ source }: { source: DashboardSource }): React.Rea
         </div>
         <ApprovalThread pending={snapshot.pending} feed={snapshot.feed} source={source} briefsOn={briefsOn} />
       </section>
-      <aside className="rail" aria-label="Grouped runs">
+      <aside className="rail" aria-label="Measurements and grouped runs">
+        <MetricsPanel snapshot={snapshot} />
         <GroupedRunPanels snapshot={snapshot} filter={sessionFilter} />
       </aside>
     </div>

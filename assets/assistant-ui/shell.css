@@ -457,6 +457,61 @@ html.fl-standalone #root {
   display: flex;
   flex-direction: column;
 }
+/* The runs pane keeps the flexible box; the metrics pane is sized by its
+   CONTENT, so four tiles do not steal half the rail from the run list it
+   summarises. `flex: 0 0 auto` plus `flex-shrink: 0` on the tiles' container is
+   what makes that true when a run list is long. */
+.rail .pane-metrics {
+  flex: 0 0 auto;
+  max-height: 40cqh;
+  display: flex;
+  flex-direction: column;
+}
+.rail .pane-metrics .pane-scroll {
+  overflow: auto;
+}
+.metric-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr));
+  gap: 6px;
+  padding: 8px 10px;
+}
+.metric-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  border-radius: 6px;
+  min-width: 0;
+}
+.metric-value {
+  font-size: 1.05rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+.metric-label,
+.metric-note {
+  font-size: 0.72rem;
+  color: var(--muted, currentColor);
+  opacity: 0.8;
+}
+.metric-note { padding: 0 10px 8px; margin: 0; }
+.metric-alerts {
+  list-style: none;
+  margin: 0;
+  padding: 0 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.metric-alert {
+  font-size: 0.75rem;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--warn, #d8a657) 55%, transparent);
+  color: color-mix(in srgb, var(--warn, #d8a657) 80%, currentColor);
+}
 .rail .pane-runs {
   flex: 1 1 auto;
   min-height: 0;
