@@ -62,7 +62,7 @@ import { PHASE_ORDER } from './phases.ts'
 import type { GateResult, PipelinePhase } from './phases.ts'
 import { goalNotice, phaseNotice, terminalNotice } from './phase-notice.ts'
 import { advancePhase, gateCurrentPhase, runShip } from './driver.ts'
-import { writeBundle } from './evidence.ts'
+import { appendStep, writeBundle } from './evidence.ts'
 
 /** Where run artifacts land, relative to the workspace root. Mirrors the config default. */
 const RUNS_DIR = '.feature-loop/runs'
@@ -103,7 +103,7 @@ import { budgetStopText, budgetWarnText, escalationText, reviewText } from './me
 // deployment that never asked for run-history keeps the plugin's graph
 // exactly as it was before this feature existed.
 import { summarize } from './metrics.ts'
-import type { RunRecord } from './runlog.ts'
+import type { RunRecord, StepRecord } from './runlog.ts'
 import type { RunOutcome } from './runlog.ts'
 
 /**
@@ -599,6 +599,9 @@ export async function reviewStep(
     const pending = policy.pending
     policy.history.push({
       index: step - 1,
+      // The phase as it was WHEN the step ran. Phase changes happen at a step
+      // boundary, after this push, so this is never off by one.
+      ...(policy.pipeline === undefined ? {} : { phase: policy.pipeline.run.state }),
       tool: pending?.tool,
       argsKey: pending?.argsKey,
       costUSD: 0,
@@ -1659,8 +1662,12 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
     // and no way to tell that the PRD is waiting for someone to send another
     // message.
     ...pipelineFields(policy, String(runId)),
+    // The step ledger, from the observations the detectors already hold. An index
+    // that cannot reach the content it indexes is not an index.
+    ...(policy.history.length === 0 ? {} : { trajectory: policy.history.map(observationToStep) }),
   }
   runlog.appendRecord(historyPath, record)
+  writeEvidenceBundle(String(runId), record)
   // The Metrics panel reads what just landed: the roll-up is over the file,
   // not over memory, so a resumed process that never saw the earlier turns
   // still renders their history. A torn line is counted and skipped by the
@@ -1701,6 +1708,54 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
  * @param runId - the run's id, which names the evidence bundle.
  * @returns the additive pipeline fields.
  */
+/**
+ * Project one step observation onto the record's step line.
+ *
+ * The detectors already hold every field this needs, so nothing is re-measured —
+ * the trajectory in the record is the same data the policy acted on, which is the
+ * only reason it can be trusted after the fact.
+ *
+ * @param observation - the step the detectors read.
+ * @returns the record's step line.
+ */
+function observationToStep(observation: StepObservation): StepRecord {
+  return {
+    index: observation.index,
+    phase: observation.phase ?? 'unknown',
+    ...(observation.tool === undefined ? {} : { tool: observation.tool }),
+    ...(observation.error === undefined ? {} : { error: observation.error }),
+    costUSD: observation.costUSD,
+    ...(observation.latencyMs === undefined ? {} : { latencyMs: observation.latencyMs }),
+  }
+}
+
+/**
+ * Write this run's evidence bundle: REPORT.md, steps.jsonl, phases.json.
+ *
+ * This is the artifact the PRD promised — a directory a human can read months
+ * later, offline, with every step, every budget and every artifact accounted for
+ * — and for the whole life of the pipeline it existed as a function nobody called.
+ * A live run produced `.feature-loop/runs.jsonl` and nothing else.
+ *
+ * Failure is a stderr line, never a throw: the bundle is evidence, and evidence
+ * that breaks a turn has become control.
+ *
+ * @param runId - the run's id, which names the directory.
+ * @param record - the record just written, and the source of the report.
+ */
+function writeEvidenceBundle(runId: string, record: RunRecord): void {
+  try {
+    const dir = join(RUNS_DIR, runId)
+    writeBundle(dir, record)
+    for (const step of record.trajectory ?? []) appendStep(dir, step)
+  } catch (error) {
+    process.stderr.write(
+      `dsh-feature-loop: evidence bundle for ${runId} could not be written: `
+      + `${error instanceof Error ? error.message : String(error)}\n`,
+    )
+  }
+}
+
 function pipelineFields(policy: FeatureLoopPolicy, runId: string): Record<string, unknown> {
   const pipeline = policy.pipeline
   if (pipeline === undefined) return {}

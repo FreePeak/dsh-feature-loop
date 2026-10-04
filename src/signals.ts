@@ -18,6 +18,15 @@
 export interface StepObservation {
   /** 1-based step number. */
   index: number
+  /**
+   * Which pipeline phase this step belongs to, when the 0→1 pipeline is running.
+   *
+   * Absent for a plain bounded loop, which has no phases — the same rule every
+   * other optional field here follows. Present because the evidence bundle's step
+   * ledger is read by phase, and a trajectory that cannot say which phase a step
+   * was spent in cannot answer the question it exists to answer.
+   */
+  phase?: string
   /** The tool this step called, when it called one. */
   tool?: string
   /**
