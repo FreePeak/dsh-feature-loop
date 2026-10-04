@@ -12,7 +12,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { executeLoopCommand } from './plugin.ts'
+import { executeLoopCommand, executeProductCommand } from './plugin.ts'
 
 /** The name cordis and the harness log address this plugin by. */
 export const name = 'feature-loop-command'
@@ -50,16 +50,30 @@ export const apply = (ctx: Context): void => {
       }): void
     }
   }).commands
+  const submit = (
+    run: (raw: string) => { task: string } | { kind: 'error'; text: string },
+  ) => (invocation: { rawInput: string }): { kind: 'success' | 'error'; text?: string } => {
+    const outcome = run(invocation.rawInput)
+    if ('kind' in outcome) return outcome
+    // The composer submits the returned text as the turn, so the loop policies
+    // apply to it exactly as to any typed request.
+    return { kind: 'success', text: outcome.task }
+  }
+
   commands.register({
     name: 'loop',
     description: 'Run a task through the feature loop: bounded steps, cheap-first routing, and the review gate',
     input: { hint: '<task>' },
-    handler: (invocation) => {
-      const outcome = executeLoopCommand(invocation.rawInput)
-      if ('kind' in outcome) return outcome
-      // The composer submits the returned text as the turn, so the loop
-      // policies apply to it exactly as to any typed request.
-      return { kind: 'success', text: outcome.task }
-    },
+    handler: submit(executeLoopCommand),
+  })
+
+  // The 0→1 pipeline's front door. Without it the pipeline is reachable only by
+  // editing the patch row, which is a configuration act rather than the "one
+  // sentence starts the run" the PRD promises.
+  commands.register({
+    name: 'product',
+    description: 'Build a product end to end: research, PRD, implement, test, and a pull request',
+    input: { hint: '<goal>' },
+    handler: submit(executeProductCommand),
   })
 }
