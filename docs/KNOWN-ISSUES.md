@@ -88,6 +88,7 @@ rather than a list of letters:
 | 1cd | The first three proposals, read against the history they came from |
 | 1cc | `recommendations` was forwarded by nobody, set by nobody, and configured by nobody |
 | 1ce | The run history was written next to the server, not next to the work |
+| 1cf | The opt-in loopback page served a component set frozen ten days ago |
 
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
@@ -1705,6 +1706,62 @@ and proposals are one slot each, so with several workspaces in one process the
 panel shows the LAST workspace that recorded. Keying those by workspace is the
 upgrade path; today every deployment runs one workspace per process, and this is
 the same loopback posture the default already documented.
+
+### 1cf. The opt-in loopback page served a component set frozen ten days ago
+
+**Observed:** nothing. The standalone page (`dashboard.standalone: true`)
+mounted, rendered its approval thread, its workspace tree and its run list, and
+answered a decision — every assertion anyone had written against it passed. It
+had no **MEASUREMENTS** pane and no **PROPOSALS** pane, which is the whole point
+of watching a run on a loopback page with no harness UI beside it.
+
+**Why:** `assets/assistant-ui/dashboard.js` had not been written by the builder
+since `3973e3a` (2026-09-23). Commit `633c1e2` folded the dashboard into the DSH
+UI, repointed `web/build.mjs` at `web/entry.tsx` and dropped its `outfile: …,
+'dashboard.js'` line — while keeping `dashboard.js` in `assets/`, because the
+standalone opt-in was meant to keep working. The fold also moved the
+self-mount (`createRoot(document.getElementById('root'))`) and the SSE transport
+out of `web/app.tsx` into the host-only `web/entry.tsx`, so **no source in the
+tree could build a working standalone bundle any more**. Every component added
+afterwards (`08f1cb5` metrics, `237ea70` proposals) lands in `web/app.tsx`,
+which is `client.js`'s input and not `dashboard.js`'s.
+
+**Why it survived `make dashboard-bundle` and a staleness check.** The check in
+`test/assistant-ui.test.ts` hashes `client.js`'s inputs, and `web/standalone.tsx`
+was not an input of anything — there was no such file. So: run the builder, and
+it does not touch the artefact; change the page, and the hash does not move.
+Both halves are individually defensible and jointly invisible.
+
+**Measured, not reasoned.** Serving the committed artefact in a real browser
+with a snapshot carrying `metrics` and `recommendations` rendered
+WORKSPACES/ACTIVITY/APPROVAL THREAD and nothing else: `pane-metrics: 0`,
+`pane-proposals: 0`. Same server, same snapshot, same page, with a bundle built
+from today's `web/standalone.tsx`: both panes drawn. That is the whole proof.
+
+**Fix:** `web/standalone.tsx` — 135 lines, mounting today's `DashboardApp` over
+the three endpoints the loopback server already serves (`/api/events`,
+`/api/state`, `POST /api/approvals/:id`), with the same `DashboardSource` seam
+the host entry uses. React is bundled here rather than external, which is the
+opposite of the host entry and for the opposite reason (no other React on this
+page). `web/build.mjs` now writes both artefacts from one shared esbuild
+literal, differing only in `external`, and `web/standalone.tsx` joins
+`SOURCE_INPUTS` so the staleness hash covers the loopback page too.
+
+**Two checks, because either alone is a comment.** `test/assistant-ui.test.ts`
+asserts the builder writes `dashboard.js` again, from `web/standalone.tsx`, and
+that the hash covers that entry — that runs on a bare clone in CI.
+`test/e2e-standalone-panes.mjs` drives the real `startDashboard` in real
+Chromium and asserts both panes appear once the server has something to show;
+that one needs a browser, so it is opt-in like its siblings.
+
+**The finding inside the finding, recorded because it cost the fixture twice.**
+A hand-written `MetricsSummary` threw
+`Cannot read properties of undefined (reading 'length')` inside `MetricsPanel`:
+`alerts`, and each axis' `latest` and `samples`, are required fields, and a
+fixture that remembers only the interesting ones produces a shape the server
+never emits. The test now asks `summarize()` for its own metrics from five
+invented records — shorter, and the only version that cannot drift from the real
+shape without failing here.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 

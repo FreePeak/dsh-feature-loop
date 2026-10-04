@@ -37,30 +37,67 @@ copyFileSync(
 )
 copyFileSync(join(root, 'web/shell.css'), join(outDir, 'shell.css'))
 
-// React is EXTERNAL, and deliberately so. The DSH web shell already runs a
-// React; bundling a second copy would give the dashboard its own reconciler,
-// its own context and its own hooks cache — which does not render reliably
-// inside someone else's tree. The harness hands us its `require`, and the
-// factory below closes over it.
-const result = buildSync({
-  entryPoints: [join(root, 'web/entry.tsx')],
+/**
+ * One esbuild pass, shared by both targets.
+ *
+ * The two entries differ in ONE thing that matters — whether React is external
+ * — and keeping the rest in a single literal is what stops `platform`, `target`
+ * or `jsx` drifting between a page inside the harness and a page in its own
+ * browser. The host page must NOT bundle React (a second reconciler inside the
+ * harness's tree does not render reliably); the loopback page has no other
+ * React, so it must.
+ */
+const BASE = {
   bundle: true,
   minify: true,
   format: 'iife',
-  globalName: '__flPlugin',
   platform: 'browser',
   target: 'es2020',
   jsx: 'automatic',
   // The designed shell's CSS rides inside the bundle: the dashboard is a page
   // of the DSH UI now, so there is no second origin to fetch a stylesheet from.
   loader: { '.css': 'text' },
-  external: ['react', 'react-dom', 'react-dom/client'],
   // Production React: without this, esbuild leaves NODE_ENV reads that
   // resolve to development React (slower, and dev-only warnings on a page
   // an operator is using during an incident).
   define: { 'process.env.NODE_ENV': '"production"' },
-  write: false,
   logLevel: 'info',
+}
+
+/**
+ * React is EXTERNAL for the host entry, and deliberately so. The DSH web shell
+ * already runs a React; bundling a second copy would give the dashboard its own
+ * reconciler, its own context and its own hooks cache — which does not render
+ * reliably inside someone else's tree. The harness hands us its `require`, and
+ * the factory below closes over it.
+ */
+const result = buildSync({
+  ...BASE,
+  entryPoints: [join(root, 'web/entry.tsx')],
+  globalName: '__flPlugin',
+  external: ['react', 'react-dom', 'react-dom/client'],
+  write: false,
+})
+
+/**
+ * The standalone page's bundle: `assets/assistant-ui/dashboard.js`, served by the
+ * opt-in loopback server (`dashboard.standalone: true`) and mounted by the page
+ * shell's `#root`.
+ *
+ * It had no builder between `633c1e2` (which repointed this file at
+ * `web/entry.tsx` and dropped the `outfile` line, keeping the artefact for the
+ * standalone opt-in) and now — so the loopback page served a component set
+ * frozen at `3973e3a`, with no metrics pane and no proposals pane. Written to
+ * disk directly rather than through `outputFiles`, because unlike the host
+ * entry this one is LOADED as a plain script tag and must not be wrapped in the
+ * `__ModuleLoader__` factory: there is no module loader in a bare browser.
+ */
+const standalone = buildSync({
+  ...BASE,
+  entryPoints: [join(root, 'web/standalone.tsx')],
+  // No `globalName`: nothing reads this bundle's exports. The IIFE mounts
+  // itself through `createRoot`, exactly as the pre-fold `web/app.tsx` did.
+  outfile: join(outDir, 'dashboard.js'),
 })
 
 // The harness loads a client file that REGISTERS itself through the published
@@ -106,7 +143,12 @@ const kb = (path) => `${String(Math.round(statSync(path).size / 1024))} KB`
  * git, no dependency, and it fails on the first character of any change.
  */
 const SOURCE_INPUTS = [
-  'web/entry.tsx', 'web/app.tsx', 'web/plugin.css', 'web/shell.css', 'web/start-target.ts',
+  // BOTH entries, because both produce a committed artefact and the staleness
+  // check below is the only thing that notices when either drifts from source.
+  // `web/standalone.tsx` was missing from this list for the whole of §1cf, which
+  // is how the loopback page's bundle froze without a failure.
+  'web/entry.tsx', 'web/standalone.tsx', 'web/app.tsx', 'web/plugin.css',
+  'web/shell.css', 'web/start-target.ts',
 ]
 /** One hash over every source input, in a fixed order. */
 const sha256OfInputs = () => createHash('sha256')

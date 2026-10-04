@@ -143,6 +143,24 @@ e2e-dashboard (rejected): the Reject click resolved the ask rejected
 A captured frame of the three card states (brief ready / still writing /
 unavailable) is committed at [`assistant-ui-dashboard.png`](assistant-ui-dashboard.png).
 
+**And the two rail panes, on the loopback page.** `make e2e-standalone-panes`
+drives a real `startDashboard` in real Chromium and asserts MEASUREMENTS and
+PROPOSALS both appear once the server has a roll-up and a recommendation to
+show. It exists because for ten days the loopback page answered approvals
+perfectly with **no such panes at all**: its bundle had no builder left after the
+fold into the DSH UI, so it served the component set from 2026-09-23 (KNOWN-ISSUES
+§1cf). It fails today if the artefact goes stale again — verified by reverting to
+the frozen bundle, which mounts the page and reports both panes absent.
+
+```
+$ make e2e-standalone-panes
+mounted: 297 chars of the page body
+panes: runs=1
+panes: metrics=1 proposals=1
+console/network errors: none
+standalone panes: mounted, with MEASUREMENTS and PROPOSALS drawn
+```
+
 What changed in the mechanism, and why it is still the same guarantee: the
 approval card is now rendered by assistant-ui's `MessagePrimitive.Parts` with a
 `tools.Override` component, and the click reaches the server through
