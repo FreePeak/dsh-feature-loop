@@ -264,9 +264,23 @@ export function mergeRowAndSettings(config: Record<string, unknown>): Record<str
   const userRouter = (user.router ?? {}) as Record<string, unknown>
   const router = { ...rowRouter, ...userRouter }
   return {
-    confidenceThreshold: config.confidenceThreshold,
-    gatePolicies: config.gatePolicies,
-    gateMode: config.gateMode,
+    // The row's OWN values first, then the file over them. The previous three
+    // named scalars are the whole story of this defect: an allow-list of the
+    // keys the settings page happens to offer, rebuilt by hand, so any row key
+    // NOT on that list vanished. Measured 2026-10-04 on a profile whose row
+    // said `judge: laya` and `judgeBaseURL: http://127.0.0.1:8092`: the merge
+    // returned neither, `resolveJudge` read `undefined`, and the deployment
+    // ran with `NO_JUDGE` — no judge, no error, and an optimizer whose every
+    // question came back "no judge configured". The docs' own §1cc says a
+    // configured judge that silently never runs is the worst outcome available,
+    // and this is how it happened.
+    //
+    // Spreading the row is also SHORTER than enumerating it, which is the usual
+    // reason a hand-written allow-list exists in the first place: it was written
+    // when `spec`/`dashboard`/`optimize` had to stay row-only. Those are still
+    // protected — the settings file is read through `USER_KEYS`, which never
+    // names them — so spreading the row costs the boundary nothing.
+    ...config,
     ...user,
     router,
   }

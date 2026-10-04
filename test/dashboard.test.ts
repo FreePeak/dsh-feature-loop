@@ -1148,14 +1148,69 @@ test('the in-UI page renders the roll-up, and only what the roll-up computed', (
   assert.match(panel, /reviewFraction/)
 })
 
+test('the proposals panel draws the diff, and distinguishes absent from empty', () => {
+  // §1cc: `recommendations` had no writer and no renderer. The writer landed in
+  // d4d2242; this is the renderer half. Three facts, each of which was a real
+  // failure mode somewhere in this chain:
+  //
+  //  1. the panel is MOUNTED (a defined-but-unused component is the shape the
+  //     `metrics` gap took);
+  //  2. absent is not empty — absent means the battery has not run, empty means
+  //     it ran and had nothing to say (§1bq's rule, and the reason a `?? []`
+  //     would erase the difference the writer just introduced);
+  //  3. an absent confidence is a GAP in evidence, not zero confidence
+  //     (optimizer.ts rule 4) — so it is omitted, never printed as `0%`.
+  const here = dirname(fileURLToPath(import.meta.url))
+  const app = readFileSync(join(here, '..', 'web', 'app.tsx'), 'utf8')
+
+  assert.match(app, /<RecommendationsPanel snapshot=\{snapshot\} \/>/,
+    'the page must MOUNT the proposals panel')
+  assert.match(app, /if \(recommendations === undefined\) return null/,
+    'and draw nothing when the battery has not run — that is not the same as '
+    + 'an empty list, and collapsing the two is §1bq\'s rule in a new place')
+  assert.match(app, /recommendations\.length === 0/, 'with an empty case that SAYS so')
+  assert.match(app, /The optimizer ran and proposed nothing/,
+    'in words, because an empty heading reads as a broken panel')
+
+  const start = app.indexOf('function RecommendationsPanel')
+  const end = app.indexOf('function MetricsPanel', start)
+  assert.ok(start > 0 && end > start, 'the panel must be defined before the roll-up')
+  const panel = app.slice(start, end)
+  // It prints the optimizer's fields; it computes none of them. A threshold or a
+  // derived figure here would be a second source of truth about the same lever.
+  for (const field of ['rec.current', 'rec.proposed', 'rec.evidence', 'rec.confidence']) {
+    assert.ok(panel.includes(field), `the panel must render ${field}`)
+  }
+  assert.equal(/rec\.confidence\s*\?\?\s*0/.test(panel), false,
+    'an absent confidence must not become 0 — optimizer rule 4 sorts those last '
+    + 'precisely because absence is a gap, not a low score')
+  // The `? null :` guard, as a two-line shape: an absent confidence draws
+  // NOTHING rather than a zero. A single-line regex over a multiline ternary
+  // reads as if the code were one line, which is how a passing check asserts
+  // nothing — the same failure shape as the character-count window fixed in
+  // this file last round.
+  assert.match(panel, /\{rec\.confidence === undefined\s*\n?\s*\? null\s*\n?\s*:/,
+    'and it must be OMITTED when absent, which is the only honest rendering')
+  // Read-only, because there is no apply affordance anywhere in the server
+  // (dashboard.ts documents it) — a button here would be a control that does
+  // nothing, which is a worse lie than no control.
+  assert.equal(/<button|onClick|onChange/.test(panel), false,
+    'the panel must stay read-only: the server has no apply path to call')
+})
+
 test('the CSS the metrics panel uses exists, and the runs pane keeps the rail', () => {
   // A half-styled pane is worse than an absent one, and a pane that takes the
   // rail's flex would leave the run list it summarises with a few rows.
   const here = dirname(fileURLToPath(import.meta.url))
   const css = readFileSync(join(here, '..', 'web', 'shell.css'), 'utf8')
-  for (const selector of ['.rail .pane-metrics', '.metric-tiles', '.metric-tile', '.metric-alert']) {
+  for (const selector of [
+    '.rail .pane-metrics', '.metric-tiles', '.metric-tile', '.metric-alert',
+    '.rail .pane-proposals', '.proposal-list', '.proposal', '.proposal-diff',
+  ]) {
     assert.ok(css.includes(selector), `shell.css must style ${selector}`)
   }
+  assert.match(css, /\.rail \.pane-proposals \{\s*flex: 0 0 auto/,
+    'the proposals pane is sized by content, for the same reason as the metrics one')
   assert.match(css, /\.rail \.pane-metrics \{\s*flex: 0 0 auto/,
     'the metrics pane is sized by its content')
   assert.match(css, /\.rail \.pane-runs \{\s*flex: 1 1 auto/,

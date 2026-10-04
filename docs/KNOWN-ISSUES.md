@@ -85,7 +85,7 @@ rather than a list of letters:
 | 1bz | The alert said "15% of runs" and measured 15% of steps |
 | 1ca | A green e2e, on a bundle that had no panel in it |
 | 1cb | A composer answering in the open was denied as "nobody is watching" |
-| 1cc | `recommendations` was forwarded by nobody and set by nobody |
+| 1cc | `recommendations` was forwarded by nobody, set by nobody, and configured by nobody |
 
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
@@ -1428,7 +1428,7 @@ still reads the last record's value, so an old shape remains visible there;
 hiding it would be the roll-up inventing a measurement. The main checkout's
 tracked history was restored byte-for-byte afterwards.
 
-### 1cc. `recommendations` was forwarded by nobody and set by nobody
+### 1cc. `recommendations` was forwarded by nobody, set by nobody, and configured by nobody
 
 **Observed:** `projectLive` has forwarded `recommendations` since a65257b, and
 `grep -rn recommendations web/` found **zero** renderers — the same shape as the
@@ -1474,17 +1474,65 @@ wasn't there.
 - `state.setRecommendations([])` in place of the real list fails that assertion;
   so does disabling the guard.
 
-**Live, on a generated profile with no judge configured** — the honest result
-rather than a fabricated one:
+**And the live run then found the cause of its own empty list**, which is the
+second half of this entry. The first live run reported
 
 ```
 recommendations on the wire: []
 optimizer: no proposals — all 7 asked questions reported: judge error: no judge configured
 ```
 
-That is the shape §1bq requires: the key is PRESENT (the battery ran) and the
-list is EMPTY (the judge had nothing to say), instead of an absent key that
-reads as "nothing ran".
+on a profile whose patch row said `judge: laya` and `judgeBaseURL:
+http://127.0.0.1:8092`. Tracing it instead of accepting it:
+
+```
+mergeRowAndSettings({judge:'laya', judgeBaseURL:'…'})  →  { judge: undefined, judgeBaseURL: undefined }
+resolveJudge({judge: undefined})                      →  none (detectors only)
+```
+
+`mergeRowAndSettings` rebuilt its result from **three hand-enumerated scalars**
+(`confidenceThreshold`, `gatePolicies`, `gateMode`) plus the settings file, so
+every row key not on that list — all five judge keys — simply vanished. And
+`src/index.ts` resolves the judge from the MERGED config, deliberately (its own
+comment records the string-vs-constructed-Judge crash that made it do so). So a
+deployment configured a judge, got `NO_JUDGE`, saw no error anywhere, and its
+optimizer reported "no judge configured" forever. This is the plugin's stated
+worst outcome — *a configured judge that silently never runs* — reached not by a
+missing feature but by an allow-list nobody updated.
+
+Fixed by spreading the row and letting the file overwrite it:
+`{...config, ...user, router}`. Shorter than the enumeration, and the boundary
+the allow-list existed to protect is intact: the settings file is read through
+`USER_KEYS`, which never names `spec`, `dashboard` or `optimize`, so the file
+still cannot reach them. The assertion checks both halves — the five judge keys
+survive, and a row that carries `spec`/`optimize` still has them afterwards.
+
+**Live, with the judge actually running** — same profile, same task, and the
+three proposals it had been silently unable to produce:
+
+```
+recommendations: 3
+  prompt-cache      | prompt prefix stability not tracked by the l… -> keep the fixed prefix … | conf 0.6277
+  escalation        | stepsPerRung=5 (0 = never by count), escalat… -> escalate later: …          | conf 0.0507
+  tool-result-size  | tool output cap: 20000 bytes per result (too… -> cap tool results at 10000 …   | conf 0.002
+feed: optimizer: 3 proposal(s) from 20 recorded runs
+```
+
+and read off the live page's rendered text (§1bz's rule, one layer down):
+
+```
+heading: PROPOSALS
+text: ["PROPOSALS","3","Prompt cache","67%", …, "keep the fixed prefix …", …,
+       "noul P(yes) = 0.6743, confidence 0.6743; prefix reads stable"]
+```
+
+The low-confidence proposal sorts LAST and keeps its own number, which is
+optimizer rule 4 doing what it says: absence of confidence is a gap, not a zero.
+
+**The empty-list shape is still the right one** when there is genuinely no
+judge: the key is PRESENT (the battery ran) and the list EMPTY (nothing to say),
+instead of an absent key that reads as "nothing ran".
+
 
 ### 1cb. A composer answering in the open was denied as "nobody is watching"
 

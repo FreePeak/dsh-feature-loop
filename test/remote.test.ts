@@ -562,6 +562,49 @@ test('projectLive forwards the roll-up, and OMITS it when nothing was measured',
   assert.equal('metrics' in unmeasured, false, 'no metrics key when nothing was measured')
 })
 
+test("the row's OWN judge keys survive the settings merge", async () => {
+  // Measured 2026-10-04 on a profile whose patch row said
+  //   judge: laya
+  //   judgeBaseURL: http://127.0.0.1:8092
+  // and whose settings file was empty. `mergeRowAndSettings` returned NEITHER:
+  // it rebuilt the result from three hand-enumerated scalars plus the file, so
+  // any row key not on that list vanished. `resolveJudge` then read
+  // `undefined` → `NO_JUDGE`, so the deployment ran with no judge and no error,
+  // and the optimizer's seven questions all came back "no judge configured".
+  //
+  // This is the shape the plugin's own `resolveJudge` doc calls the worst
+  // available outcome — a configured judge that silently never runs — reached
+  // not by a missing feature but by an ALLOW-LIST that forgot a key.
+  const { mergeRowAndSettings } = await import('../src/remote.ts')
+  const merged = mergeRowAndSettings({
+    judge: 'laya',
+    judgeBaseURL: 'http://127.0.0.1:8092',
+    systemOneModel: 'laya',
+    judgeModel: 'gpt-4o-mini',
+    judgeTimeoutMs: 4000,
+    gateMode: 'ask',
+  })
+  for (const key of ['judge', 'judgeBaseURL', 'systemOneModel', 'judgeModel', 'judgeTimeoutMs']) {
+    assert.notEqual(merged[key], undefined,
+      `the row's ${key} must survive: a hand-enumerated allow-list drops any key `
+      + 'it was not updated for, and nothing downstream reports the loss')
+  }
+
+  // And the boundary the allow-list was written to protect is still intact: the
+  // settings file is read through `USER_KEYS`, which never names `spec`,
+  // `dashboard` or `optimize`, so spreading the whole row cannot let the FILE
+  // reach them. Asserted with a row that DOES carry one of them, so the check is
+  // about the row surviving rather than about the key being absent.
+  const withSpec = mergeRowAndSettings({
+    judge: 'laya',
+    spec: { goal: 'row only' },
+    dashboard: { enabled: false },
+    optimize: { history: 'row only' },
+  })
+  assert.deepEqual(withSpec.spec, { goal: 'row only' }, "the row's spec survives")
+  assert.deepEqual(withSpec.optimize, { history: 'row only' }, "and so does optimize")
+})
+
 test('projectLive with no published state reads empty, never zeros', async () => {
   const { projectLive } = await import('../src/remote.ts')
   assert.deepEqual(projectLive(undefined), { answers: true, pending: [], runs: [], feed: [] })

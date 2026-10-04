@@ -512,6 +512,53 @@ html.fl-standalone #root {
   border: 1px solid color-mix(in srgb, var(--warn, #d8a657) 55%, transparent);
   color: color-mix(in srgb, var(--warn, #d8a657) 80%, currentColor);
 }
+/* Same rule as the metrics pane: sized by its content, so a list of proposals
+   cannot take the rail from the run list beneath it. */
+.rail .pane-proposals {
+  flex: 0 0 auto;
+  max-height: 40cqh;
+  display: flex;
+  flex-direction: column;
+}
+.rail .pane-proposals .pane-scroll { overflow: auto; }
+.proposal-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.proposal {
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--border-soft) 70%, transparent);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.proposal-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.proposal-lever { font-size: 0.8rem; font-weight: 600; }
+/* The diff is the value: what is configured now, against what is proposed. The
+   two sides are distinguished by weight, not by colour alone — a colour-only
+   distinction is invisible to a screen reader and to anyone whose contrast
+   setting drops it. */
+.proposal-diff {
+  margin: 0;
+  font-size: 0.76rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+.proposal-current { text-decoration: line-through; opacity: 0.7; }
+.proposal-proposed { font-weight: 600; }
+.proposal .metric-note { padding: 0; }
+
 .rail .pane-runs {
   flex: 1 1 auto;
   min-height: 0;

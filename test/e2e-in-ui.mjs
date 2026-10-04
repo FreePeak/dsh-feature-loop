@@ -315,6 +315,27 @@ try {
       `the metrics pane must show a measured figure; it showed ${JSON.stringify(values)}`)
     console.log(`metrics: ${JSON.stringify(tiles)}`)
     await panel.screenshot({ path: 'docs/evidence/in-ui-metrics.png' })
+    // The proposals pane, asserted the same way. It is optional by design —
+    // the battery has not run until five closed turns do — so its ABSENCE is
+    // not a failure, but its presence must mean it drew real proposals and not
+    // an empty heading (§1cc's absent-vs-empty distinction, read off the page).
+    const proposals = page.locator('#proposals')
+    if (await proposals.count() > 0) {
+      const heading = await proposals.locator('h2').innerText()
+      const text = await proposals.innerText()
+      assert.match(heading, /PROPOSALS/i, 'the proposals pane must be labelled')
+      assert.ok(/proposal|ran and proposed nothing/i.test(text),
+        'the pane must say what it is showing, so an empty heading cannot pass')
+      if (!/ran and proposed nothing/i.test(text)) {
+        assert.ok(await proposals.locator('.proposal').count() > 0,
+          'a non-empty pane must carry proposals; an empty heading reading as a '
+          + 'rendered panel is exactly what this assertion exists for')
+      }
+      console.log(`proposals: ${JSON.stringify(text.split('\n').slice(0, 6))}`)
+      await proposals.screenshot({ path: 'docs/evidence/in-ui-proposals.png' })
+    } else {
+      console.log('proposals: pane absent (the battery has not run — five closed turns)')
+    }
   } else {
     assert.fail(
       'the measurements pane never appeared — the run closed a turn (the '
