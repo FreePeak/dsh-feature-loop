@@ -107,6 +107,12 @@ install: ## Build, add to a DSH profile, and verify the plugin is NOT inert
 	@echo "  peers resolve"
 	@echo "==> adding to profile '$(PROFILE)'"
 	@dsh plugin --profile $(PROFILE) add -w file:$(CURDIR)
+	@# Installing is not enough: a plugin composes only when it is listed in the
+	@# profile's `dsh.profile.bundles`. `dsh plugin add` adds the dependency and
+	@# nothing else, so without this the package is present, `--dump-config` has
+	@# none of its rows, and the deployment looks installed while governing
+	@# nothing — which is exactly the state the `web` profile was in.
+	@node scripts/add-bundle.mjs "$(HOME)/.dsh/profiles/$(PROFILE)/package.json" '@freepeak/dsh-feature-loop'
 	@echo "==> verifying composition"
 	@if dsh --profile $(PROFILE) --dump-config 2>/dev/null | grep -q 'feature-loop'; then \
 	  echo "  the 'feature-loop' row composed"; \
