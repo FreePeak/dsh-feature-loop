@@ -84,6 +84,7 @@ rather than a list of letters:
 | 1by | What the panel says about a history this plugin actually wrote |
 | 1bz | The alert said "15% of runs" and measured 15% of steps |
 | 1ca | A green e2e, on a bundle that had no panel in it |
+| 1cb | A composer answering in the open was denied as "nobody is watching" |
 
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
@@ -1425,6 +1426,54 @@ which is the median of the runs that were actually timed. `latest` deliberately
 still reads the last record's value, so an old shape remains visible there;
 hiding it would be the roll-up inventing a measurement. The main checkout's
 tracked history was restored byte-for-byte afterwards.
+
+### 1cb. A composer answering in the open was denied as "nobody is watching"
+
+**Observed:** none, until the question was asked. §1be's fixtures said a
+gated case needs "a watcher" and `dashboard.answers: false`, and they passed —
+but they asserted the fixture, not the deployment. The watcher is a Feature Loop
+page heartbeat: `noteWatcher` is called by `/api/state` polls and by
+`remote.live()`, and the HARNESS's own approval answerer never touches either.
+So a TTY operator reading `@deepseek-ai/dsh-client-ui-approval`'s composer was
+recorded as "nobody is watching", and `gateForTool` denied the ask up front with
+a sentence telling them to **open a page they did not need**. §1bb's refusal was
+therefore not only wrong for the model; it was wrong for the person.
+
+**Why, read from the harness rather than guessed.** The composer's answerer
+registers `ctx.remote.$on('approval/request')` over the GATEWAY's client stream
+(`packages/client/ui-approval/src/client/index.ts:104`), holds the request
+without calling `next()`, and settles it from the composer panel
+(`answerApproval` → `PendingApproval.result`); it delegates on teardown. None of
+that path touches the plugin. So the question "can a human answer?" has two
+inputs and the plugin was reading one of them.
+
+**Fix.** The gate asks both, and treats either as sufficient: a Feature Loop page
+polling (`watcherActive`) **or** a live UI client stream
+(`ctx.reflect.get('typertGateway', false).hasLiveClient()`). The probe is read
+defensively — a hoisted read of an unmounted service throws, and a throw inside
+the gate turns every gated call into an error rather than a decision — and
+`apply`'s disposer clears it, because the probe closes over a context that no
+longer exists. An absent gateway means no composer, which is the fail-closed
+reading.
+
+**The registry's claim guard is deliberately untouched.** §1be's rule still
+stands: the dashboard claims an ask only when a page is watching, so an unwatched
+ask **falls through** to the composer. This change fixes who may be *asked*, not
+who may *claim* — the two were conflated, and only one of them was ever wrong.
+
+**Verified** in both directions, and proven to bite: with the gateway reporting a
+live client and no page polling, an irreversible tool returns `ask`; reverting
+`someoneCanAnswer` to `watcherActive()` alone fails that test; with no gateway (or
+one reporting no client) it still returns `deny` with §1bb's two phrases.
+
+**One thing this does NOT fix, recorded rather than hidden:** the harness's
+`hasLiveClient()` answers "is a client stream open", not "is a human at this
+client". An idle browser tab satisfies it, and the ask then waits for the full
+`answerTimeoutMs` instead of being refused up front — the correct trade
+(never block work a human may be about to approve) at the cost of a slower
+failure. ponytail: a boolean beats a connect/disconnect stream protocol, and the
+upgrade path is a client generation counter on the gateway if the wait ever
+matters.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 

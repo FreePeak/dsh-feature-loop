@@ -832,7 +832,7 @@ export function gateForTool(
   // the composer, not the standalone page. So the refusal is ours, it carries
   // the reason a human would give, and it costs nothing when a page IS open:
   // the watcher is a TTL-kept fact, not a prediction.
-  if (!watcherActive()) {
+  if (!someoneCanAnswer()) {
     return {
       kind: 'deny',
       reason: `${reason} — nobody is watching: this run has no open dashboard or `
@@ -875,6 +875,41 @@ function stopArmed(policy: FeatureLoopPolicy): boolean {
 
 /** The sentinel's path, relative to a workspace root. */
 const STOP_SENTINEL = '.feature-loop/STOP'
+
+/**
+ * Whether any channel in this deployment could actually answer an `ask`.
+ *
+ * §1be's watcher test proved the OPPOSITE of what its fixtures claimed. The
+ * dashboard heartbeat (`noteWatcher`) says a Feature Loop page is polling; it
+ * says nothing about the HARNESS's own answerer, which is the composer panel
+ * that `@deepseek-ai/dsh-client-ui-approval` registers on `approval/request`
+ * and which never touches `/api/state` — so a TTY operator who is reading the
+ * composer was recorded as "nobody is watching", and their `ask` was denied up
+ * front with a sentence telling them to open a page they did not need.
+ *
+ * The refusal was therefore not only wrong for the model (§1bb): it was wrong
+ * for the person. The plugin cannot know who is at the keyboard, so it asks the
+ * two things it CAN see and treats either as sufficient:
+ *
+ *  1. a Feature Loop page polling (`watcherActive`), and
+ *  2. a live UI client stream on the gateway (`hasLiveClient`), which is what
+ *     carries the composer panel's `approval/request` consumer. Absent gateway,
+ *     absent answer — an assumption, and the fail-closed one.
+ *
+ * The registry's own claim guard (§1be) is unchanged: the dashboard still only
+ * claims an ask when a page is watching, so an unwatched ask falls through to
+ * the composer. That is the delegation this check must not overrule.
+ */
+let liveClientProbe: () => boolean = () => false
+
+/** Install the gateway's client-stream predicate. Not exported: `apply` owns it. */
+function setLiveClientProbe(probe: () => boolean): void {
+  liveClientProbe = probe
+}
+
+function someoneCanAnswer(): boolean {
+  return watcherActive() || liveClientProbe()
+}
 
 /**
  * The gate's verdict for one tool call.
@@ -2201,6 +2236,16 @@ export function apply(
 ): () => void {
   const policies = new WeakMap<Agent, FeatureLoopPolicy>()
   const fresh = (): FeatureLoopPolicy => createPolicy(options)
+  // The gateway's live-client predicate, read the same defensive way
+  // `resolveAgent` reads `agents`: hoisted or unbound access to a Cordis
+  // service throws, and a throw inside the gate would turn every gated call
+  // into an error instead of a decision. Absent gateway -> no composer, which
+  // is the fail-closed reading of "nobody can answer".
+  setLiveClientProbe(() => {
+    const gateway = ctx.reflect?.get?.('typertGateway', false) as
+      { hasLiveClient?: () => boolean } | undefined
+    return gateway?.hasLiveClient?.() === true
+  })
   /**
    * The policy for one agent, built on first sight.
    *
@@ -2717,6 +2762,10 @@ export function apply(
   )
 
   return () => {
+    // The probe closes over THIS context, so it must not outlive the plugin:
+    // a disposed context's service lookup is a different question, and the
+    // default is the safe one.
+    setLiveClientProbe(() => false)
     disposeStep()
     disposeRequest()
     disposeTurnStopping()

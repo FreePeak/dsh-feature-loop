@@ -53,15 +53,34 @@ function fakeCtx(): {
   ctx: unknown
   handler: (event: string) => Handler
   registered: () => string[]
+  /**
+   * Stand-in services the fake context exposes through `reflect.get`, which is
+   * how Cordis resolves a service a plugin depends on optionally.
+   *
+   * The gate reads `typertGateway.hasLiveClient()` this way (§1be): a hoisted
+   * read of an absent service throws, which would turn a gate DECISION into an
+   * error for every gated call. Tests put a gateway here when the case is about
+   * the composer, and leave it empty otherwise — the fail-closed default.
+   */
+  extras: Record<string, unknown>
 } {
   const handlers = new Map<string, Handler>()
+  const extras: Record<string, unknown> = {}
   return {
     ctx: {
       on(event: string, fn: Handler): () => void {
         handlers.set(event, fn)
         return () => { handlers.delete(event) }
       },
+      reflect: {
+        get(name: string, strict?: boolean): unknown {
+          if (strict === false) return extras[name]
+          if (name in extras) return extras[name]
+          throw new Error(`fakeCtx: no service "${name}"`)
+        },
+      },
     },
+    extras,
     handler(event: string): Handler {
       const fn = handlers.get(event)
       assert.ok(fn !== undefined, `no handler registered for "${event}"`)
@@ -116,8 +135,10 @@ async function call(
   options: CreatePolicyOptions,
   exec: { agent?: unknown, name: string, arguments?: unknown } = { agent: AGENT, name: 'write_file' },
   watched: boolean = true,
+  /** A live UI client stream, as the gateway would report it (§1be's other half). */
+  liveClient: boolean = false,
 ): Promise<{ decision: Decision, delegated: boolean }> {
-  const { ctx, handler } = fakeCtx()
+  const { ctx, handler, extras } = fakeCtx()
   // The dashboard is on by default and binds 127.0.0.1:8100 — one live server
   // per `apply`. The gate tests never read the page, so disable it here and
   // keep the one shared port for the tests that actually need a socket.
@@ -128,6 +149,9 @@ async function call(
   // where somebody could answer it.
   if (watched) noteWatcher()
   else clearWatcher()
+  // The composer's channel. A fake ctx with no gateway reports no live client,
+  // which is the fail-closed default every existing assertion keeps.
+  extras['typertGateway'] = { hasLiveClient: () => liveClient }
   const dispose = apply(ctx as never, { ...options, dashboard: { enabled: false } })
   let delegated = false
   const decision = await handler('tools/pre-execute')(

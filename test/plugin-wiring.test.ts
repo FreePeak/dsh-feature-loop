@@ -34,15 +34,31 @@ interface Decision { kind: string, reason?: string, messages?: { source?: { kind
 type Handler = (payload: unknown, next: () => Promise<Decision>) => Promise<Decision>
 
 /** A context that records handlers instead of dispatching them. */
-function fakeCtx(): { ctx: unknown, handler: (event: string) => Handler } {
+function fakeCtx(): {
+  ctx: unknown
+  handler: (event: string) => Handler
+  /** Optional services, reachable only through `reflect.get(name, false)`. */
+  extras: Record<string, unknown>
+} {
   const handlers = new Map<string, Handler>()
+  const extras: Record<string, unknown> = {}
   return {
     ctx: {
       on(event: string, fn: Handler): () => void {
         handlers.set(event, fn)
         return () => { handlers.delete(event) }
       },
+      // Cordis's own optional lookup. The gate reads `typertGateway` this way
+      // (§1be) because a hoisted read of an unmounted service throws, and a
+      // throw inside the gate is an ERROR for every gated call, not a decision.
+      reflect: {
+        get(name: string, strict?: boolean): unknown {
+          if (strict === false || name in extras) return extras[name]
+          throw new Error(`fakeCtx: no service "${name}"`)
+        },
+      },
     },
+    extras,
     handler(event: string): Handler {
       const fn = handlers.get(event)
       assert.ok(fn !== undefined, `no handler registered for "${event}"`)
@@ -89,12 +105,16 @@ const AGENT = {}
  * somebody COULD answer it. `watched: false` is how a test states the other
  * case rather than inheriting a TTL left behind by the previous test.
  */
-function mount(options: CreatePolicyOptions, watched: boolean = true): {
+function mount(options: CreatePolicyOptions, watched: boolean = true, liveClient: boolean = false): {
   ctx: unknown
   handler: (event: string) => Handler
   dispose: () => void
 } {
-  const { ctx, handler } = fakeCtx()
+  const { ctx, handler, extras } = fakeCtx()
+  // A live UI client stream is what carries the HARNESS's composer panel, which
+  // answers `approval/request` without ever polling this plugin (§1be). Off by
+  // default so every existing assertion keeps the fail-closed reading.
+  extras['typertGateway'] = { hasLiveClient: () => liveClient }
   // Stated, not inherited: the watcher is process-global with a TTL, so a test
   // that did not set it would depend on whichever test ran before it. Running
   // this one case alone passed while the suite failed, which is the whole
@@ -241,6 +261,32 @@ test('an ask with NO front end watching is refused here, not by the harness', as
   assert.match(decision.reason ?? '', /nobody is watching/)
   assert.match(decision.reason ?? '', /gateMode: deny/)
   dispose()
+})
+
+test('a composer answering with NO dashboard page is not "nobody watching"', async () => {
+  // §1be, the half its fixtures asserted and did not test. The watcher is a
+  // Feature Loop page heartbeat, so a TTY operator reading the HARNESS's own
+  // approval composer was recorded as "nobody is watching" and their ask was
+  // denied up front with a sentence telling them to open a page they did not
+  // need. Reading the harness settled what the plugin can actually see:
+  // `@deepseek-ai/dsh-client-ui-approval` consumes `approval/request` over the
+  // gateway's client stream and never touches `/api/state`.
+  //
+  // So the composer is a real channel, and its liveness is `hasLiveClient()`.
+  const { handler, dispose } = mount({ spec: SPEC }, false, true)
+  const { decision, delegated } = await tool(handler, 'write_file')
+  assert.equal(decision.kind, 'ask',
+    'the gate must ask, and let the composer answer — the registry still '
+    + 'declines the claim because no page is watching')
+  assert.equal(delegated, false)
+  dispose()
+
+  // And the fail-closed reading survives: a gateway that reports NO live client
+  // is the same as no gateway at all.
+  const closed = mount({ spec: SPEC }, false, false)
+  const refused = await tool(closed.handler, 'write_file')
+  assert.equal(refused.decision.kind, 'deny')
+  closed.dispose()
 })
 
 test('an agent-less call is still gated — the fail-open regression', async () => {
