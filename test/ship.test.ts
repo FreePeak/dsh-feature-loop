@@ -52,8 +52,18 @@ function fakeRun(over: Record<string, { code: number; stdout?: string; stderr?: 
 }
 
 /** A successful `gh pr create`. */
+/**
+ * `gh` succeeding, on a repo that advertises its base.
+ *
+ * The base is advertised rather than left blank because `gh`'s own fallback is
+ * what this change stops relying on: it reads the repository's default branch,
+ * which is `main` here and `master` on half the world's repositories.
+ */
 function ghOk(url = 'https://github.com/o/r/pull/42'): Record<string, { code: number; stdout?: string }> {
-  return { gh: { code: 0, stdout: `Creating pull request for fl/x into main\n${url}\n` } }
+  return {
+    gh: { code: 0, stdout: `Creating pull request for fl/x into main\n${url}\n` },
+    'git symbolic-ref': { code: 0, stdout: 'refs/remotes/origin/main\n' },
+  }
 }
 
 function opts(over: Partial<ShipOptions> = {}): ShipOptions {
@@ -79,7 +89,7 @@ describe('the happy path', () => {
     // The branch is created before staging, so the commit lands on it — a live
     // run pushed `fl/…` and got `src refspec does not match any` because the name
     // was assumed rather than made.
-    assert.deepEqual(calls.map(c => c.command), ['git', 'git', 'git', 'git', 'git', 'git', 'git', 'gh'])
+    assert.deepEqual(calls.map(c => c.command), ['git', 'git', 'git', 'git', 'git', 'git', 'git', 'git', 'gh'])
     assert.deepEqual(callFor(calls, 'add')?.args, ['add', '-A'])
     assert.deepEqual(callFor(calls, 'commit')?.args, ['commit', '-m', 'feat: Add a CSV converter'])
     assert.deepEqual(callFor(calls, 'push')?.args, ['push', '-u', 'origin', 'fl/add-a-csv-tool'])
@@ -127,6 +137,50 @@ describe('the happy path', () => {
     ship(opts({ run, goal: 'x'.repeat(300) }))
     const subject = callFor(calls, 'commit')?.args[2] ?? ''
     assert.ok(subject.length <= 78, `subject too long: ${subject.length}`)
+  })
+})
+
+describe('the pull request targets a real base branch', () => {
+  it('passes the base the remote advertises', () => {
+    // `gh` falls back to the repository's default branch, which is `main` here
+    // and `master` on half the world's repositories — so leaving it unset is a
+    // real way to open a PR against the wrong branch, not a hypothetical one.
+    const { run, calls } = fakeRun({
+      'git symbolic-ref': { code: 0, stdout: 'refs/remotes/origin/develop\n' },
+      'git diff': { code: 1 },
+      gh: { code: 0, stdout: 'https://github.com/o/r/pull/9\n' },
+    })
+    ship(opts({ run }))
+    const args = callFor(calls, 'pr')?.args ?? []
+    assert.deepEqual(args.slice(0, 2), ['pr', 'create'])
+    assert.equal(args.at(-2), '--base')
+    assert.equal(args.at(-1), 'develop')
+    assert.equal(args.includes('--head'), false, 'gh infers the head from the current branch')
+  })
+
+  it('falls back to the remote\'s heads when origin/HEAD is unset', () => {
+    // A repo cloned without `--track` has no origin/HEAD, which is common and
+    // silent — gh would then guess, and the guess is what this avoids.
+    const { run, calls } = fakeRun({
+      'git symbolic-ref': { code: 1, stderr: 'ref refs/remotes/origin/HEAD not found' },
+      'git ls-remote': { code: 0, stdout: 'abc\trefs/heads/master\ndef\trefs/heads/feature\n' },
+      'git diff': { code: 1 },
+      gh: { code: 0, stdout: 'https://github.com/o/r/pull/9\n' },
+    })
+    ship(opts({ run }))
+    assert.deepEqual(callFor(calls, 'pr')?.args.slice(-2), ['--base', 'master'])
+  })
+
+  it('omits --base rather than guessing when nothing can be determined', () => {
+    // A wrong guess is worse than gh's own fallback: gh at least knows the repo.
+    const { run, calls } = fakeRun({
+      'git symbolic-ref': { code: 1, stderr: 'no origin/HEAD' },
+      'git ls-remote': { code: 1, stderr: 'no remote' },
+      'git diff': { code: 1 },
+      gh: { code: 0, stdout: 'https://github.com/o/r/pull/9\n' },
+    })
+    ship(opts({ run }))
+    assert.equal(callFor(calls, 'pr')?.args.includes('--base'), false)
   })
 })
 
@@ -247,13 +301,18 @@ describe('degrading instead of failing', () => {
   it('passes the PR body through to gh verbatim', () => {
     const { run, calls } = fakeRun(ghOk())
     ship(opts({ run, body: 'body with **markdown** and\nnewlines' }))
-    assert.equal(calls.at(-1)?.args.at(-1), 'body with **markdown** and\nnewlines')
+    // Matched rather than positional: the gh call now ends with `--base <branch>`,
+    // and a positional "last argument" assertion silently drifts onto the wrong
+    // field the next time the argv changes.
+    const ghArgs = calls.at(-1)?.args ?? []
+    const bodyAt = ghArgs.indexOf('--body')
+    assert.equal(ghArgs[bodyAt + 1], 'body with **markdown** and\nnewlines')
   })
 
   it('logs every command it ran, so the report can show them', () => {
     const { run } = fakeRun(ghOk())
     const result = ship(opts({ run }))
-    assert.equal(result.log.length, 8)
+    assert.equal(result.log.length, 9)
     assert.deepEqual(result.log.find(l => l.args[0] === 'push')?.args.slice(0, 2), ['push', '-u'])
   })
 })
