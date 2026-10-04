@@ -71,8 +71,29 @@ if (DSH_URL === undefined || DSH_URL === '') {
 const outcome = process.argv[2] === 'reject' ? 'reject' : 'allow'
 const buttonLabel = outcome === 'allow' ? 'Allow once' : 'Reject'
 const buttonClass = outcome === 'allow' ? 'allow' : 'reject'
-const task = 'Create the file proof.txt in the current working directory, ' +
-  'containing exactly the word hello and nothing else, then read it back.'
+/**
+ * The task, and why it is not a one-liner.
+ *
+ * The single-write proof.txt run is the SMALLEST thing the gate can be asked
+ * about, and it is the only kind this script drove for its whole life: one ask,
+ * one click, one file. Human usability is not a property of that — it is a
+ * property of a run that needs a human SEVERAL times, where the cost of the
+ * ask (how long before the card appears, whether each card says WHICH file it
+ * is about) is what a real task feels.
+ *
+ * So the default task fixes a thing with several files, which under the
+ * generated profile's gate (`write` is irreversible, `bash` is irreversible)
+ * produces several asks. `E2E_TASK` overrides it for the one-write case.
+ */
+const defaultTask = [
+  'Fix three broken things in this project, in order, one file each.',
+  'For each: create the file if it is missing, then write the correct content, then read it back to confirm.',
+  '1. notes/first.md containing exactly: first note',
+  '2. notes/second.md containing exactly: second note',
+  '3. notes/third.md containing exactly: third note',
+  'Report only when all three exist.',
+].join(' ')
+const task = process.env.E2E_TASK ?? defaultTask
 
 /**
  * Where the file must land. `PROOF_DIR` is a REQUEST, not an authority: the
@@ -83,8 +104,8 @@ const task = 'Create the file proof.txt in the current working directory, ' +
 const requested = process.env.PROOF_DIR
 /** Filled in from the page's own note; `undefined` until it has been read. */
 let proofDir
-/** The file the run is expected to write. */
-let proof
+/** What the run is expected to write: relative paths and their contents. */
+let proofFiles = [['proof.txt', 'hello']]
 
 const executablePath = resolveChrome()
 const browser = await chromium.launch(executablePath === undefined ? {} : { executablePath })
@@ -134,12 +155,20 @@ try {
     console.log(`note: PROOF_DIR (${requested}) is not where the page says the loop runs (${fromNote}); following the page`)
   }
   proofDir = fromNote
-  proof = join(proofDir, 'proof.txt')
+  // The artefacts the task names, and the words they must hold. A single
+  // `proof.txt` was true for the one-line task and is a lie for the three-file
+  // one, so the assertions read the same list the task is built from.
+  proofFiles = task === defaultTask
+    ? [['notes/first.md', 'first note'], ['notes/second.md', 'second note'], ['notes/third.md', 'third note']]
+    : [['proof.txt', 'hello']]
   if (!existsSync(proofDir)) {
     console.error(`the page named a target this machine does not have: ${proofDir}`)
     process.exit(2)
   }
-  if (existsSync(proof)) rmSync(proof)
+  for (const [rel] of proofFiles) {
+    const abs = join(proofDir, rel)
+    if (existsSync(abs)) rmSync(abs)
+  }
 
   // Clear the thread before starting, because this script clicks the FIRST card
   // it finds. A run left over from an earlier invocation (or a loop the human
@@ -170,49 +199,88 @@ try {
     'REVIEW REQUESTED',
     { timeout: 180_000 },
   )
-  const card = await page.evaluate(() => {
-    const el = [...document.querySelectorAll('.card')]
-      .find(e => /APPROVAL REQUIRED/.test(e.innerText ?? '') && /REVIEW REQUESTED/.test(e.innerText ?? ''))
-    return (el?.innerText ?? '').replace(/\n+/g, ' | ')
-  })
-  console.log('card:', card)
-  assert.match(card, /REVIEW REQUESTED/, 'the card must carry the gate reason')
+  // Settle EVERY ask this run raises, one at a time, exactly as a human does.
+  //
+  // A run that needs a human several times is the case worth measuring, and it
+  // is where the loop's real costs show up: how long the card takes to appear
+  // after the model calls the tool, whether the card names WHICH call it is
+  // about, and whether the NEXT ask arrives at all once this one is settled.
+  // Each wait is printed, because "usable" is a number or it is a guess.
+  const waits = []
+  let settled = 0
+  for (let round = 0; round < 8; round += 1) {
+    const startedAt = Date.now()
+    const seen = await page.waitForFunction(
+      () => [...document.querySelectorAll('.card')]
+        .filter(e => /APPROVAL REQUIRED/.test(e.innerText ?? '') && /REVIEW REQUESTED/.test(e.innerText ?? ''))
+        .map(e => e.innerText ?? ''),
+      undefined,
+      { timeout: 180_000 },
+    ).then(handle => handle.jsonValue()).catch(() => undefined)
+    if (seen === undefined || seen.length === 0) break
+    const card = seen.at(-1).replace(/\n+/g, ' | ')
+    console.log(`ask ${String(settled + 1)} after ${String((Date.now() - startedAt) / 1000)}s: ${card}`)
+    assert.match(card, /REVIEW REQUESTED/, 'the card must carry the gate reason')
 
-  // Click the card the run actually produced. `askedAt` is unique per ask and
-  // is in the card's own text, so matching on it cannot hit a neighbour — and
-  // the wrong card is a silent failure: the click settles, the file is not
-  // written, and the assertion that follows reports the plugin rather than the
-  // harness that aimed the click.
-  const askedAt = /asked ([^|]+?)\s*\|/.exec(card)?.[1]?.trim()
-  const selector = askedAt === undefined
-    ? `.card button.${buttonClass}`
-    : `.card:has-text("asked ${askedAt}") button.${buttonClass}`
-  await page.locator(selector).first().click()
-  console.log('clicked', buttonLabel)
+    // Click the card the run actually produced. `askedAt` is unique per ask and
+    // is in the card's own text, so matching on it cannot hit a neighbour — and
+    // the wrong card is a silent failure: the click settles, the file is not
+    // written, and the assertion that follows reports the plugin rather than the
+    // harness that aimed the click.
+    const askedAt = /asked ([^|]+?)\s*\|/.exec(card)?.[1]?.trim()
+    const selector = askedAt === undefined
+      ? `.card button.${buttonClass}`
+      : `.card:has-text("asked ${askedAt}") button.${buttonClass}`
+    await page.locator(selector).first().click()
+    console.log(`  clicked ${buttonLabel}`)
+    waits.push(Date.now() - startedAt)
 
-  // Wait for the thread to drain rather than for the file: the file is the
+    // Wait for THIS ask to leave the screen before looking for the next one,
+    // or the loop re-clicks the same card.
+    await page.waitForFunction(
+      (at) => ![...document.querySelectorAll('.card')]
+        .some(e => /APPROVAL REQUIRED/.test(e.innerText ?? '') && (e.innerText ?? '').includes(`asked ${at}`)),
+      askedAt,
+      { timeout: 60_000 },
+    ).catch(() => undefined)
+    settled += 1
+  }
+  console.log(`asks settled: ${String(settled)} (waits ms: ${waits.join(', ') || 'none'})`)
+
+  // Wait for the thread to drain rather than for the files: the files are the
   // assertion, the thread is the UI's own report that it agrees.
   await page.waitForFunction(
     () => /No pending approval requests/.test(document.body.innerText),
     undefined,
-    { timeout: 30_000 },
+    { timeout: 60_000 },
   ).catch(() => undefined)
 
-  const exists = existsSync(proof)
-  const content = exists ? readFileSync(proof, 'utf8').trim() : undefined
-  console.log('proof:', proof, exists ? `exists (${JSON.stringify(content)})` : 'absent')
+  const found = proofFiles.map(([rel, want]) => {
+    const abs = join(proofDir, rel)
+    return { rel, abs, want, exists: existsSync(abs), content: existsSync(abs) ? readFileSync(abs, 'utf8').trim() : undefined }
+  })
+  for (const f of found) console.log('proof:', f.abs, f.exists ? `exists (${JSON.stringify(f.content)})` : 'absent')
 
   if (outcome === 'allow') {
-    assert.ok(exists, 'Allow once must let the write through')
-    assert.equal(content, 'hello')
-    console.log(`e2e-in-ui (allow): ${buttonLabel} → the file exists at ${proof}`)
+    for (const f of found) {
+      assert.ok(f.exists, `Allow once must let the write through: ${f.rel}`)
+      assert.equal(f.content, f.want, `${f.rel} must hold exactly the requested text`)
+    }
+    console.log(`e2e-in-ui (allow): ${String(settled)} × ${buttonLabel} → ${String(found.length)} file(s) written, waits ${waits.join(', ') || 'none'}ms`)
   } else {
-    assert.equal(exists, false, 'Reject must stop the write')
-    console.log(`e2e-in-ui (reject): ${buttonLabel} → no file at ${proof}`)
+    for (const f of found) {
+      assert.equal(f.exists, false, `Reject must stop the write: ${f.rel}`)
+    }
+    console.log(`e2e-in-ui (reject): ${String(settled)} × ${buttonLabel} → no file written, waits ${waits.join(', ') || 'none'}ms`)
   }
   await page.screenshot({ path: `docs/evidence/in-ui-${outcome}.png` })
 } finally {
   await browser.close()
   // Never leave the proof behind: a stale one makes the next run pass for free.
-  if (existsSync(proof)) rmSync(proof)
+  if (proofDir !== undefined) {
+    for (const [rel] of proofFiles) {
+      const abs = join(proofDir, rel)
+      if (existsSync(abs)) rmSync(abs)
+    }
+  }
 }

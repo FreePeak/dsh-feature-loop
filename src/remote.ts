@@ -13,8 +13,12 @@
  * `cordis.patch.yml`. That is a deliberate boundary: the patch layer is shared,
  * hand-authored deployment configuration whose comments explain why each value
  * is what it is, and a settings page that rewrote it would silently delete that
- * reasoning. The file this service writes is the same one the `dshloop` CLI
- * reads, so a value set here takes effect on both surfaces at the next load.
+ * reasoning. It is not a boundary against the settings taking EFFECT, though:
+ * `mergeRowAndSettings` below applies the file OVER the row on the nine keys the
+ * page owns, so a value set here changes the running gate at the next plugin
+ * load. For its first three weeks it did not, and both this header and the
+ * page's notice said so — accurately, which is worse: a correct warning about a
+ * feature that does not exist still ships the feature's UI.
  *
  * **Shape.** Every decision lives in an exported pure function; the cordis
  * class at the bottom only delegates. That is not decoration — the base class's
@@ -52,6 +56,220 @@ export interface JudgeStatus {
   reachable: boolean
   /** The endpoint's own health payload, or the reason it did not answer. */
   detail: string
+}
+
+/**
+ * The policy keys the settings page owns, and nothing else.
+ *
+ * The page can change the GATE — the policies per tool, the mode, the review
+ * budget, the judge and the checkpoint step. It cannot change `spec`,
+ * `dashboard` or `optimize`: those are blocks the page offers no control for,
+ * and a half-applied `spec` (a ceilings block with no prices, say) is a worse
+ * state than a clear boundary between "yours" and "the deployment's".
+ *
+ * An allowlist, not a denylist. A denylist silently starts applying any key a
+ * future version of the page adds, which is how a status page becomes policy
+ * without anybody deciding it should be.
+ */
+const USER_KEYS = [
+  'gatePolicies',
+  'gateMode',
+  'confidenceThreshold',
+  'reviewBudget',
+  'judgeThreshold',
+  'checkpointAtStep',
+  'judge',
+  'judgeBaseURL',
+  'systemOneModel',
+] as const
+
+/**
+ * The user's settings, shaped so they can be spread over the row's config.
+ *
+ * The settings file WINS over the patch row on every key in {@link USER_KEYS}.
+ * That is the whole point of the file — it exists so someone can widen or
+ * tighten their own gate without editing a shared patch layer other profiles
+ * inherit — and the file header, the settings notice and this function all say
+ * so. A row that wins would make the page a display surface again, which is the
+ * bug this replaces.
+ *
+ * `reviewBudget` and `judgeThreshold` need reshaping rather than passing
+ * through: the row takes them under `router`, the file stores them flat because
+ * that is the form a form has.
+ *
+ * @param rowConfig - the plugin patch row's `config:` block.
+ * @returns the partial policy the settings file overrides, empty when it holds
+ *   nothing applicable.
+ */
+export function userSettings(rowConfig: Record<string, unknown> = {}): Record<string, unknown> {
+  const settings = readSettings()
+  const out: Record<string, unknown> = {}
+  for (const key of USER_KEYS) {
+    const value = settings[key]
+    if (value === undefined) continue
+    if (key === 'reviewBudget' || key === 'judgeThreshold') {
+      const num = usableNumber(key, value)
+      out.router = { ...(out.router as Record<string, unknown> | undefined ?? {}), [key]: num }
+      continue
+    }
+    if (key === 'gatePolicies') {
+      const policies = usablePolicies(value)
+      if (policies !== undefined) out.gatePolicies = policies
+      continue
+    }
+    if (key === 'confidenceThreshold' || key === 'checkpointAtStep') {
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        throw new Error(
+          `settings: ${key} must be a finite number, received ${JSON.stringify(value)}. `
+          + 'The Feature Loop settings page writes one; a hand-edited file must match.',
+        )
+      }
+      out[key] = value
+      continue
+    }
+    const rule = KEY_RULES[key]
+    if (rule?.values !== undefined && !rule.values.includes(value as string)) {
+      throw new Error(
+        `settings: ${key} must be one of ${rule.values.join(', ')}, received ${JSON.stringify(value)}. `
+        + 'The Feature Loop settings page writes one; a hand-edited file must match.',
+      )
+    }
+    out[key] = value
+  }
+  return out
+}
+
+/**
+ * One file key's accepted values, and whether the value must be a number.
+ *
+ * A hand-edited file reaches the gate through this function and through nothing
+ * else — `saveSettings` validates the page's own writes and never sees it. Every
+ * key the page offers is therefore checked here, with the same values the page
+ * can produce, so a typo is answered rather than forwarded. Measured 2026-10-03
+ * with `gateMode: maybe`: the plugin accepted it, the gate fell through to
+ * `ask` (the safe default), the write was refused — and nothing anywhere said
+ * the word `maybe` was not one anybody understands. The refusal was luck again:
+ * `gateMode === 'deny'` is the only branch, so anything unrecognised is `ask`.
+ *
+ * ponytail: a table, because the alternative is a switch with the same six
+ * cases and no place to write why each one is what it is.
+ */
+const KEY_RULES: Record<string, { values?: readonly string[], numeric?: boolean }> = {
+  gateMode: { values: ['ask', 'deny'] },
+  judge: { values: ['none', 'chat', 'laya'] },
+  confidenceThreshold: { numeric: true },
+  checkpointAtStep: { numeric: true },
+}
+
+/**
+ * Whether a numeric settings value is one this file can act on.
+ *
+ * Both router keys go through `userSettings`, which DROPS a non-number rather
+ * than forwarding it — so `reviewBudget: "x"` is discarded and the row's own
+ * `0.1` stands. That is the fail-closed direction and it is already what
+ * happens; what was missing is that it happened SILENTLY. Measured 2026-10-03 on
+ * a generated profile, and the two shapes behave differently on purpose:
+ *
+ *   reviewBudget: 0     -> the plugin THROWS and the run exits 1
+ *   reviewBudget: "x"   -> the value is dropped, the run answers
+ *
+ * The first is right: a number outside `(0, 1]` reaches `AttentionRouter`, which
+ * rejects it loudly and the operator sees why. The second is right too — but the
+ * operator who typed `"x"` gets no sentence saying it was ignored. So the
+ * numeric keys are validated HERE, with the same band `AttentionRouter` uses, and
+ * a value outside it is thrown with that sentence rather than dropped.
+ *
+ * @param key - the settings key.
+ * @param value - whatever the file held under it.
+ * @returns the number, when the value is one the plugin can use.
+ * @throws Error naming the key and the accepted band.
+ */
+function usableNumber(key: string, value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(
+      `settings: ${key} must be a finite number, received ${JSON.stringify(value)}. `
+      + 'The Feature Loop settings page writes one; a hand-edited file must match.',
+    )
+  }
+  if (key === 'reviewBudget' && (value <= 0 || value > 1)) {
+    throw new Error(
+      `settings: reviewBudget must be in (0, 1], received ${String(value)}.`,
+    )
+  }
+  return value
+}
+
+/**
+ * The `gatePolicies` entries worth acting on, and nothing else.
+ *
+ * A hand-edited file is not `saveSettings` — the validator that rejects
+ * `gatePolicies: unknown tool class "wrong_tool_name"` never sees it — and this
+ * is the file `apply` builds the gate from. Measured 2026-10-03 with a row that
+ * said `write: auto`:
+ *
+ *   gatePolicies: { write: definitely-yes }  ->  the run still DENIED the write
+ *
+ * which is the answer a bad value happens to get today, and it is luck rather
+ * than design: `ReviewGate.check` compares the value against three known
+ * strings and every comparison misses, so the call falls through to the final
+ * `review: true`. Add a fourth branch to that chain and the same typo becomes an
+ * ungated write. So the values are filtered HERE rather than trusted, and a
+ * rejected one is DROPPED rather than fatal — dropping it restores the row's own
+ * policy, which is the fail-closed direction, whereas refusing to boot would
+ * turn a typo in a file nobody validates into an outage.
+ *
+ * The page writes exactly the six classes and three values, so a valid file
+ * passes through untouched: filtering is a guard for the keys a human typed by
+ * hand, not a second policy layer.
+ *
+ * @param value - whatever the file held under `gatePolicies`.
+ * @returns the recognised entries, or `undefined` when none are.
+ */
+function usablePolicies(value: unknown): Record<string, string> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const out: Record<string, string> = {}
+  for (const [cls, policy] of Object.entries(value as Record<string, unknown>)) {
+    if (!GATE_POLICY_CLASSES.includes(cls as GatePolicyClass)) continue
+    if (!GATE_POLICY_VALUES.includes(policy as GatePolicyValue)) continue
+    out[cls] = policy as GatePolicyValue
+  }
+  return Object.keys(out).length === 0 ? undefined : out
+}
+
+/**
+ * The row's policy values with the user's settings file applied OVER them.
+ *
+ * The row is the base and the FILE WINS, on the nine keys the settings page
+ * offers ({@link userSettings}, above). The page exists so someone can
+ * widen or tighten their own gate without editing a shared patch layer other
+ * profiles inherit; a row that won would leave the page a display surface, which
+ * is the bug this replaces.
+ *
+ * `router` is the one nested key, so it is merged rather than replaced — a
+ * settings file that sets only `reviewBudget` must not erase the row's
+ * `judgeThreshold`. Everything else here is a scalar or an opaque block
+ * (`gatePolicies`, `dashboard`, `optimize`, `spec`) that the file is not allowed
+ * to touch at all.
+ *
+ * @param config - the row's validated config.
+ * @returns the keys `apply` should be given.
+ */
+export function mergeRowAndSettings(config: Record<string, unknown>): Record<string, unknown> {
+  const user = userSettings()
+  const rowRouter: Record<string, unknown> = {
+    ...(config.reviewBudget === undefined ? {} : { reviewBudget: config.reviewBudget }),
+    ...(config.judgeThreshold === undefined ? {} : { judgeThreshold: config.judgeThreshold }),
+    ...(config.checkpointAtStep === undefined ? {} : { checkpointAtStep: config.checkpointAtStep }),
+  }
+  const userRouter = (user.router ?? {}) as Record<string, unknown>
+  const router = { ...rowRouter, ...userRouter }
+  return {
+    confidenceThreshold: config.confidenceThreshold,
+    gatePolicies: config.gatePolicies,
+    gateMode: config.gateMode,
+    ...user,
+    router,
+  }
 }
 
 /** Everything the panel shows at a glance. */
@@ -249,6 +467,22 @@ export function validateSettings(settings: FeatureLoopSettings): Record<string, 
   }
   for (const key of NUMERIC_KEYS) {
     const value = clean[key]
+    // `''` means "not set", and every other validator in the harness spells that
+    // that way — so a form field left blank must not be read as a typo. The
+    // settings page sends exactly this: `checkpointAtStep` is `undefined` when
+    // the input is empty, and `String(undefined)` is what the form serialises
+    // when the operator has not touched it.
+    //
+    // Measured 2026-10-03 against the real page in a real browser: with this
+    // check as it was, pressing **Save** on an UNCHANGED panel answered
+    // `save: checkpointAtStep must be a finite number, received ""` and wrote
+    // nothing. Every other field validated, the notice turned red, and a person
+    // reading it concludes the settings page is broken rather than that one
+    // field is optional — which it has always been, in the patch row too.
+    if (value === '' || value === null) {
+      delete clean[key]
+      continue
+    }
     if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value))) {
       throw new Error(`${key} must be a finite number, received ${JSON.stringify(value)}`)
     }
@@ -318,15 +552,20 @@ export function saveSettings(
     //     `read: always-approve`, then building the policy the way `apply()`
     //     does, yields `gateMode: ask` and no gate on `read`.
     //
-    // So the file is a record of what the settings PAGE was showing, and
-    // `buildStatus` is what reads it back — which is how the page can display a
-    // value it has not applied. Writing a header that says otherwise is how the
-    // next person spends a day on it.
+    // So the file is now the SECOND HALF of the policy: `mergeRowAndSettings`
+    // applies it OVER the patch row on the nine keys the page owns, and the
+    // header below says exactly that. It used to be a record of what the page
+    // was showing and nothing else, and the header said so — accurately, which
+    // is worse: a correct warning about a feature that does not exist still
+    // ships the feature's UI.
     '# Written by the Feature Loop settings page.\n'
-    + '# READ BY: the settings page only (buildStatus merges it over the patch row).\n'
-    + '# NOT READ BY: apply() — the running gate is built from the profile patch\n'
-    + "#   row alone, so nothing here changes policy until that is wired.\n"
-    + '# The patch row is the only place a setting takes effect today.\n'
+    + '# READ BY: the running gate. The values below are applied OVER the profile\n'
+    + "#   patch row (mergeRowAndSettings), so this file wins on the keys it sets.\n"
+    + '# SCOPE: the gate keys only — gatePolicies, gateMode, confidenceThreshold,\n'
+    + '#   reviewBudget, judgeThreshold, checkpointAtStep and the judge triple.\n'
+    + '#   spec, dashboard and optimize stay in the patch row: the page offers no\n'
+    + '#   control for them, and a half-applied block is worse than a boundary.\n'
+    + '# Takes effect at the next plugin load; the Status tab shows what is stored.\n'
     + stringifyYaml(merged),
   )
   return merged
@@ -415,18 +654,24 @@ export function projectLive(source: LiveSource | undefined): FeatureLoopLive {
  * nothing and invite someone to "fix" it.
  *
  * @param rowConfig - the plugin patch row's `config:` block.
- * @param settings - the merged settings, from {@link readSettings}.
+ * @param rowSettings - the user settings, read lazily so a caller can inject
+ *   them without touching the real config file.
  * @param probe - an optional pre-computed probe, so tests need no network.
  * @param dashboardURL - the live dashboard URL when the policy row published one.
  * @returns the status payload the page renders.
  */
 export async function buildStatus(
   rowConfig: Record<string, unknown>,
-  settings: Record<string, unknown> = readSettings(),
+  rowSettings: () => Record<string, unknown> = userSettings,
   probe?: { reachable: boolean, detail: string },
   dashboardURL?: string,
 ): Promise<FeatureLoopStatus> {
-  const effective = { ...rowConfig, ...settings }
+  // `mergeRowAndSettings` is the SAME function the plugin row is built with, so
+  // the panel cannot report one precedence while the gate uses another — which
+  // is the failure this replaces: the page showed `{...rowConfig, ...settings}`
+  // while `apply` consulted the row alone, so a value could be displayed as
+  // effective and decide nothing. One merge, two readers.
+  const effective = { ...rowConfig, ...rowSettings() }
   const kind = typeof effective.judge === 'string' ? effective.judge : 'none'
   const baseURL = typeof effective.judgeBaseURL === 'string'
     ? effective.judgeBaseURL

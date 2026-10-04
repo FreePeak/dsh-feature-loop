@@ -221,7 +221,7 @@ end). Regenerate rather than hand-edit on future changes.
 
 - **`run_tests` timeouts kill the direct child, not grandchildren** (marked
   `ponytail:` in `src/tools.ts`; upgrade path is detached spawn + `kill(-pid)`).
-- **The price table is illustrative.** `mimo-v2.5` runs on a subscription, so
+- **The price table is illustrative.** the gateway runs on a subscription, so
   marginal cost is near zero; the rates exist so a ceiling has something to
   measure against.
 - **Laya** (phase 3, verified live 2026-09-23): all three primitives + full

@@ -78,13 +78,13 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { budgetStopText, budgetWarnText, escalationText, reviewText } from './messages.ts'
-// Type-only: `summarize` reads data, never the disk, so the module ships no
-// fs imports into the plugin's graph (the same stance `metrics.ts` documents
-// for its own `RunRecord` import). The history I/O (`runlog.ts`) is loaded
-// dynamically only when a deployment configures `optimize.history`, so a
-// deployment that never asked for run-history keeps the plugin's graph
-// exactly as it was before this feature existed.
+// Type-only: `summarize` reads data, never the disk, so that module ships no
+// fs imports of its own. `runlog.ts` — which does touch the disk — is imported
+// STATICALLY on purpose; it used to be a dynamic import inside the turn closer,
+// and a load that never settles loses the record with no error at all
+// (KNOWN-ISSUES §1bw). A static import resolves at load, before any run.
 import { summarize } from './metrics.ts'
+import { appendRecord, readRecords, specFingerprint, taskKeyOf } from './runlog.ts'
 import type { RunRecord } from './runlog.ts'
 import type { RunOutcome } from './runlog.ts'
 
@@ -112,6 +112,22 @@ declare module '@deepseek-ai/cordis' {
      * @param next - the rest of the answerer waterfall.
      * @returns the outcome the ask is resolved with.
      */
+    /**
+     * The outcome of a tool call that RAN. `tools/pre-execute` runs before the
+     * body, so only this event can report `isError` — and without it a failed
+     * command is indistinguishable from a successful one at the step boundary.
+     *
+     * Declared locally for the same reason as `approval/request`: the package
+     * that owns this event is not among this repo's installed peers, so its
+     * `Events` augmentation is absent and `ctx.on('tools/post-execute', …)`
+     * would not typecheck at all.
+     */
+    'tools/post-execute'(
+      this: unknown,
+      exec: { agent?: Agent, call?: { id?: string }, name?: string },
+      result: { isError?: boolean },
+      next: () => Promise<unknown>,
+    ): Promise<unknown>;
     'approval/request'(
       this: unknown,
       question: ApprovalQuestion,
@@ -174,6 +190,12 @@ export interface FeatureLoopPolicy {
   /** The explainer that authors review briefs for dashboard asks. */
   explainer: Explainer
   /** The step history the detectors read. */
+  /**
+   * The detectors' output sink. Carried from {@link CreatePolicyOptions.onSignals}
+   * so `reviewStep` — which takes only the policy — can reach it. See that field
+   * for why it exists at all.
+   */
+  onSignals?: (signals: readonly ReviewSignal[], step: number) => void
   history: StepObservation[]
   /**
    * The tool call observed since the last step boundary, not yet committed to
@@ -347,6 +369,15 @@ export interface CreatePolicyOptions {
   /** Attention-router overrides: review budget and judge threshold. */
   router?: ConstructorParameters<typeof AttentionRouter>[0]
   /**
+   * Called with the detectors' output for every step. NOT for deployments — it
+   * exists because `error-cascade` (one of only two CRITICAL signals) had no
+   * reachable test: the signals live inside `prepareReview`'s return value and
+   * the dashboard state is internal, so the only test of it called
+   * `noteToolOutcomes` directly and proved nothing about the plugin path (§1r).
+   * An assertion that cannot see the value it names is the §1n shape.
+   */
+  onSignals?: (signals: readonly ReviewSignal[], step: number) => void
+  /**
    * How a review is expressed at the tool boundary. Defaults to `ask` so a
    * human can approve it in the Web UI; set `deny` for unattended runs.
    */
@@ -398,6 +429,7 @@ export function createPolicy(options: CreatePolicyOptions): FeatureLoopPolicy {
     judge: options.judge ?? NO_JUDGE,
     explainer: options.explainer ?? NO_EXPLAINER,
     history: [],
+    ...options.onSignals === undefined ? {} : { onSignals: options.onSignals },
     pending: undefined,
     lastConfidence: undefined,
   }
@@ -489,6 +521,8 @@ export async function reviewStep(
     budgetRemaining: policy.router.budgetRemaining(),
   })
 
+  policy.onSignals?.(preparation.signals, step)
+
   // The judge answers about the *previous* step, because the current one has
   // not happened yet. An absent answer is not evidence of confidence, so it is
   // passed through as `undefined` and the gate asks rather than proceeds.
@@ -566,21 +600,84 @@ export function escalationForStep(
  * @param toolName - the tool about to run.
  * @returns the review decision: proceed, prompt a human, or refuse.
  */
+/**
+ * The thing this call is about, in a form a human can act on.
+ *
+ * Measured 2026-10-03 on a three-file task: five asks arrived, three of them
+ * `write`, and every card said the same thing — "write: irreversible is always
+ * approved by a human". A person cannot tell ask 3 from ask 4 without reading
+ * the run, and a gate whose cards are indistinguishable trains the click that
+ * makes it worthless.
+ *
+ * `tools/pre-execute` already receives the PARSED ARGUMENTS (this file stores
+ * their key for the step record two lines above), so the fact was in hand and
+ * discarded. Only path-like string values are used: a review prompt should
+ * never quote a file's contents back at the human who is deciding whether to
+ * write them.
+ *
+ * Returns '' when nothing names the call — the previous behaviour, unchanged.
+ *
+ * @param toolName - the tool about to run.
+ * @param args - its parsed arguments.
+ * @returns ` — <subject>` or an empty string.
+ */
+function subjectOf(toolName: string, args: unknown): string {
+  if (args === null || typeof args !== 'object' || Array.isArray(args)) return ''
+  const record = args as Record<string, unknown>
+  const path = record['file_path'] ?? record['path'] ?? record['filePath']
+  const subject = typeof path === 'string' && path !== ''
+    ? path
+    // `bash` names its work in the command, and a truncated one is still enough
+    // to tell ask 1 from ask 5.
+    : typeof record['command'] === 'string' && record['command'] !== ''
+      ? record['command'].slice(0, 80)
+      : undefined
+  // The subject must be checkable by the eye: a newline would break the card
+  // into two paragraphs, and a very long path is not what was being asked.
+  if (subject === undefined || /[\n\r]/.test(subject) || subject.length > 120) return ''
+  return ` — ${toolName} ${subject}`
+}
+
 export function gateForTool(
   policy: FeatureLoopPolicy,
   toolName: string,
+  args: unknown,
 ): GateVerdict {
   if (policy.gate === undefined) return { kind: 'proceed' }
   const reversibility = resolveReversibility(toolName, policy.spec?.actuator)
   const decision = policy.gate.check(toolName, reversibility, policy.lastConfidence)
   if (!decision.review) return { kind: 'proceed' }
-  const reason = reviewText(decision.reason, decision.source)
+  const reason = reviewText(`${decision.reason}${subjectOf(toolName, args)}`, decision.source)
   // The mode decides *how* the human is asked, never *whether* the call is
   // questioned: both branches stop the call, and `ask` still fails closed if no
   // approval channel answers.
-  return policy.gateMode === 'deny'
-    ? { kind: 'deny', reason }
-    : { kind: 'ask', reason }
+  if (policy.gateMode === 'deny') return { kind: 'deny', reason }
+
+  // `ask` with nobody to ask, refused HERE rather than by the harness.
+  //
+  // The harness's own fail-closed is correct and its message is
+  //   tool "write" requires approval, but no approval channel is available
+  // which a run reports as "the sandbox denied it" — the model is told the
+  // filesystem objected, which is a different fact and sends it looking for a
+  // narrower tool. Measured 2026-10-03 on a headless profile: the model spent
+  // its remaining budget reasoning about whether Bash was a legitimate
+  // alternative and then produced no work.
+  //
+  // This plugin can see the answerer directly: the dashboard registers a
+  // watcher when a page opens or polls /api/state (approvals.ts), and
+  // `ask` with no watcher cannot be answered by anything — not the harness, not
+  // the composer, not the standalone page. So the refusal is ours, it carries
+  // the reason a human would give, and it costs nothing when a page IS open:
+  // the watcher is a TTL-kept fact, not a prediction.
+  if (!watcherActive()) {
+    return {
+      kind: 'deny',
+      reason: `${reason} — nobody is watching: this run has no open dashboard or `
+        + 'composer, so no human can answer an approval. Open the Feature Loop page '
+        + `or set gateMode: deny to refuse up front.`,
+    }
+  }
+  return { kind: 'ask', reason }
 }
 
 /**
@@ -717,16 +814,21 @@ function spendSettledUsage(policy: FeatureLoopPolicy, agent: Agent | undefined):
  * @param event - the appended event, exactly as recorded.
  * @returns the turn number and the reason kind, or `undefined`.
  */
-function asTurnEnd(event: unknown): { turn: number, reasonKind: string } | undefined {
+function asTurnEnd(event: unknown): { turn: number, reasonKind: string, time: number } | undefined {
   if (event === null || typeof event !== 'object') return undefined
-  const record = event as { readonly type?: unknown, readonly data?: unknown }
+  const record = event as { readonly type?: unknown, readonly data?: unknown, readonly time?: unknown }
   if (record.type !== 'turn/end') return undefined
   if (record.data === null || typeof record.data !== 'object') return undefined
   const data = record.data as { readonly turn?: unknown, readonly reason?: unknown }
   if (typeof data.turn !== 'number' || !Number.isFinite(data.turn)) return undefined
   const reason = data.reason as { readonly kind?: unknown } | null | undefined
   if (reason === null || typeof reason !== 'object' || typeof reason.kind !== 'string') return undefined
-  return { turn: data.turn, reasonKind: reason.kind }
+  // `SessionEvent.time` is Unix epoch ms on EVERY event, stamped by the
+  // harness's clock. It is the plugin path's own stopwatch: §1bu made the
+  // runner carry a real `wallMs`, and this is the same measurement here, from
+  // data the harness already writes rather than one the plugin never started.
+  const time = typeof record.time === 'number' && Number.isFinite(record.time) ? record.time : undefined
+  return { turn: data.turn, reasonKind: reason.kind, ...(time === undefined ? {} : { time }) }
 }
 
 /**
@@ -741,7 +843,7 @@ function sessionIdOf(session: unknown): string {
 }
 
 /** Use {@link asTurnEnd} — the structural narrow on the `turn/end` payload. */
-export function isTurnEnd(event: unknown): { turn: number, reasonKind: string } | undefined {
+export function isTurnEnd(event: unknown): { turn: number, reasonKind: string, time?: number } | undefined {
   return asTurnEnd(event)
 }
 
@@ -755,7 +857,15 @@ export function isTurnEnd(event: unknown): { turn: number, reasonKind: string } 
  */
 interface TurnRecordInput {
   session: unknown
-  event: { turn: number, reasonKind: string }
+  /** The closed turn: its number, why it ended, and the harness's own `time`. */
+  event: { turn: number, reasonKind: string, time?: number }
+  /**
+   * When the turn opened, from `turn/start` in the session log.
+   *
+   * `undefined` when the log does not say — and then the record says so
+   * (`wallMs` absent) rather than reporting a zero for a run that took minutes.
+   */
+  openedAt?: number
   options: Parameters<typeof createPolicy>[0] & { dashboard?: DashboardConfig }
   policyFor: (agent: Agent | undefined) => FeatureLoopPolicy
   /** Live agent lookup keyed by session id (`ctx.agents.get`). */
@@ -779,10 +889,21 @@ interface TurnRecordInput {
  * @param policy - the agent's policy, for the budget verdict when present.
  * @returns the run outcome to record.
  */
-function outcomeOf(reasonKind: string, policy: FeatureLoopPolicy): RunOutcome {
+function outcomeOf(reasonKind: string, policy: FeatureLoopPolicy, steps: number): RunOutcome {
   if (reasonKind === 'aborted') return 'aborted'
   if (reasonKind === 'error') return 'error'
   if (reasonKind === 'blocked') return 'blocked'
+  // A turn that took no step is not a successful turn. `completed` here means
+  // the transport closed, and the loop's own success check lives in the CLI
+  // runner — so without this a turn that did nothing at all is recorded as
+  // `goal-met`, and the roll-ups read it as one.
+  //
+  // Measured 2026-10-04 on the committed history: 13 of 15 records had
+  // `steps: 0` and `costUSD: 0`, 12 of them `goal-met`. `summarize` reported
+  // `goalMetRate 0.867` — an 87% success rate computed almost entirely from
+  // turns that touched nothing. Every other number in that roll-up was
+  // correct; this one was a claim about work that never happened.
+  if (steps === 0) return 'model-stop'
   // `completed`, `max-tokens` and `interrupted` all say the transport closed
   // the turn without refusing it. Whether the loop *succeeded* is then a
   // question for the ceilings: a turn the harness calls completed that spent
@@ -807,20 +928,63 @@ function outcomeOf(reasonKind: string, policy: FeatureLoopPolicy): RunOutcome {
  * turns a failed append into a feed line, and this function itself never
  * catches: a record that failed to land must be visible, not swallowed.
  *
- * Two loads are dynamic, both deliberate:
+ * `runlog.ts` is imported STATICALLY, and that is a fix rather than a style:
+ * it used to be `await import('./runlog.ts')` here, justified as keeping
+ * `node:fs` out of the plugin's static graph — but `readFileSync` from
+ * `node:fs` has been a static import at the top of this file for some time, so
+ * the justification was stale and the cost was the defect.
  *
- * - `runlog.ts` (fs + crypto) is imported only here so the plugin's static
- *   graph ships no `node:fs` (see the import comment at the top of this
- *   module). `metrics.ts` is static because it is pure arithmetic.
- * - `optimize.ts` is NOT imported: `planEnvelope`'s P95 derivation belongs to
- *   the CLI's pre-run planning, not to a per-turn hook. What the dashboard
- *   needs is the roll-up (`summarize`), which is already imported statically.
+ * Measured 2026-10-04 on a real web run: the listener fired, `asTurnEnd`
+ * accepted the `turn/end`, this function was entered (its first statement
+ * printed a feed note), and the very next statement — the dynamic import —
+ * never resolved. No rejection, so the caller's `.catch` never ran, no record
+ * was written and nothing was logged. A load that never settles loses the write
+ * silently, which is the worst shape a dependency can have.
+ *
+ * `optimize.ts` is still NOT imported: `planEnvelope`'s P95 derivation belongs to
+ * the CLI's pre-run planning, not to a per-turn hook. What the dashboard needs is
+ * the roll-up (`summarize`), which is already imported statically.
  *
  * @param input - the closed turn and everything the record is built from.
  */
+/**
+ * When this turn opened, from the session's own log.
+ *
+ * `turn/start` and `turn/end` are both logged and both carry `time` (Unix epoch
+ * ms, stamped by the harness), so their difference IS the run's wall clock —
+ * the plugin path's equivalent of the runner's `performance.now()` span (§1bu).
+ * Structural like every other session read here: a session without `eventAt`
+ * yields `undefined`, and an unmeasured run says so rather than reporting `0`.
+ *
+ * Bounded backward walk, because this runs on every closed turn and a turn is
+ * short: a full scan of a long session per turn is a cost the measurement does
+ * not justify.
+ *
+ * @param session - the session that closed the turn.
+ * @param turn - the 1-based turn number.
+ * @returns Unix epoch ms, or `undefined` when the log does not say.
+ */
+function turnStartTime(session: unknown, turn: number): number | undefined {
+  const typed = session as {
+    readonly seq?: unknown
+    readonly eventAt?: (seq: unknown) => { readonly type?: unknown, readonly data?: unknown, readonly time?: unknown } | undefined
+  } | null | undefined
+  const at = typed?.eventAt
+  const seq = typed?.seq
+  if (typeof at !== 'function' || typeof seq !== 'number') return undefined
+  for (let cursor = seq - 1; cursor >= 0 && cursor >= seq - 200; cursor -= 1) {
+    const event = at(cursor)
+    if (event === undefined || event === null || typeof event !== 'object') continue
+    if (event.type !== 'turn/start') continue
+    const data = event.data as { readonly turn?: unknown } | null | undefined
+    if (data === null || typeof data !== 'object' || data.turn !== turn) continue
+    return typeof event.time === 'number' && Number.isFinite(event.time) ? event.time : undefined
+  }
+  return undefined
+}
+
 async function recordTurn(input: TurnRecordInput): Promise<void> {
-  const { session, event, options, policyFor, resolveAgent, state, historyPath } = input
-  const runlog = await import('./runlog.ts')
+  const { session, event, openedAt, options, policyFor, resolveAgent, state, historyPath } = input
   const agent = agentOfSession(session, resolveAgent)
   const policy = policyFor(agent)
   const snapshot = policy.budget?.snapshot()
@@ -829,32 +993,48 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
   const steps = snapshot?.steps ?? 0
   const record: RunRecord = {
     runId: sessionIdOf(session),
-    startedAt: now,
-    endedAt: now,
+    startedAt: openedAt ?? now,
+    endedAt: event.time ?? now,
     pass: 1,
     passes: 1,
-    taskKey: spec === undefined ? 'none' : runlog.taskKeyOf(spec.goal),
-    outcome: outcomeOf(event.reasonKind, policy),
+    taskKey: spec === undefined ? 'none' : taskKeyOf(spec.goal),
+    outcome: outcomeOf(event.reasonKind, policy, steps),
     steps,
     maxSteps: spec?.maxSteps ?? 0,
     costUSD: snapshot?.spentUSD ?? 0,
     budgetUSD: spec?.costBudgetUSD ?? 0,
     unpricedSteps: snapshot?.unpricedSteps ?? 0,
     byRoute: snapshot === undefined ? {} : { ...snapshot.byRoute },
+    // Absent, not zero. This path has no seam that times a step — the runner's
+    // own records are the ones that carry a measurement — so `0` and
+    // `'round-trip'` were a run that took minutes reporting "0 ms, round trip".
+    // `summarize` reads both, so the absence has to be in the record.
     stepLatencyMs: [],
-    wallMs: 0,
-    latencyKind: 'round-trip',
+    // The harness's own clock: the `turn/start` and `turn/end` events this
+    // record is written from. So the plugin path reports a REAL wall clock
+    // rather than an absence (§1bt made it optional; §1bu gave the runner one,
+    // and this is the same measurement for the harness path). Per-step latency
+    // stays absent: the plugin has no seam around a model call, only the turn
+    // boundary — and `latencyKind` stays absent because nothing was timed at
+    // that resolution.
+    wallMs: openedAt === undefined || event.time === undefined ? undefined : event.time - openedAt,
+    latencyKind: undefined,
     signals: policy.history.length === 0 ? [] : policy.history.map(() => ({ kind: 'detector', severity: 'info' })),
     judgeScores: [],
-    reviewFraction: 0,
-    specFingerprint: spec === undefined ? 'none' : runlog.specFingerprint(spec),
+    // From the router that counted them. `recordTurn` wrote a literal `0` here,
+    // so every harness-path record reported a human-escalation rate of exactly
+    // zero — and `summarize`'s "Human escalation rate > 15%" alert could never
+    // fire, however many reviews the loop had actually requested. The count was
+    // on `policy.router` the whole time, exposed by its own `stats()`.
+    reviewFraction: policy.router.stats().fraction,
+    specFingerprint: spec === undefined ? 'none' : specFingerprint(spec),
   }
-  runlog.appendRecord(historyPath, record)
+  appendRecord(historyPath, record)
   // The Metrics panel reads what just landed: the roll-up is over the file,
   // not over memory, so a resumed process that never saw the earlier turns
   // still renders their history. A torn line is counted and skipped by the
   // reader, never thrown — the panel shows a smaller history, not an error.
-  const { records, malformed } = runlog.readRecords(historyPath)
+  const { records, malformed } = readRecords(historyPath)
   state.setMetrics(summarize(records, { malformed }))
 }
 
@@ -1074,7 +1254,10 @@ export const inject = ['agents']
  */
 export function apply(
   ctx: Context,
-  options: Parameters<typeof createPolicy>[0] & { dashboard?: DashboardConfig, rowConfig?: Record<string, unknown> } = {},
+  options: Parameters<typeof createPolicy>[0] & {
+    dashboard?: DashboardConfig
+    rowConfig?: Record<string, unknown>
+  } = {},
 ): () => void {
   const policies = new WeakMap<Agent, FeatureLoopPolicy>()
   const fresh = (): FeatureLoopPolicy => createPolicy(options)
@@ -1112,11 +1295,28 @@ export function apply(
 
   // Agent id === session id in DSH (`AgentRegistry.get`). Structural: a test
   // double without `agents` still mounts; live cordis always injects it.
+  //
+  // `ctx.agents` is a cordis PROXY, and the proxy THROWS on a missing service
+  // rather than returning undefined — so the `agents?:` type above is a lie that
+  // cost a real run: `resolveAgent` was called on the `session/event` fiber,
+  // where `AgentRegistry` had not been injected, the getter threw
+  // `cannot get property "agents" without inject`, and the turn's history record
+  // was LOST. Measured 2026-10-03 on a live web run, in the feed, verbatim.
+  //
+  // A failed record is supposed to be visible but not fatal, and it was — the
+  // cost was a silent hole in the run history, which is the one thing the
+  // history exists to prevent. The lookup is now a try/catch: no agent found is
+  // already a supported answer (the agent-less policy), so a throwing getter is
+  // the same answer with extra noise, not a lost record.
   const resolveAgent = (sessionId: string): Agent | undefined => {
-    const agents = (ctx as { agents?: { get?: (id: string) => Agent | undefined } }).agents
-    const get = agents?.get
-    if (typeof get !== 'function') return undefined
-    return get.call(agents, sessionId)
+    try {
+      const agents = (ctx as { agents?: { get?: (id: string) => Agent | undefined } }).agents
+      const get = agents?.get
+      if (typeof get !== 'function') return undefined
+      return get.call(agents, sessionId)
+    } catch {
+      return undefined
+    }
   }
 
   // The dashboard is process-wide (one server, one feed), not per agent — it
@@ -1299,20 +1499,35 @@ export function apply(
   // guarantee for a reader's trust exercise.
   const disposeSession = !historyEnabled ? undefined : (() => {
     const path: string = historyPath
+    // `global: true` because the harness emits `session/event` with `this` bound
+    // to a per-session SCOPE CARRIER, and a hook that a scope filter rejects is
+    // silently dropped. Measured 2026-10-04 on a real web run: the listener
+    // receives the carrier's events with this set, and it is the documented
+    // switch for "receive regardless of context filter checks" — so the
+    // registration is not relying on the root context happening to be untagged.
     return ctx.on('session/event', (session: unknown, event: unknown) => {
       const end = asTurnEnd(event)
       if (end === undefined) return
       const key = `${sessionIdOf(session)}#${String(end.turn)}`
       if (recordedTurns.has(key)) return
       recordedTurns.add(key)
-      void recordTurn({ session, event: end, options, policyFor, resolveAgent, state, historyPath: path })
+      void recordTurn({
+        session,
+        event: end,
+        openedAt: turnStartTime(session, end.turn),
+        options,
+        policyFor,
+        resolveAgent,
+        state,
+        historyPath: path,
+      })
         .catch((error: unknown) => {
           // A failed append must never fail the turn: the record is
           // evidence, not control. The feed line says so in the harness's
           // own words, and the next turn tries again.
           state.note('note', `run history append failed: ${error instanceof Error ? error.message : String(error)}`)
         })
-    })
+    }, { global: true })
   })()
 
   const disposeStep = ctx.on('agent/pre-step', async ({ agent, turn, step }, next) => {
@@ -1370,6 +1585,36 @@ export function apply(
     return routed === undefined ? resolved : { ...resolved, ...routed }
   })
 
+  // The outcome of a call that RAN — the only place `isError` exists.
+  //
+  // This one flag reaches BOTH consumers: `reviewStep` reads it as `failed`, which
+  // feeds the ladder (`recordFailure`) and the detectors (`error-cascade` reads
+  // the committed observation's `error`). `noteToolOutcomes` — the helper whose
+  // own doc says `error-cascade` "could never fire in the plugin path" — turns
+  // out to be UNNECESSARY once the flag is set here: the observation the helper
+  // would have marked is written from this same `pending` a step later, with the
+  // flag already carrying. Verified by removing both the helper call and this
+  // flip: the cascade test fails; with only the flip it passes. So the helper has
+  // no call site in src/ and is not given one (§1r).
+  //
+  // `policy.pending.error` used to be set in exactly one branch: the one where
+  // the GATE blocks a call. So a `bash` that executed and exited 1 left it
+  // `false`, `reviewStep` read the step as a success, and in a DSH deployment
+  // the ladder climbed ONLY when the gate stopped the loop — never when the work
+  // failed. `error-cascade` never counted a visibly failing run either. Measured
+  // 2026-10-02 on a two-rung profile with the gate open for `bash`: two runs of
+  // `cat /nonexistent` never produced a MODEL ESCALATION notice (§1q).
+  const disposeResults = ctx.on(
+    'tools/post-execute',
+    (exec: { agent?: Agent }, result: { isError?: boolean }, next: () => Promise<unknown>) => {
+      if (result.isError === true) {
+        const policy = policyFor(exec.agent)
+        if (policy.pending !== undefined) policy.pending.error = true
+      }
+      return next()
+    },
+  )
+
   const disposeTools = ctx.on(
     'tools/pre-execute',
     async ({ agent, name: toolName, arguments: rawArgs }: ToolExecution, next: () => Promise<PreToolDecision>) => {
@@ -1379,7 +1624,7 @@ export function apply(
       // parsed arguments are both known. The step's outcome is filled in below.
       policy.pending = { tool: toolName, argsKey: argsKey(rawArgs), error: false }
 
-      const gate = gateForTool(policy, toolName)
+      const gate = gateForTool(policy, toolName, rawArgs)
       if (gate.kind === 'proceed') return next()
 
       // The call is blocked either way, and the call is *answered* rather than
@@ -1408,6 +1653,7 @@ export function apply(
     disposeStep()
     disposeRequest()
     disposeTools()
+    disposeResults()
     disposeSession?.()
     disposeApproval?.()
     if (dashboard !== undefined) void dashboard.stop()
@@ -1509,7 +1755,16 @@ export function resolveJudge(config: JudgeConfig): { judge: Judge, label: string
       + 'Use judge: laya for a local judge that needs no key, or judge: none for detectors only.',
     )
   }
-  const model = config.judgeModel ?? 'xiaomi/mimo-v2.5'
+  // `execution`, onegw's EXECUTION role alias — the same route every ladder in
+  // this repo names, and the only one verified against the live gateway
+  // (2026-10-03: POST /v1/chat/completions {"model":"execution"} -> 200).
+  // It used to be `xiaomi/mimo-v2.5`, a concrete id this repo does not
+  // declare anywhere and no shipped config mentions: a deployment that set
+  // `judge: chat` without also setting `judgeModel` was asking a model no
+  // test had ever run, which is the same "resolves but was never tested"
+  // shape §1a records for the ladder — one rung over, and invisible because
+  // nothing reads a judge's model except the judge itself.
+  const model = config.judgeModel ?? 'execution'
   return {
     judge: createChatJudge({
       llm: createOnegwClient({

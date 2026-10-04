@@ -14,10 +14,12 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { apply as applyFeatureLoop, resolveJudge } from './plugin.ts'
-import type { CreatePolicyOptions, FeatureLoopPolicy } from './plugin.ts'
+import type { CreatePolicyOptions, FeatureLoopPolicy, GateMode, JudgeConfig } from './plugin.ts'
+import type { GatePolicy } from './review.ts'
 import type { DashboardConfig } from './dashboard.ts'
 import { parseOptimizeConfig } from './spec.ts'
 import type { OptimizeConfig } from './spec.ts'
+import { mergeRowAndSettings, userSettings } from './remote.ts'
 
 export {
   apply as applyListeners,
@@ -166,15 +168,59 @@ export function apply(ctx: Context, config: Config = {}): (() => void) | void {
   // from loading; it never degrades into a refinement loop nobody meant to
   // start. The parsed block is forwarded so the plugin can record history and
   // feed the dashboard's Metrics panel from it.
+  // `Config` is exported because cordis's contract asks for it — and it is NOT
+  // run here. Measured 2026-10-03, in the live container, on this branch:
+  // `gateMode: auto` composed, the plugin LOADED, and the loop RAN — the schema
+  // rejected nothing, because `--dump-config` skips validation AND the loader
+  // takes the row as written.
+  //
+  // So the union is a TYPE, not a guard. What did hold was
+  // `createPolicy`: `gateMode: options.gateMode ?? 'ask'` sends an unrecognised
+  // value to the SAFE default, and `ask` with no answerer refuses. That is the
+  // right direction for a safety setting and the wrong substitute for a
+  // rejection — a typo that happens to default to asking reads as a working
+  // gate. (docker/README.md has said so about `--dump-config` since 2026-10-01;
+  // this is the same finding for the whole load path, not just the dump.)
+  //
+  // One line, and it names the field, because every OTHER block here already
+  // fails loudly and this one silently did not.
+  //
+  // Measured both ways on a profile this script generated, 2026-10-03:
+  //
+  //   gateMode: auto  ->  the plugin throws, the harness prints the message as a
+  //     WARNING, the plugin never constructs… and the run ANSWERS. `say hi` came
+  //     back; so did a requested `gm-proof.txt` containing `hello`, written with
+  //     no gate in front of it. A throw is loud and not fatal: the harness
+  //     carries on past a failed plugin, and a loop with no gate never asks.
+  //   gateMode: ask   ->  `Create a file … gm2-proof.txt` is DENIED, no file.
+  //
+  // Which is the point. The throw buys the operator the sentence that names the
+  // field; the fail-closed behaviour they actually get comes from `ask` being
+  // the default, and that is the behaviour this line is protecting. A typo must
+  // not silently become "never gated".
+  if (config.gateMode !== undefined && config.gateMode !== 'ask' && config.gateMode !== 'deny') {
+    throw new Error(
+      `gateMode must be "ask" or "deny", received ${JSON.stringify(config.gateMode)}. `
+      + '"ask" prompts a human; "deny" refuses outright for unattended runs.',
+    )
+  }
   const optimize = config.optimize === undefined ? undefined : parseOptimizeConfig(config.optimize)
   // Same rule for the judge: a `chat` judge with no key is a loud load-time
   // error, not a judge that quietly never runs. `laya` and `none` never throw.
+  //
+  // Resolved from the MERGED config, not the row: the settings page offers the
+  // judge kind, so a value saved there has to decide which Judge is built.
+  // Reading `config.judge` here instead is what produced, live, a boot that
+  // died with `dsh: UNKNOWN: policy.judge.score is not a function` — the merge
+  // overwrote the constructed Judge with the STRING 'laya' the file holds, and
+  // the first step called `.score` on it.
+  const merged = mergeRowAndSettings(config as unknown as Record<string, unknown>)
   const { judge } = resolveJudge({
-    judge: config.judge,
-    judgeBaseURL: config.judgeBaseURL,
-    systemOneModel: config.systemOneModel,
-    judgeModel: config.judgeModel,
-    judgeTimeoutMs: config.judgeTimeoutMs,
+    judge: merged.judge as JudgeConfig['judge'],
+    judgeBaseURL: merged.judgeBaseURL as string | undefined,
+    systemOneModel: merged.systemOneModel as string | undefined,
+    judgeModel: merged.judgeModel as string | undefined,
+    judgeTimeoutMs: merged.judgeTimeoutMs as number | undefined,
   })
   return applyFeatureLoop(ctx, {
     spec: config.spec,
@@ -182,17 +228,27 @@ export function apply(ctx: Context, config: Config = {}): (() => void) | void {
     // The deployment's own config, verbatim. The panel must show what the row
     // says (`judge: laya`), not the resolved internals — `options.judge` is a
     // constructed Judge, which no status page can render as a setting.
+    //
+    // It is ALSO what the gate is built from. A user may want to widen the gate
+    // mid-session (`run`/`glob`/`grep` → auto) without editing a shared patch
+    // layer that other profiles inherit, and it is their own machine; the patch
+    // row keeps its comments and its role as deployment configuration, and the
+    // user file wins where the two overlap. Settings the page cannot express —
+    // `spec`, `dashboard`, `optimize` — stay row-only, because the panel offers
+    // no control for them and a half-applied block is worse than a clear
+    // boundary. See `mergeRowAndSettings` in ./remote.ts for the precedence
+    // and for why it is not a deep merge.
     rowConfig: { ...config },
-    confidenceThreshold: config.confidenceThreshold,
-    gatePolicies: config.gatePolicies,
-    gateMode: config.gateMode,
     dashboard: config.dashboard,
     optimize,
-    router: {
-      ...(config.reviewBudget === undefined ? {} : { reviewBudget: config.reviewBudget }),
-      ...(config.judgeThreshold === undefined ? {} : { judgeThreshold: config.judgeThreshold }),
-      ...(config.checkpointAtStep === undefined ? {} : { checkpointAtStep: config.checkpointAtStep }),
-    },
+    // The same merged object the judge was resolved from, minus the three keys
+    // that must stay as they are: `judge` is the constructed Judge (the merge
+    // carries the STRING, which is not a Judge), and `dashboard`/`optimize` are
+    // blocks the settings file may not touch.
+    confidenceThreshold: merged.confidenceThreshold as number | undefined,
+    gatePolicies: merged.gatePolicies as Record<string, GatePolicy> | undefined,
+    gateMode: merged.gateMode as GateMode | undefined,
+    router: merged.router as { reviewBudget?: number, judgeThreshold?: number, checkpointAtStep?: number } | undefined,
   })
 }
 

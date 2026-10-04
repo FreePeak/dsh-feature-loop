@@ -96,7 +96,20 @@ const PROBE_ROWS = [
   '        apiKeyEnv: ONEGW_API_KEY',
   '        api: openai-completions',
   '        baseURL: ' + (process.env.ONEGW_BASE_URL ?? 'http://host.docker.internal:8080/v1'),
+  // `execution` FIRST, and it is the route every shipped deployment in this
+  // repo uses (cordis.patch.yml, docker/profile.patch.yml,
+  // scripts/make-profile.sh, the demo). The probe's own profile has to declare
+  // it: the settings import is one-shot, so a second profile gets NO settings of
+  // its own and llm-pi-ai resolves rungs against the list right here.
+  //
+  // This probe was the third place to carry the dead concrete ids, and it is
+  // why the container ran `UNKNOWN_MODEL` on 2026-10-03 even with the patch row
+  // and the settings both declaring `execution` correctly.
   '        models:',
+  '          - id: execution',
+  '            name: execution',
+  '            contextWindow: 200000',
+  '            maxTokens: 32000',
   '          - id: opencode/deepseek-v4.1-flash',
   '            name: opencode/deepseek-v4.1-flash',
   '          - id: xai/grok-4.7',
@@ -384,8 +397,12 @@ try {
   // The refusal text is asserted, not just the absence of the file: a turn that
   // died for an unrelated reason (no adapter, no key) also leaves no file, and
   // that is a different defect with the same symptom.
-  const refused = /requires approval, but no approval channel is available/.test(out)
-  if (!refused) throw new Error(`expected a refusal naming the approval channel:\n${out.slice(0, 900)}`)
+  //
+  // The sentence is the PLUGIN's, not the harness's (KNOWN-ISSUES §1be). The
+  // harness's own "no approval channel is available" reached the model as a
+  // sandbox objection; asserting it here would pin the confusing version.
+  const refused = /nobody is watching/.test(out)
+  if (!refused) throw new Error(`expected a refusal naming the absent watcher:\n${out.slice(0, 900)}`)
   if (existsSync(PROOF)) throw new Error(`the gate dispatched the write with no answerer; ${PROOF} exists`)
   log('   refused, no file  ✓')
 

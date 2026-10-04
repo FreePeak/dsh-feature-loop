@@ -51,12 +51,34 @@ DSH="${DSH_HARNESS:-$HOME/work/harvey/freepeak/deepseek-harness}"
 CLI="$DSH/apps/cli/lib/bin.js"
 HOME_DIR="${DSH_HOME:-$HOME/.dsh}"
 PROFILE_DIR="$HOME_DIR/profiles/$NAME"
-PNPM="npx -y pnpm@9.15.9"
+# pnpm 9 specifically: the lockfile it writes is a v9 one, and pnpm 11 silently
+# re-resolves a v9 lockfile and drops the peer wiring — which is §1b's entire
+# subject, so the version is not negotiable. Resolved off PATH or the npx cache
+# first, and only fetched when neither has it: `npx -y pnpm@9.15.9` hits the
+# REGISTRY on every cold call, and with the registry slow the profile script dies
+# on `ETIMEDOUT` after `--prefer-offline` has already done the work it was
+# supposed to do. Measured 2026-10-03 twice on this box.
+# `command -v pnpm` alone is a TRAP here: this box has pnpm 11 on PATH, which is
+# exactly the version this script exists to avoid, and a version check that only
+# ran on the PATH hit would fall through to the npx fetch on every machine where
+# the wrong pnpm is installed. So: every candidate, PATH first or not, is asked
+# what version it is.
+PNPM=""
+for candidate in "$(command -v pnpm 2>/dev/null || true)" \
+                 $(ls -1 "$HOME"/.npm/_npx/*/node_modules/.bin/pnpm 2>/dev/null); do
+  if [ -x "$candidate" ] && [ "$("$candidate" --version 2>/dev/null)" = "9.15.9" ]; then
+    PNPM="$candidate"
+    break
+  fi
+done
+[ -n "$PNPM" ] || PNPM="npx -y pnpm@9.15.9"
+echo "==> pnpm: $PNPM"
 
 [ -f "$CLI" ] || { echo "error: harness checkout not found at $DSH" >&2; exit 1; }
-[ -d "$REPO/lib" ] || { echo "error: $REPO/lib is missing — run 'pnpm build' first" >&2; exit 1; }
 
 APP_BUNDLE=$([ "$APP" = web ] && echo "@deepseek-ai/dsh-web-app" || echo "@deepseek-ai/dsh-headless")
+# See the gateMode comment in the generated patch for why headless denies.
+GATE_MODE=$([ "$APP" = web ] && echo ask || echo deny)
 
 echo "==> profile $NAME ($APP app, web :$PORT, dashboard :$DASH)"
 mkdir -p "$PROFILE_DIR"
@@ -179,7 +201,25 @@ cat > "$PROFILE_DIR/cordis.patch.yml" <<'YAML'
       grep: auto
       edit: auto-if-confident
       write: always-approve
-    gateMode: ask
+    # `ask` on the WEB profile: the standalone dashboard is serving, a human
+    # opens it, and the gate asks.
+    #
+    # `deny` on the HEADLESS profile, and this is not a weakening - it is the
+    # only correct answer for it. `ask` fails CLOSED when no approval channel
+    # is mounted, and in `dsh headless` nothing ever mounts one: no dashboard
+    # page is opened and no browser polls /api/state, so every ask resolves "no
+    # answerer available". Measured 2026-10-02 with `ask` on the generated
+    # headless profile, against a real model:
+    #
+    #   Error: tool "write" requires approval, but no approval channel is
+    #   available
+    #
+    # The model then spent its remaining budget reasoning about whether Bash was
+    # a legitimate alternative, wrote nothing, and the run produced no work. With
+    # `deny` the same step is refused at once, with an honest reason - which is
+    # strictly better than a refusal the loop reports as a sandbox denial, and
+    # it is what the docs already recommend for unattended runs.
+    gateMode: __GATE_MODE__
     dashboard:
       enabled: true
       standalone: true
@@ -210,7 +250,14 @@ cat > "$PROFILE_DIR/cordis.patch.yml" <<'YAML'
         bash: irreversible
         edit: reversible-write
         write: irreversible
+        # Anything not named here falls back to `irreversible`. Every extra row
+        # below is a card a person does not have to click through on autopilot:
+        # the HITL tool would otherwise be gated on every delegated task, and
+        # the background-job tools on every progress check.
         task: read
+        job_list: read
+        job_output: read
+        job_kill: reversible-write
       feedback: the verification command exits 0, and the diff is the smallest that achieves it
       termination:
         successCommand: bash verify.sh
@@ -233,11 +280,31 @@ YAML
 # command substitutions (`execution` was expanding to a missing binary and
 # aborting the patch write). The dashboard port is the one value that must
 # expand — stamp it after the write.
-sed -i.bak -e "s/__DASHBOARD_PORT__/${DASH}/" "$PROFILE_DIR/cordis.patch.yml"
+sed -i.bak -e "s/__DASHBOARD_PORT__/${DASH}/" -e "s/__GATE_MODE__/${GATE_MODE}/" "$PROFILE_DIR/cordis.patch.yml"
 rm -f "$PROFILE_DIR/cordis.patch.yml.bak"
 
 echo "==> install (pnpm 9 — a v11 re-resolve drops the peer wiring)"
-(cd "$PROFILE_DIR" && $PNPM install --no-frozen-lockfile >/dev/null)
+# `--prefer-offline` is the difference between a hang and an install when the
+# registry is slow or unreachable: every package the profile needs is already in
+# the local store from a previous profile, and pnpm otherwise holds the open
+# socket until its own fetch timeout. Measured 2026-10-02 with the registry
+# unreachable (TLS to registry.npmjs.org stalled after connect, github fine):
+# the install sat at 1.2s of CPU across 9 minutes with the process idle on five
+# half-open Cloudflare sockets — indistinguishable from a hang, because it WAS
+# one from the caller's side. The same install with --prefer-offline against the
+# warm store finished in 1.4s.
+# `--no-frozen-lockfile` is required, not preferred: the tarball specifier moves
+# whenever the source tree moves, and a frozen lockfile refuses a specifier it
+# has not seen before — which is every new profile.
+#
+# Nothing here can make a slow registry fast. Measured 2026-10-03: with the
+# registry timing out, the one dependency `--prefer-offline` cannot serve is
+# `@deepseek-ai/dsh-experimental-agent-team-profile`, whose metadata is not in
+# the local cache. Copying it in from a profile that already resolved it does NOT
+# help — pnpm re-resolves from package.json and prunes the copy, then asks the
+# registry anyway. The honest fix is a reachable registry, so the failure is
+# reported as what it is instead of as a hang.
+(cd "$PROFILE_DIR" && $PNPM install --no-frozen-lockfile --prefer-offline >/dev/null)
 
 # The one-second check, and the only one that answers the question that
 # matters: did the plugin's peers RESOLVE? The lockfile's importer entry spells
@@ -263,6 +330,35 @@ case "$PLUGIN_LINE" in
       echo "         fix: add pnpm.overrides pinning the harness packages (see" >&2
       echo "         scripts/make-profile.sh) and reinstall with pnpm 9." >&2 ;;
 esac
+
+# The peers RESOLVING is necessary and not sufficient: a peer can resolve and
+# the module still fail to import, and every one of those failures is a boot
+# WARNING the loader carries on past. Measured 2026-10-02 on a profile this
+# script generated: `peers resolved (10 harness packages)` printed, the row
+# composed, and every run was UNGATED — the log said
+# `feature-loop (@freepeak/dsh-feature-loop): failed to import` and the file
+# the model was asked to write appeared anyway, ungated.
+#
+# The cause was `lib/` missing from the installed copy: the plugin ships built
+# ESM in lib/ (package.json `files`), lib/ is .gitignore'd, and a `file:`
+# dependency installs whatever happens to be on disk. Build output absent at
+# install time is neither a plugin fault nor the operator's — so the script
+# BUILDS it, and then proves the import, because that is the check that turns
+# "the row composed" into "the module loads".
+#
+# The import runs from INSIDE the profile, not from the repo: the bundle's
+# `@deepseek-ai/*` peers resolve through the profile's node_modules, so
+# importing it from anywhere else fails with ERR_MODULE_NOT_FOUND for
+# `@deepseek-ai/schemastery` — which says nothing about where it actually runs.
+echo "==> build + import check (an unimportable plugin gates nothing)"
+( cd "$REPO" && npm run --silent build >/dev/null ) \
+  || { echo "error: the plugin did not build — lib/ is what a profile imports" >&2; exit 1; }
+( cd "$PROFILE_DIR" \
+    && node -e "import('@freepeak/dsh-feature-loop').then(() => console.log('   the plugin IMPORTS inside this profile'), e => { console.error('   import FAILED: ' + String(e.message).split('\\n')[0]); process.exit(1) })" ) \
+  || { echo "error: the plugin is installed but INERT — the row composes, the" >&2
+       echo "       client bundle is in the boot graph, and nothing is gated." >&2
+       echo "       fix: npm run build in the repo, then reinstall with pnpm 9." >&2
+       exit 1; }
 
 echo "==> compose check"
 node "$CLI" --profile "$NAME" --dump-config | grep -q "id: feature-loop" \

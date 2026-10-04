@@ -50,6 +50,19 @@ fi
 # on every restart and re-renders — overwriting nothing the user changed in the
 # imported file, but making the "already present" branch unreachable and churning
 # the file each boot.
+# `FORCE_REINIT` re-seeds settings.yaml TOO, and it has to remove the marker as
+# well: the harness renames a legacy settings.yaml to `settings.yaml.imported` on
+# first import, so a volume seeded by an OLDER image keeps that file forever and
+# this guard reads "already present" on every boot. Measured 2026-10-03: after
+# `FORCE_REINIT=1` the activation patch carried this branch's ladder
+# (`model: execution`) while `settings.yaml.imported` still declared the four
+# CONCRETE ids and no `execution` — a patched profile on a settings file that
+# cannot resolve it, which is the UNKNOWN_MODEL bug of 2026-10-01 with a fresh
+# coat of paint.
+if [ "${FORCE_REINIT:-0}" = "1" ]; then
+  rm -f "$DSH_HOME/settings.yaml.imported"
+fi
+
 if [ ! -f "$DSH_HOME/settings.yaml" ] && [ ! -f "$DSH_HOME/settings.yaml.imported" ]; then
   log "rendering settings.yaml (preset: workspace-write, so the approval panel works)"
   # Substituted with sed, not envsubst: `node:22-slim` does not ship gettext, and

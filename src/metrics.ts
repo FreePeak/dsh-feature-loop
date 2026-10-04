@@ -58,7 +58,10 @@ export interface MetricsSummary {
     perRun: AxisMetric
     /** Per-step USD: each run's `costUSD / steps`, zero-step runs excluded (they have no "per step" to divide by). */
     perStep: AxisMetric
-    /** Mean cost of a goal-met run — the price of success. Absent when no run has met its goal, because an absent number is not zero. */
+    /**
+     * Mean cost of a run that met its goal and took a step — the price of
+     * success. Absent when no run has both, because an absent number is not zero.
+     */
     goalMetCost?: number
     /**
      * Sum of `unpricedSteps` across records, exposed whenever non-zero.
@@ -71,21 +74,37 @@ export interface MetricsSummary {
      */
     unpricedSteps: number
   }
+  /** Records the cost/speed axes are computed over. Below `runs` when closed turns took no step. */
+  measuredRuns: number
   speed: {
-    /** Steps per run. */
+    /** Steps per run, over the runs that took a step. */
     steps: AxisMetric
     /** Per-step latency in ms, pooled across every `stepLatencyMs` sample. Records with an empty array contribute nothing here. */
     latencyMs: AxisMetric
-    /** Wall-clock ms per run — every record has one, including the ones that timed no steps. */
+    /**
+     * Wall-clock ms per run, over the runs that TIMED anything — see
+     * `measuredRuns`. Zeros mean no run was timed, not that runs were instant.
+     */
     wallMs: AxisMetric
-    /** What `stepLatencyMs` measured: the common declared kind, or `'mixed'` when records disagree — two differently-labelled numbers must never be averaged into one claim. */
-    latencyKind: 'round-trip' | 'model' | 'mixed'
+    /**
+     * What `stepLatencyMs` measured: the common declared kind, or `'mixed'`
+     * when records disagree — two differently-labelled numbers must never be
+     * averaged into one claim. `undefined` when nothing was timed.
+     */
+    latencyKind?: 'round-trip' | 'model' | 'mixed'
   }
   quality: {
     /** Share of runs that ended `goal-met`. */
     goalMetRate: number
-    /** Share of *all* runs that met their goal on pass 1 — the fraction the loop got right without buying a retry. */
-    firstPassRate: number
+    /**
+     * Share of runs that met their goal on pass 1 — the fraction the loop got
+     * right without buying a retry.
+     *
+     * `undefined` when no record reports a pass number above 1, because in that
+     * case the number would be a copy of {@link goalMetRate} wearing a
+     * different name.
+     */
+    firstPassRate?: number
     /** Mean of every judge score flattened across runs. Absent when no judge ran. */
     meanJudge?: number
     /** Mean of `qualityScore` over the runs that asked for one. Absent when none did — not scored is not zero. */
@@ -148,16 +167,33 @@ export function summarize(
   const runs = records.length
   const base = baseline(records)
 
-  const stepsAxis: AxisMetric = { ...axisOf(records.map(r => r.steps)), baseline: base.steps }
-  const perRunAxis: AxisMetric = { ...axisOf(records.map(r => r.costUSD)), baseline: base.cost }
+  // Runs that took no step are excluded from the cost/speed axes, and the count
+  // is reported beside them.
+  //
+  // Measured 2026-10-04 on the committed history: 13 of 15 records had
+  // `steps: 0`, so `steps.p50` and `cost.perRun.p50` were both **0** — a panel
+  // reading "a typical run costs $0.00 and takes 0 steps". The number was exact;
+  // the reading was wrong, because what the zero meant was "most of these runs
+  // never ran". §1bp fixed the label on those records (they are no longer
+  // `goal-met`); this is the other half — a run with no step contributes no
+  // per-step cost and no per-step latency, so including it can only drag the
+  // distribution toward zero, which describes the population and not the loop.
+  const ran = records.filter(r => r.steps > 0)
+  const stepsAxis: AxisMetric = { ...axisOf(ran.map(r => r.steps)), baseline: base.steps }
+  const perRunAxis: AxisMetric = { ...axisOf(ran.map(r => r.costUSD)), baseline: base.cost }
   const perStepAxis: AxisMetric = axisOf(
     records.filter(r => r.steps > 0).map(r => r.costUSD / r.steps),
   )
-  const wallAxis: AxisMetric = axisOf(records.map(r => r.wallMs))
+  // Over the records that timed anything: `wallMs` is `undefined` when nothing
+  // was timed, and counting those would put a 0 in the distribution for an
+  // absence (§1bs's shape).
+  const timed = ran.filter(r => r.wallMs !== undefined)
+  const wallAxis: AxisMetric = axisOf(timed.map(r => r.wallMs ?? 0))
   const latencyValues = records.flatMap(r => r.stepLatencyMs)
   const latencyAxis: AxisMetric = { ...axisOf(latencyValues), baseline: base.latencyMs }
 
   const met = records.filter(r => r.outcome === 'goal-met')
+  const ranMet = met.filter(r => r.steps > 0)
   const judges = records.flatMap(r => r.judgeScores)
   const qualities = records.flatMap(r => (r.qualityScore === undefined ? [] : [r.qualityScore]))
   const unpricedSteps = records.reduce((sum, r) => sum + r.unpricedSteps, 0)
@@ -168,15 +204,17 @@ export function summarize(
   const measuredKinds = new Set(
     records.filter(r => r.stepLatencyMs.length > 0).map(r => r.latencyKind),
   )
-  // ponytail: `LatencyKind` has no "none" value, so a history with zero timed
-  // steps reports 'round-trip' rather than "measured nothing"; ceiling: the
-  // dashboard cannot distinguish a measured round-trip from an empty window;
-  // upgrade path: widen `LatencyKind` in runlog.ts to carry 'none'.
+  // Upgraded rather than worked around: `RunRecord.latencyKind` is now optional,
+  // so "measured nothing" is expressible and this no longer has to pick a kind
+  // for an empty window.
+  // `undefined` when nothing was timed. It defaulted to `'round-trip'`, which is
+  // a declared MEASUREMENT KIND for a run that never took one — the `ponytail`
+  // note below records why the type had no 'none' and what changed that.
   const latencyKind: MetricsSummary['speed']['latencyKind'] = measuredKinds.size > 1
     ? 'mixed'
     : measuredKinds.size === 1
       ? [...measuredKinds][0]
-      : 'round-trip'
+      : undefined
 
   const alerts: MetricsSummary['alerts'] = []
   const push = (kind: string, detail: string): string => {
@@ -255,13 +293,31 @@ export function summarize(
     cost: {
       perRun: perRunAxis,
       perStep: perStepAxis,
-      goalMetCost: met.length > 0 ? mean(met.map(r => r.costUSD)) : undefined,
+      // Over the runs that both met their goal AND took a step. Mean of the
+      // `goal-met` set alone reads far too low on a history where most closed
+      // turns did no work: measured 2026-10-04, $0.00048 across 13 of 15 records
+      // that spent nothing, against $0.0056 for the two that actually ran.
+      goalMetCost: ranMet.length > 0 ? mean(ranMet.map(r => r.costUSD)) : undefined,
       unpricedSteps,
     },
+    measuredRuns: ran.length,
     speed: { steps: stepsAxis, latencyMs: latencyAxis, wallMs: wallAxis, latencyKind },
     quality: {
       goalMetRate: runs > 0 ? met.length / runs : 0,
-      firstPassRate: runs > 0 ? met.filter(r => r.pass === 1).length / runs : 0,
+      // `undefined` when every record is pass 1, because then this is the SAME
+      // set as `met` and the panel shows two numbers a reader takes as
+      // independent evidence of "the loop gets it right without a retry".
+      //
+      // Every record the plugin writes carries `pass: 1` — `recordTurn`
+      // hardcodes it, and a pass-2 record comes only from the CLI's
+      // `runRefined`, which is not on this path. Measured 2026-10-04 on the
+      // committed history: goalMetRate 0.867, firstPassRate 0.867, 15 records
+      // all pass === 1. Absent is the honest shape; a rate over a denominator of
+      // zero distinct passes has no meaning, and `undefined` is
+      // distinguishable from a real 0.
+      firstPassRate: records.some(r => r.pass > 1)
+        ? met.filter(r => r.pass === 1).length / runs
+        : undefined,
       meanJudge: judges.length > 0 ? mean(judges) : undefined,
       meanQuality: qualities.length > 0 ? mean(qualities) : undefined,
       reviewFraction,

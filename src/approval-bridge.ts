@@ -228,6 +228,29 @@ export const APPROVAL_MODES = {
       edit: 'always-approve', write: 'always-approve', bash: 'always-approve',
     },
   },
+  /**
+   * The position the two postures above cannot name, and the one a hand-edited
+   * file reaches most easily: every write class is `auto`, so nothing ever
+   * reaches a human.
+   *
+   * It is a mode rather than a warning because `always-approve` is a choice
+   * anybody can make and this is the one a TYPO produces — §1m measured a file
+   * with `write: auto` on a row saying `always-approve`, and the write went
+   * through. Labelling it "Approve every step" is the label that lies in the
+   * dangerous direction, so the page says what it does instead.
+   *
+   * The name is deliberately unflattering, because it is the string a person
+   * reads in a dropdown while deciding how much supervision they want — and the
+   * honest answer is that this one has none.
+   */
+  'never-ask': {
+    label: 'Never ask (gate off)',
+    detail: 'Writes, edits and shell commands run with no approval. Reads never interrupt either.',
+    policies: {
+      read: 'auto', glob: 'auto', grep: 'auto',
+      edit: 'auto', write: 'auto', bash: 'auto',
+    },
+  },
 } as const
 
 /** Name of an approval posture, as the settings page writes it. */
@@ -237,17 +260,113 @@ export type ApprovalModeName = keyof typeof APPROVAL_MODES
 /**
  * Classify a policy map as one of the known approval postures.
  *
- * A hand-edited map rarely matches a mode exactly, so the answer is the
- * closest one: "every step" only when every write class actually asks.
+ * A hand-edited map rarely matches a mode exactly, so the answer is the closest
+ * one, and the direction of "closest" is the whole content of this function.
+ *
+ * It used to count `always-approve` and call everything else `review-risky`,
+ * which made the settings page report **the strictest posture in the file as the
+ * loosest one**. Measured 2026-10-03 with the file the harness has honoured
+ * since §1d made it authoritative:
+ *
+ * ```
+ * gatePolicies: { write: auto, edit: auto, bash: auto }
+ * ```
+ *
+ * — no write class asks, so `asked === 0 !== 3` and the page showed
+ * **"Review at risky steps"**, whose own policies are
+ * `edit/write/bash: auto-if-confident`. The file was *looser* than the posture it
+ * was labelled with, and the run confirmed the file: the write went through with
+ * no approval demanded. So the page was describing a gate that was not running.
+ *
+ * Two postures, ordered by how much they ask, and the map is placed on that
+ * line by what it does to each write class:
+ *
+ * | every write class | posture |
+ * |---|---|
+ * | `auto` — none of them asks | `never-ask` |
+ * | `always-approve` — all of them ask | `approve-every-step` |
+ * | anything else, including nothing named | `review-risky` |
+ *
+ * `auto` is the only value that never reaches a human, so it is the one that
+ * decides. Everything else — `always-approve`, `auto-if-confident`, or absent —
+ * leaves a gate in place, and `review-risky` is the posture whose own policies
+ * are exactly that. `approve-every-step` then means the page's own second
+ * choice: the file asks about nothing, so the operator is told the gate is
+ * effectively off.
+ *
+ * The name reads backwards against the map, deliberately: the postures are named
+ * for what the operator GETS (every step reviewed) rather than for what the file
+ * contains (nothing reviewed), because the page's question is "what will happen"
+ * and that is the one worth answering. It is stated here because a reader will
+ * assume the opposite.
  *
  * @param policies - the configured map, if any.
  * @returns the posture that describes it.
  */
+export function approvalModeLabel(policies: GatePolicyMap | undefined): string {
+  // A suffix for a map no posture names, so the page never renders a posture's
+  // copy as though it described the file.
+  //
+  // Measured 2026-10-03 with `{write: always-approve, edit: auto, bash: auto}`:
+  // the write asked, the edit and the shell command did not — and the page
+  // showed "Review at risky steps", whose hint reads "A write is reviewed when
+  // the loop has no confidence to judge it". That is a claim about `write`, and
+  // `bash: auto` is the opposite claim about every command the loop runs. Two of
+  // the three write classes are unsupervised and the page said one was reviewed.
+  //
+  // The test is exact equality with a posture's own map rather than a count, so
+  // the suffix appears on every map a person can type that is not one of the
+  // three, including a partial one (`{write: auto}` alone, where `edit` and
+  // `bash` fall back to the gate's defaults). Being marked "mixed" when the
+  // truth is "one class set, the rest defaulted" is the safe direction: it tells
+  // the reader to check the fields rather than to trust the posture.
+  const mode = approvalModeFor(policies)
+  // Exact equality is the wrong test, and measuring it on the SHIPPED row is what
+  // showed why. Every generated profile writes:
+  //
+  //   { read: auto, glob: auto, grep: auto, edit: auto-if-confident,
+  //     write: always-approve }
+  //
+  // — no `bash`, because the actuator already classifies it `irreversible`. So it
+  // is NOT `review-risky`'s map verbatim (its `write` differs), and exact
+  // equality marked the DEFAULT row "mixed with the fields below" on a profile
+  // nobody had touched. A marker that fires on the shipped default is a marker
+  // nobody reads.
+  //
+  // The test is therefore the CLASSIFICATION, not the bytes: a map is described
+  // by the posture it lands on, and the one that lands on a different posture
+  // from the one on screen is the one a reader must check. `approvalModeFor`
+  // counts what each class DOES, so a map that omits `bash` and inherits the
+  // gate's `always-approve` default classifies exactly as it runs — which is the
+  // property the marker exists to state.
+  //
+  // The residual case is the MIXED map of §1n, where two of three write classes
+  // are `auto`: it classifies as `review-risky` (one class asks), which is the
+  // strict end, so it is still not distinguished by the classification alone.
+  // Hence the second test: a map that says `auto` for any write class is never
+  // described by an asking posture's copy, whatever it classifies as.
+  //
+  // That is ALSO why this can fire on a page with no per-tool fields at all — the
+  // Settings tab has three selects (judge, gate mode, posture) and NOTHING that
+  // edits one class, so a map a person hand-wrote is invisible in the UI and the
+  // hint has to point at the FILE rather than at fields that are not there.
+  const silentWrite = GATE_POLICY_CLASSES
+    .filter(c => c !== 'read' && c !== 'glob' && c !== 'grep')
+    .filter(c => policies?.[c] === 'auto').length
+  // `never-ask` is every class `auto` by definition, so the count alone marks it
+  // — and it is the one map the count describes EXACTLY. Its own detail line
+  // already says the gate is off; the marker exists for a map whose classes
+  // disagree with the posture on screen, and `never-ask`'s do not.
+  if (silentWrite === 0 || mode === 'never-ask') return ''
+  return ' — mixed with the fields below'
+}
+
 export function approvalModeFor(policies: GatePolicyMap | undefined): ApprovalModeName {
-  const asked = GATE_POLICY_CLASSES
-    .filter(c => c !== 'read' && c !== 'glob' && c !== 'grep' && policies?.[c] === 'always-approve').length
   const writeClasses = GATE_POLICY_CLASSES.filter(c => c !== 'read' && c !== 'glob' && c !== 'grep')
-  return asked === writeClasses.length ? 'approve-every-step' : 'review-risky'
+  const silent = writeClasses.filter(c => policies?.[c] === 'auto').length
+  if (silent === writeClasses.length) return 'never-ask'
+  const firm = writeClasses.filter(c => policies?.[c] === 'always-approve').length
+  return firm === writeClasses.length ? 'approve-every-step' : 'review-risky'
 }
 
 /** Every tool class a policy may name, for validation and error messages. */

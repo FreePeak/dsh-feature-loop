@@ -13,6 +13,58 @@ and correctly refused for a reason that had nothing to do with the approval UI.
 
 ## Fixed
 
+**The numbered entries below are this session's findings, in the order they
+were made.** They are numbered by discovery, not by severity, and two of them (1i, 1s)
+were both "1i" until a cross-reference caught it — which is why the map is here
+rather than a list of letters:
+
+| § | finding |
+|---|---|
+| 1a | nothing in this repo ran on the model it was supposed to run on |
+| 1b | `peers resolved` was reported as "your profile is ready" |
+| 1c | `make profile` hung for nine minutes with the registry unreachable |
+| 1d | the settings page wrote a file nothing decided with — and said so |
+| 1e | two shapes of a bad number in the same settings file behaved differently |
+| 1f | `make check` could not run where it was meant to, and `make test` lied |
+| 1g | a safety schema that was never run — and a throw that is loud but not fatal |
+| 1h | `make up` reported a dead container as up — and no HTTP probe can fix it |
+| 1i | the ladder check named three files and the repo has four |
+| 1j | naming a bug while a no-op call would have made the export look used |
+| 1k | a hand-edited settings file can name a tool that does not exist — silently |
+| 1l | picking a posture discards the hand-set fields without saying so |
+| 1m | the settings page called the strictest gate the loosest one |
+| 1n | a MIXED policy file was shown one posture's copy, which was true of one class |
+| 1o | the demo's committed transcript was two runs spliced into one |
+| 1p | a ceiling row that proved nothing about the ceiling |
+| 1q | a call that ran and failed was invisible to the ladder |
+| 1r | a helper whose doc claimed a detector was impossible, tested by the helper |
+| 1s | five of six detectors reach a DSH deployment; the sixth cannot |
+| 1t | KNOWN-ISSUES had two sections numbered 1i, and nothing noticed |
+| 1u | the runbook's sandbox is a throwaway copy, and never said so |
+| 1bb | The headless profile asked a question nobody was there to answer |
+| 1bc | The judge and the brief asked a model nothing here had ever run |
+| 1bd | Eight profiles were running bytes nobody could name |
+| 1be | The harness's fail-closed told the model the wrong thing |
+| 1bf | The settings page's claim was true, and I checked it anyway |
+| 1bg | A clean clone cannot typecheck `src/plugin.ts`, and the script said why — wrongly |
+| 1bh | A green integration run was partly a property of this machine |
+| 1bi | The README's first command failed on a fresh clone |
+| 1bj | The check that guards §1t could not see a third of the file |
+| 1bk | `byRoute: {}` beside a real `costUSD` taught the optimizer every route was free |
+| 1bl | The usability check had only ever asked one question |
+| 1bm | Five cards that said the same thing, and a lost run record hiding in plain sight |
+| 1bn | One gate, three tables, and nothing that compared them |
+| 1bo | The release workflow produced a tag and nothing else |
+| 1bp | An 87% success rate, computed from turns that did nothing |
+| 1bq | Two rates that were one number |
+| 1br | A typical run costs $0.00 and takes 0 steps |
+| 1bs | The human-escalation alert that could never fire |
+| 1bt | Zero milliseconds, round-trip |
+| 1bu | The speed axis, empty since the day it was written |
+| 1bv | The plugin path's wall clock, hiding in the event it was already reading |
+| 1bw | Open: the run record still does not land on the harness path |
+
+
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
 
 **Observed:** every deployment and the demo ran on concrete model ids —
@@ -44,6 +96,19 @@ run that died on step 1: `404 unknown provider onegw`.
    the route key verbatim.
 
 **Fix:** one tested route, `onegw/execution`, in `cordis.patch.yml`,
+
+Also measured on the wire, the two refusals are NOT equal in cost. Same
+profile, same build, same one-line task:
+
+| mode | the model did |
+|---|---|
+| `ask`, nobody watching | read the plugin sentence and **stopped in one step** |
+| `deny` | read the bare review text and **retried** the write with |
+| | `sandbox_permissions: workspace-write` before stopping |
+
+So naming the true reason is also the cheaper refusal: it does not spend a
+second call re-asking a gate that has already answered. This is the reason
+the message carries what to do about it, not only what happened.
 `docker/profile.patch.yml`, `docker/settings.template.yaml`,
 `scripts/make-profile.sh` and the demo — with `execution` declared in every
 `models:` list so the alias resolves, each price table rekeyed to match, and
@@ -54,6 +119,2129 @@ transport, and `test/llm.test.ts` pins that.
 **Verified:** `bash demo/run.sh` -> `goal-met - 4 steps - $0.0039`, every step
 labelled `onegw/execution`, against the live gateway. Both new assertions were
 proven to FIRE by reverting each one and watching it fail, not merely to pass.
+
+### 1b. `peers resolved` was reported as "your profile is ready"
+
+**Observed:** `scripts/make-profile.sh` printed `==> peers resolved (10 harness
+packages on the plugin's entry)` and `==> compose check` passed, then a real
+`dsh headless` run on that profile wrote the file it was asked for with
+**nothing gated**. The boot carried one line of warning —
+`feature-loop (@freepeak/dsh-feature-loop): failed to import` — and the loader
+continued past it, which is by design.
+
+**Why:** two necessary conditions were being read as a sufficient one. The peers
+resolve, so the plugin is inert. The cause was `lib/` absent from the installed
+copy: the package ships built ESM in `lib/`, `lib/` is `.gitignore`d, and a
+`file:` dependency installs whatever happens to be on disk — so an unbuilt
+checkout yields a profile whose plugin cannot import, and whose diagnostics
+name neither the plugin nor the operator. The script's pre-flight guard
+compounded it: it *refused* ("`$REPO/lib` is missing — run `pnpm build` first")
+instead of building, turning a fixable state into a dead end.
+
+**Fix:** the script now builds `lib/`, then imports the package FROM INSIDE
+the profile — the only place its `@deepseek-ai/*` peers resolve — and exits
+non-zero naming the fix if either step fails. That is the check that turns "the
+row composed" into "the module loads". `docker/Dockerfile` has run the same
+import since the container shipped with the same silent failure.
+
+**Verified:** the failure reproduced by removing `lib/` from an installed
+profile (`import FAILED: Cannot find module .../lib/index.mjs`) and the pass
+after restoring it; then a real run on a generated profile with the gate live —
+`write` raised `REVIEW REQUESTED (policy): write: irreversible is always
+approved by a human.`, Allow once produced the file, Reject did not. The two
+`docs/evidence/in-ui-*.png` frames were re-taken against that run, because the
+committed ones came from a boot where nothing was gated.
+
+**And the same defect one layer out, in the tarball.** `package.json` `files`
+ships `lib/`, `lib/` is `.gitignore`d, and every entry in `exports` points at
+`./lib/*.mjs` — so `npm pack` on a clean tree produced a tarball with 14 files
+and **zero** `lib/` entries. Fixed with `prepack: npm run build` (`prepack`, not
+`prepare`: prepare also runs on `npm install` in a consumer's tree, where there
+are no sources to build from).
+
+It had stayed invisible because the release workflow only tags and creates a
+GitHub release — it does not publish to npm, so no install had ever consumed
+the artifact. Verified end to end the way a consumer would: `npm pack` on this
+branch, install the **tarball** into a fresh profile with pnpm 9, then a real
+`dsh headless` run — `IMPORT OK`, no import warning, and `REVIEW REQUESTED
+(policy): write: irreversible is always approved by a human.` with the file
+absent. Deleting `lib/` from that same installed tarball reproduces
+`Cannot find module .../lib/index.mjs`, which is the proof the `prepack` is
+what carried it.
+
+### 1bb. The headless profile asked a question nobody was there to answer
+
+**Observed:** against the hand-built `~/.dsh/profiles/feature-loop-headless`
+(which the docs still point people at), `dsh --profile feature-loop-headless
+headless "create a file"` returned
+
+```
+Error: tool "write" requires approval, but no approval channel is available
+```
+
+and produced no work. The web twin, same machine, same gateway, gates and asks
+perfectly well — so the difference is not the plugin.
+
+**Why:** the two profiles were built at different times and `gateMode: ask` was
+copied into both. `ask` needs a MOUNTED ANSWERER, and in `dsh headless` nothing
+ever mounts one: no dashboard page is opened and no browser polls
+`/api/state`, so every ask resolves "no answerer available". The gate then fails
+closed — which is the correct behaviour and a useless outcome, because the run
+has no way forward. The model spent its remaining budget reasoning about whether
+`Bash` was a legitimate alternative and then stopped.
+
+The same trap has a second door: a WEB profile whose dashboard port is already
+taken also has no answerer on the port you are looking at, and the working
+dashboard is on the other one.
+
+**Fix:** `gateMode` follows the app. `scripts/make-profile.sh` stamps `ask` for
+`--web` and `deny` for `--headless` — `deny` refuses the step at once with an
+honest reason, which is strictly better than a refusal reported as a sandbox
+denial, and it is what the docs already recommend for unattended runs. Both live
+profiles fixed by hand, each carrying the measurement in a comment beside the
+line it changes.
+
+**Verified:** the same headless command that failed above now returns
+`REVIEW REQUESTED (policy): write: irreversible is always approved by a human.`
+with the file absent and no error, and the web profile still asks and still gets
+answered.
+
+**And the check that keeps it from coming back.** `scripts/check-ladder-models.mjs`
+— the script that already reads every local profile, because two of them were
+still carrying dead rungs — now also reads each profile's `package.json` and
+fails a headless profile that still says `gateMode: ask`. On this machine it
+named `flheadless` and `flproof`, both of which had the defect and neither of
+which anything had looked at since they were created. Proven to fire by putting
+`ask` back and watching it exit 1.
+
+Which app a profile boots is read from the `dsh.profile.bundles` the harness
+itself reads, not guessed from the profile's name — `flproof` says nothing about
+being headless, and `feature-loop-headless` would say something that could be a
+typo.
+
+### 1bc. The judge and the brief asked a model nothing here had ever run
+
+**Observed:** `src/plugin.ts` carried `config.judgeModel ?? 'xiaomi/mimo-v2.5'`
+and `cordis.patch.yml`'s documented brief example said
+`model: xiaomi/mimo-v2.5`. A deployment that set `judge: chat` without also
+setting `judgeModel` — or that enabled `dashboard.brief` by copying the
+documented example — was asking a concrete id this repo does not declare
+anywhere and no shipped config names.
+
+**Why:** §1a's exact shape, one rung over. That fix made `execution` the only
+ladder route and added a check for ladder rungs. But the ladder is not the only
+place a model id is hard-coded, and the other two places were never looked at.
+The id resolved perfectly on the gateway (`POST /v1/chat/completions
+{"model":"xiaomi/mimo-v2.5"}` → 200, verified 2026-10-03), so it failed
+silently — *resolves* and *tested* are different questions and this one had no
+check of either kind. Nothing reads a judge's model except the judge itself,
+which is why it was invisible: the gate, the dashboard, and every test were all
+perfectly healthy while the judge quietly asked something else.
+
+**Fix:** both defaults are `execution`, and `check-ladder-models.mjs` now asks
+the second question about both — a hard-coded model default must be the tested
+route. It reads them from source rather than keeping a list, because a list is a
+promise somebody has to keep and that is how all four of these drifted.
+
+The first version of the check swept every `?? '<string>'` in `src/plugin.ts`
+and reported `ask`, `none`, `.feature-loop/runs.jsonl` and `laya` as model
+defaults — three false positives on the first run, the same lesson
+`declaredModels` learned when it swept in the patch's own entry ids. The field
+name is the discriminator: a default MODEL is the one passed to something that
+asks a gateway.
+
+**Verified:** both halves proven to fire by restoring each default in turn —
+`src/plugin.ts` and `cordis.patch.yml` each exit 1 naming the file and the id.
+
+### 1bd. Eight profiles were running bytes nobody could name
+
+**Observed:** every installed profile on this machine carried a `client.js`
+that matched no build in any checkout. Two of them installed a worktree that
+no longer exists.
+
+**Why:** a `file:` dependency is installed, not watched. `pnpm` copies (or
+hardlinks) the package at install time, so a rebuild in the source tree, a
+commit, and a branch switch all leave the profile serving the bytes it was
+installed with. Nothing errors, the row composes, the gate works — on the
+wrong build. Measured on this machine: `flheadless` and `flui` installed
+`.worktrees/fix-message-ownership`, which does not exist and never will again;
+the profile is running the last bytes that tree ever produced and a reinstall
+would only fail.
+
+**Fix:** `check-ladder-models.mjs` now compares each profile's installed
+`client.js` against the tree that profile DECLARES it installs — not against
+whichever checkout the reader is standing in, which would report a profile
+pinned to another branch as stale for the crime of being pinned. Two cases,
+different severities: a hash mismatch is reported and a reinstall fixes it; a
+`file:` spec pointing at a tree that is gone is an ERROR, because reinstalling
+cannot fix that. All six affected profiles repaired on the spot.
+
+**The measurement that changed the design.** pnpm **hardlinks** a `file:`
+dependency out of its store, so a profile's `client.js` and the source tree's
+can be the same inode (`nlink 9`, verified). Content comparison cannot see a
+difference between two names for one file — and that is not a defect, there is
+nothing to report. The check therefore exempts the same-inode case explicitly
+rather than comparing hashes that are equal by construction. `lib/` cannot
+serve as the signal instead: tsdown's chunk names are content-hashed
+(`approvals-05MIOAcj.mjs`) and change on every build.
+
+Proven to fire by rebuilding the SOURCE tree under an installed profile and
+watching the check exit 1 naming it.
+
+### 1be. The harness's fail-closed told the model the wrong thing
+
+**Observed:** with `gateMode: ask` and no front end open, a gated `write`
+came back as
+
+```
+tool "write" requires approval, but no approval channel is available
+```
+
+which the model then reported as **the sandbox denying the write** — and spent
+its remaining budget reasoning about whether `Bash` was a legitimate
+alternative, before producing no work at all. The refusal was correct; the
+sentence it came back in was not.
+
+**Why:** that string is the harness's (`packages/core/tools/src/index.ts`,
+the `unavailable` branch of the approval outcome), and from there it is
+accurate — the harness genuinely has no channel. It is answering for itself,
+not for the deployment. The model receives it as a *tool* verdict, so it reads
+"the filesystem objected" and goes looking for a narrower tool.
+
+This plugin can see the answerer directly. `noteWatcher` is called by every
+`/api/state` poll and every `remote.live()` — the in-UI page and the standalone
+dashboard both heartbeat through it — so `watcherActive()` is a 15-second TTL
+fact, not a prediction. §1bb fixed the headless profile by telling operators to
+set `gateMode: deny`; that is the right config and it is also a documentation
+answer to a defect this plugin can answer properly.
+
+**Fix:** `gateForTool` now refuses an `ask` itself when no watcher is active,
+and the refusal says what is true and what to do:
+
+```
+REVIEW REQUESTED (policy): write: irreversible is always approved by a human —
+nobody is watching: this run has no open dashboard or composer, so no human can
+answer an approval. Open the Feature Loop page or set gateMode: deny to refuse
+up front.
+```
+
+Nothing changes when a page IS open: the watcher is a TTL-kept fact, and an ask
+raised within 15s of a page closing still routes as an ask.
+
+**Verified:** unit tests both directions (watcher on → `ask`, watcher off →
+`deny` with both phrases in the reason), and on the wire — the same headless
+task that produced the harness sentence now produces the plugin's, verbatim,
+with the file absent.
+
+**The integration spec was still testing the old world.** §1be touched only the
+unit suites; the spec that runs the gate inside a REAL harness kept driving it
+with no front end at all, so five of its eleven cases had quietly become tests
+of something else — and four of them either asserted the harness's sentence or
+HUNG for the registry's 10-minute `answerTimeoutMs`, because with the registry
+claiming an ask `next()` (the composer path) is unreachable and nothing ever
+settles it. A case that hangs instead of failing is the worst shape a test can
+have, and it was the direct consequence of the fix, not a flake. Fixed by
+stating BOTH facts a case needs — the watcher, and `dashboard.answers: false`
+so the claim is declined — and by asserting the refusal the model now gets.
+
+**Measured on a profile generated from this HEAD** (not a hand-edited one):
+`ask` + nobody watching returns the plugin's sentence verbatim in the tool
+result, no file is created, and the model stops in one step reporting that no
+human is available — rather than retrying with a wider sandbox permission.
+
+**A trap this change walked into, and the tests had to be fixed for it.** The
+watcher is process-global with a TTL, so it leaks between tests in a file. Four
+existing tests asserted `ask` and started passing or failing depending on which
+test ran first — and one of them **passed when run alone** and failed in the
+suite. Both test helpers now state the watcher explicitly (`noteWatcher()` or
+`clearWatcher()`) rather than inheriting it.
+
+### 1bf. The settings page's claim was true, and I checked it anyway
+
+**Observed:** none. That is the point of this entry.
+
+§1be changed what the gate does when nobody is watching. The settings page
+claims — in the file header, in its notice, and in `userSettings`'s own doc —
+that the settings file WINS over the patch row on the nine keys it owns. That
+claim was written in an earlier round and never exercised against a running
+harness, and this repo has a long record of a claim reading like a feature
+because nothing ever ran it.
+
+**Measured, with the generated profile's row deliberately set to `deny` and
+the settings file set to each value in turn:**
+
+| settings file | the run did |
+|---|---|
+| `gateMode: deny` | denied with the plain gate reason |
+| `gateMode: ask` | refused by §1be — "nobody is watching … refuse up front" |
+| no settings file | denied with the plain gate reason (the row wins) |
+
+So the precedence is real, in the direction documented, and the row still wins
+where the file is silent. Recorded because the measurement is what makes the
+claim true *now*, and because `--dump-config` cannot answer it: that command
+prints the PATCH TREE, which never contains the settings file at all — the
+merge happens at plugin load, inside `apply`. Three earlier greps of
+`--dump-config` said the opposite of the truth and looked convincing.
+
+**The trap worth naming:** the first version of this probe put the settings
+file in `~/.config/dshloop/` while the profile booted with a different
+`XDG_CONFIG_HOME` in a previous shell, so the first two runs read the REAL
+file while I believed they read the probe — and `settings=ask` still looked
+like the row winning, because the message I was grepping for is the model's
+paraphrase of the refusal rather than the refusal itself. The model reports
+"approval policy: ask, no answerer", not "nobody is watching". Grepping for my
+own wording proved nothing; the table above greps for behaviour.
+
+### 1bg. A clean clone cannot typecheck `src/plugin.ts`, and the script said why — wrongly
+
+**Observed:** `git clone` + `npm install` + `make check` is green in a bare
+checkout — 306 tests over CI's 21 files, every drift check, the exact CI
+typecheck command. The six suites that import `src/plugin.ts` do not run there,
+and neither does `tsc` over `plugin.ts`. Both are excluded with a written
+reason, so both are expected, and nothing claims otherwise.
+
+**Why it is still worth writing down:** `scripts/typecheck.sh`'s header said the
+whole-`src/` check works "from a harness checkout's node_modules **or this
+repo's own** (its devDependencies carry dsh-llm/dsh-tools, which is what
+Dependabot's majors actually break)". That has never been true. `devDependencies`
+carries exactly one `@deepseek-ai/*` package — `dsh-typert-protocol` — and adding
+the others fails `ERESOLVE` against the harness's own peer graph:
+
+```
+dsh-agent@0.2.0-rc.2  wants dsh-invariants@0.2.0-rc.2
+dsh-brand@0.0.1-rc.1  wants dsh-invariants@^0.0.1-rc.1
+```
+
+So the premise was false AND unfixable in `package.json`, and the comment named
+a mechanism ("Dependabot's majors") that pointed at the wrong file. A developer
+reading it would spend an hour adding dependencies that cannot resolve.
+
+**Verified** by trying, on this branch, in this order: cordis 0.4.4 → ERESOLVE
+(`dsh-agent` wants cordis 4.0.2); cordis 4.0.4 + dsh-agent 0.2.0-rc.2 → ERESOLVE
+(the `dsh-invariants` conflict above). The header now states the one place that
+works, names the two measured conflicts, and says what the CI list covers
+instead.
+
+### 1bh. A green integration run was partly a property of this machine
+
+**Observed:** `make verify` in a fresh `git clone` of this branch fails the
+integration step outright, while the same command in the worktree has passed 11/11
+all session:
+
+```
+Could not resolve "@deepseek-ai/dsh-llm" imported by
+"@freepeak/dsh-feature-loop"
+ Test Files  1 failed (1)
+      Tests  no tests
+```
+
+**Why:** the staged spec imports `src/plugin.ts` by ABSOLUTE path, and Vite
+resolves that file's own bare specifiers from the DIRECTORY WALK above the
+plugin — not from the harness checkout where the spec is staged. The plugin
+declares all five harness packages as OPTIONAL peers and `.npmrc` sets
+`auto-install-peers=false`, so a clean install never provides them. A worktree
+inherits them by walking up into the MAIN checkout's `node_modules`, which on this
+machine is a symlink into a hand-built profile
+(`~/.dsh-flt-4100/profiles/flt4100/…`). A clone under `/tmp` has no such parent.
+
+So every "11/11 integration green" this session was partly true because of a
+directory that happens to exist on one laptop. The suite is real and it does
+pass; the *claim* was doing more work than the evidence supported.
+
+**Fix:** `test/integration/run.sh` now resolves the package the way Node and
+Vite do — `createRequire(resolve('src/plugin.ts')).resolve('@deepseek-ai/dsh-llm')`
+— and exits 2 with the reason when it cannot, instead of letting Vite report
+"no tests ran". The walk crosses the worktree boundary on purpose: this file
+lives in `.worktrees/exec-rung/`, whose own `node_modules` carries no harness
+package, and the real one resolves two directories up.
+
+Verified both ways: the worktree still runs 11/11, and the clone now stops at
+the precondition with a sentence naming the missing package.
+
+### 1bi. The README's first command failed on a fresh clone
+
+**Observed:** `git clone`, `npm install`, then the command the README opens with:
+
+```
+$ node --experimental-strip-types --test test/*.test.ts
+# tests 373
+# pass 367
+# fail 6
+```
+
+Six failures, all `ERR_MODULE_NOT_FOUND: Cannot find package
+'@deepseek-ai/dsh-llm'`. The same command in a worktree — where the harness
+packages happen to resolve by directory walk, per §1bh — passes 454/454.
+
+**Why:** the glob includes six suites that import `src/plugin.ts`, and
+`plugin.ts` reaches four `@deepseek-ai/*` packages the plugin declares as
+OPTIONAL peers. A clean install therefore cannot run them, by design: the
+deployment supplies them, and `.npmrc` sets `auto-install-peers=false` so the
+install does not fail trying.
+
+That is all correct, and it was still wrong as the FIRST thing a reader runs.
+The comment above it said "no network, no model call — the policy layer is pure",
+which is true of the 367 and false of the six, and `check-test-list.mjs` had
+already written down which twenty-one files need no harness. The README simply
+was not reading it.
+
+**Fix:** the quick start now says `make ci-tests` — "exactly what CI runs" —
+and says plainly, right below, why not the glob and what the six failures mean.
+Verified by pasting the new README into a fresh clone and running its first
+command: green.
+
+### 1bl. The usability check had only ever asked one question
+
+**Observed:** `test/e2e-in-ui.mjs` drove the real page against a task that
+creates ONE file. One ask, one click, one assertion. Every number it could
+report — and it reported none — was therefore about the cheapest possible run.
+
+**Why that matters:** "a human can use this" is not a property of a one-ask
+run. It is a property of a run that needs a human SEVERAL times, where the
+costs show up: how long each card takes to appear after the model calls the
+tool, whether the card says WHICH call it is about, and whether the NEXT ask
+arrives at all once this one is settled. The script could not answer any of
+those — it clicked one card and asserted one file.
+
+**Fix:** the default task is now a three-file fixing task, the script settles
+EVERY ask in turn (matching each by its own `askedAt`, waiting for it to leave
+the screen before looking for the next), and it prints the wait for each.
+
+**Measured, real browser, real model, against a profile generated from this
+branch — the numbers this had never produced:**
+
+```
+e2e-in-ui (allow): 5 × Allow once → 3 file(s) written, waits 66, 34, 30, 47, 45ms
+e2e-in-ui (reject): 2 × Reject → no file written, waits 50, 48ms
+```
+
+Three things fall out of that which no previous run could show:
+
+- **The page is not the slow part.** Every card was on screen in tens of
+  milliseconds. The gaps the human feels are the 12–57 SECOND model steps
+  between them, so latency work belongs in the loop, not in the approval UI.
+- **The gate asks more than it needs to.** Five asks for three files: two were
+  `bash` (mkdir / ls) before any write. Under the generated profile
+  `resolveReversibility` defaults an unknown tool to `irreversible`, so every
+  shell call is gated too. That is SAFE and it is also noise — a human who
+  clicks through `bash` on autopilot has stopped reading the cards, which is
+  the property the gate exists to have. The next thing to look at is the
+  actuator table, not the approval flow.
+
+- **The cards could not be told apart.** Five asks, three of them `write`, and
+  every card read `write: irreversible is always approved by a human`. A person
+  cannot tell ask 3 from ask 4 without reading the run, and a gate whose cards
+  are indistinguishable trains the click that makes it worthless. `tools/pre-execute`
+  already receives the parsed arguments, so the path was in hand and discarded;
+  the reason now carries it (or the command, for `bash`). On the wire:
+
+  ```
+  REVIEW REQUESTED (policy): write: irreversible is always approved by a human
+  — write /private/tmp/hw/h5.txt.
+  ```
+
+  Deliberately not the file CONTENTS: that is what the human has not decided
+  about, and a diff on the card invites approving one nobody read.
+
+Also fixed while measuring: the `finally` block that cleans up the proof threw
+`ERR_INVALID_ARG_TYPE` when a run failed BEFORE the page had named its target,
+which replaced the real failure with a `join(undefined, …)` — the one failure
+mode you must never hide.
+
+### 1bj. The check that guards §1t could not see a third of the file
+
+**Observed:** `node scripts/check-known-issues.mjs` printed
+
+```
+known-issues: 21 sections, index and cross-references agree
+```
+
+on a file with **29** sections. The eight entries numbered `§1bb`…`§1bi` — a
+third of everything recorded here, and every finding this session produced —
+had no headings, no index rows and no validated cross-references, as far as the
+check was concerned.
+
+**Why:** every pattern in the script was `1[a-z]` — ONE letter. It was written
+for §1t, the duplicate `§1i`, and that fix was correct at the time; the `1b`
+sub-family arrived later, one commit at a time, and the regexes were never
+widened. The failure is the file's own recurring shape (§1t, §1u, §1be, this):
+a check written for one instance, and a second instance arriving one character
+away from where the check could see it.
+
+Worse than blind: it reported SUCCESS. "21 sections … agree" is a sentence that
+reads as an audit and is not one.
+
+**Fix:** one `LETTER = '1[a-z]{1,2}'` used by all three patterns, and index rows
+for the eight `1b` sections — generated from each section's own heading, so a row
+cannot drift from the title it claims to list.
+
+**Verified** both ways, because a check that has just been fixed is exactly the
+check that gets believed. Renumbering `§1bi` to `§1bh` — the §1t failure —
+exits 1 naming both sections. Repointing an index row at a letter with no
+section exits 1. And the count it prints went from 21 to 29, which is the
+number it should have been saying all along.
+
+### 1bk. `byRoute: {}` beside a real `costUSD` taught the optimizer every route was free
+
+**Observed:** the two observations the handoff left open, both closed by
+measurement rather than by reading:
+
+| open question | measured |
+|---|---|
+| `demo/run.sh --judge none` timed out with exit 124 | **it completes.** `goal-met · 6 steps · $0.0042`, `judgeScores: []`, six `[judge] unavailable (no judge configured)` lines. Nothing hangs. |
+| run records carried spend but empty `byRoute` | **real, and 27 of 29 records had it** — 25 of them with `costUSD > 0`. |
+
+**Why the second one matters:** `routeSummary` in `src/optimizer.ts` reads
+`record.byRoute` and nothing else, and the optimizer state is a PROMPT the judge
+reads to choose a rung. `stepsByRoute.size === 0` returns the string
+`none recorded` — so a deployment with twenty-five spending runs handed the
+optimizer `none recorded`, which is not "we have no data", it is "no route has
+ever cost anything". The field was missing, not the value.
+
+The three records that DO carry `byRoute` are the three written after the
+ledger was read instead of a literal, which is the shape of the whole finding:
+this was never a serialization bug, it was a record written from
+`byRoute: {}` at the call site.
+
+**Verified, not asserted.** `buildOptimizerState` over the real 29-record
+history now prints `routes: onegw/execution (12 steps)` where it previously
+would have printed `none recorded` for a history where every run spent money.
+Two runs and a wall-clock measurement, both directions.
+
+**Fixed, and it is one field.** `LoopRunResult` now carries `byRoute` from the
+same ledger that produces `spentUSD` — it always did, one call away in the same
+function — `refine.ts` records it instead of a literal `{}`, and a test fails if
+`byRoute` goes back to empty beside a real `costUSD`. Reverted the one-line
+change and watched it go red, then restored it. On the wire:
+
+```
+$ bash demo/run.sh --judge none
+  outcome goal-met · 6 steps · $0.004824
+  record  byRoute {"onegw/execution": {"steps": 6, "usd": 0.00482385}}   # was {}
+```
+
+The pattern worth naming, because it recurred three times in one round: a
+missing value is written down as a zero, and the zero is accepted because
+nothing reads it *at the moment it is written*. It is read later, by something
+that trusts it.
+
+### 1bm. Five cards that said the same thing, and a lost run record hiding in plain sight
+
+**Observed:** one live run against the generated web profile, five asks, three
+files — and every card began the same way:
+
+```
+REVIEW REQUESTED (policy): write: irreversible is always approved by a human.
+```
+
+Three of them were `write`, about three different files, and the card named
+none of them. A person cannot tell ask 3 from ask 4 without reading the run.
+
+The same run's feed also carried one line that had nothing to do with the
+task:
+
+```
+run history append failed: cannot get property "agents" without inject
+```
+
+**Why the first one:** `tools/pre-execute` receives the call's PARSED ARGUMENTS
+— this file stores their key for the step record two lines above the gate call —
+and `gateForTool(policy, toolName)` threw them away before deciding. The fact a
+reviewer needs was in hand and discarded.
+
+**Why the second one:** `ctx.agents` is a cordis PROXY, and reading it on a
+fiber where `AgentRegistry` has not mounted THROWS rather than returning
+undefined. `resolveAgent` read `(ctx as { agents?: … }).agents` — a type that
+promised `undefined` and delivered an exception — so one missing service cost a
+whole turn record. The plugin's own catch printed the failure rather than
+swallowing it, which is how it was found; but "visible, not fatal" is the wrong
+posture when the visible thing is the history itself.
+
+**Fix:** `subjectOf(toolName, args)` names the call from `file_path` / `path` /
+`filePath` / `command`, or adds nothing. It is deliberately narrow: never the
+file's contents, never a multi-line string, never over 120 characters — a card
+should not quote back the thing nobody has decided about. `resolveAgent` is a
+`try`/`catch`, because "no agent found" is already a supported answer (the
+agent-less policy) and a throwing getter is that same answer with noise on it.
+
+**Verified, live, both directions.** After the fix, five asks, five distinct
+cards, and the three files written:
+
+```
+bash  — bash pwd && ls -la . notes 2>&1
+write — write /private/tmp/tarp-work/notes/first.md
+write — write /private/tmp/tarp-work/notes/second.md
+write — write /private/tmp/tarp-work/notes/third.md
+bash  — bash ls -l notes && wc -c notes/*.md
+```
+
+`e2e-in-ui (allow): 5 × Allow once → 3 file(s) written`. Reject direction: three
+rejects, zero files. And `history append failures: 0` on both runs, where the
+run before this change carried one.
+
+The regression test was proven to bite: removing only the `try`/`catch` fails
+`a THROWING ctx.agents still records the turn`, restoring it passes. The subject
+is covered the same way — six assertions, including that two writes produce two
+different cards and that the file's contents never reach one.
+
+**A cost worth naming:** `pnpm install --frozen-lockfile --prefer-offline` is
+the only reinstall that works on this machine right now. `--offline` alone fails
+`ERR_PNPM_NO_OFFLINE_META` on `@deepseek-ai/dsh-agent@0.2.0-rc.2`, and plain
+`pnpm install` sits on a TLS handshake for minutes and exits on a network
+timeout. Recorded here because "my rebuild did not reach the profile" is the
+exact class of bug this file keeps re-finding, and this time the answer was a
+flag rather than a rebuild.
+
+### 1bn. One gate, three tables, and nothing that compared them
+
+**Observed:** measured on the live five-ask run, one ask was `job_list` — a
+tool whose entire job is to *read* a list of background jobs, gated as
+`irreversible` and asking a person to approve it.
+
+`resolveReversibility` returns `'irreversible'` for anything the `actuator` table
+does not name. That is the right default for `write` and pure noise for a
+progress check, and it is silent: the card looks like every other card.
+
+**Why it was missed:** the table ships in three hand-edited files —
+
+| file | deployment |
+|---|---|
+| `cordis.patch.yml` | the default profile the package installs |
+| `docker/profile.patch.yml` | the container profile |
+| `scripts/make-profile.sh` | the generated profile |
+
+— and **nothing compared them**. They had already diverged: the docker copy was
+missing `task`, so a container deployment gated every delegated HITL call while
+a generated one did not. One deployment, two policies, discoverable only by
+reading two files side by side. `job_list` was missing from all three, which is
+why the live run asked about it.
+
+**Fix, both halves.** `job_list`, `job_output` and `job_kill` are now classified
+in all three copies — read, read, and `reversible-write` respectively (a
+cancellation a re-run can undo, which is what `reversible-write` means
+elsewhere). And `scripts/check-actuator-tables.mjs` compares the three mappings,
+because the fix is not a third careful edit, it is a comparison.
+
+**Verified both directions.** The check reports `10 tools, identical in all 3
+copies`. Deleting one row from the docker copy exits 1 naming the tool and
+saying which file classifies it and which does not; reclassifying `job_list` in
+one copy exits 1 naming both classifications.
+
+**Verified end to end, live.** The same three-file task against a web profile
+carrying the fixed table, real browser, real model:
+
+```
+write — write /private/tmp/tarp-work/notes/first.md
+write — write /private/tmp/tarp-work/notes/second.md
+write — write /private/tmp/tarp-work/notes/third.md
+```
+
+`e2e-in-ui (allow): 3 × Allow once → 3 file(s) written`, waits 39–58ms, and
+**zero** `job_list` asks where the same task produced one before. The card is now
+both distinguishable AND only ever about a real write.
+
+**The pattern, fourth time.** §1t (duplicate section letters), §1bd (eight
+profiles running bytes nobody could name), §1bi (the README's first command),
+this. A fact written in several places with nothing asserting the copies agree.
+The fix that has worked each time is not "be more careful" — it is a script that
+fails, wired into `make check` and CI.
+
+**And the lesson from re-verifying it, which cost five attempts.** Getting the
+fixed table into a live profile by hand-editing its YAML produced a file the
+generator could never have written: four rounds of indentation arithmetic, each
+one making it slightly worse, ending in a duplicate-key parse error. The
+generator's own heredoc is the source of truth and was correct the whole time —
+the fix was to rewrite the file from the template, which took one command. Hand
+transcription of generated YAML is a fifth instance of the same mistake, and the
+same rule answers it: use the thing that generates it.
+
+### 1bo. The release workflow produced a tag and nothing else
+
+**Observed:** `.github/workflows/release.yml` computed a version, bumped
+`package.json`, pushed a commit, tagged, and created a GitHub release. It never
+ran `npm publish`. The package has therefore never been published, and the
+README's npm badge pointed at a version that does not exist.
+
+**Why nobody noticed:** every part of it works. The run is green, the tag
+appears, the GitHub release has generated notes. The failure is a *missing
+effect*, which is the one kind of bug that looks identical to success from every
+angle you would normally check — including a `gh run list` showing green.
+
+This is §1b's exact shape one level up: "peers resolved" reported as "your
+profile is ready". A step reporting done, for something it did not do.
+
+**Fix:** a publish step, guarded three ways because each guard answers a
+question this repo has already been bitten by:
+
+- `npm view …@$VERSION` first, so a retry after a mid-run failure does not E403
+  on a version that already exists. The tag is not the authority about npm; npm
+  is.
+- the TARBALL is inspected before publishing, not the working tree — `lib/` is
+  gitignored build output, and a clean-tree pack once shipped with zero `lib/`
+  entries (§1's own reason `prepack` exists). Checked on the artifact that
+  actually ships.
+- `--provenance` with `id-token: write`, because that is what ties the tarball
+  to this run; and `registry-url` on `setup-node`, because without it there is no
+  `.npmrc` and `npm publish` fails E401 on a package the run is ready for.
+
+**Verified, not assumed.** `actionlint` clean. The lib-entry guard measured in
+both directions: a real `npm pack` carries 21 entries and passes; a pack with
+`--ignore-scripts` (which is exactly the empty-lib shape, reached by bypassing
+`prepack`) carries 0 and the guard refuses. The first draft of the step also had
+a real bug caught before it ever ran — it read `$VERSION` under `set -u` with no
+`env:` carrying it, which fails on an unset variable rather than publishing the
+wrong one.
+
+**Not published.** The step needs `NPM_TOKEN` and an OIDC-enabled npm project;
+both are the maintainer's to create. Nothing here has run against the registry.
+
+### 1bp. An 87% success rate, computed from turns that did nothing
+
+**Observed:** the Metrics roll-up over the run history committed on `main`
+reported:
+
+```
+runs 15,  goalMetRate 0.867,  meanQuality 0.846
+```
+
+Read that as "this loop succeeds 87% of the time" and it is a good number. It is
+not one. Of those 15 records, **13 had `steps: 0` and `costUSD: 0`**, and 12 of
+them said `goal-met`.
+
+**Why:** `outcomeOf` mapped the harness's `completed` straight to `goal-met`,
+with the ceiling as the only thing that could say otherwise. But `completed` means
+**the transport closed** — it does not mean the loop worked. The loop's own
+success check lives in the CLI runner, which is not in this path at all. So a
+turn that opened, did nothing, and closed was recorded as a success, and
+`summarize` counted it faithfully. Every other number in the roll-up was correct;
+this one was a claim about work that never happened.
+
+This is the sixth instance of this file's shape, and the first one where the
+*number* is the defect rather than the code: nothing crashed, nothing was
+silently skipped, and the arithmetic was exact.
+
+**Fix:** `outcomeOf` takes the step count, and a turn with no steps is
+`model-stop`. Measured on the same 15 records:
+
+| | goalMetRate |
+|---|---|
+| before | 0.867 |
+| after | 0.067 |
+
+**Verified both ways.** `a closed turn appends exactly one run record` now
+asserts `model-stop` for the zero-step turn and the comment says why; removing
+the guard fails it. And the other half is covered too — `a turn that ran steps
+keeps goal-met`, because a guard that turned real runs into failures would be
+worse than the bug.
+
+**Two things this found on the way, both recorded because they are the trap
+rather than the fix.** The test had to be written in `plugin-wiring.test.ts`
+because that is the only file with a priced-session fixture; moving it into
+`plugin-approval.test.ts` meant duplicating `settledSession` and `PRICED_MSG`,
+which is worse than putting the test where the fixture lives. And `ctx.agents`
+has to be wired BEFORE `apply` — the plugin resolves the session's agent when it
+records the turn, and the assignment silently did nothing when it came after.
+
+### 1bq. Two rates that were one number
+
+**Observed:** the same roll-up that reported `goalMetRate 0.867` also reported
+`firstPassRate 0.867` — on a history where **all 15 records had `pass: 1`**.
+
+`firstPassRate` is documented as "the fraction the loop got right without buying
+a retry". A reader seeing two rates in the same block takes that as two pieces
+of evidence. It was one number twice: `recordTurn` hardcodes `pass: 1`, and a
+`pass: 2` record comes only from the CLI's `runRefined`, which is not on the
+harness path. So `met.filter(r => r.pass === 1)` was the same set as `met`,
+always, by construction.
+
+**Why nobody noticed:** the number was not wrong. It was correct arithmetic over
+a set that never varies — which is the harder version of this file's recurring
+shape, and the second time in two turns that a *derived* figure has been the
+defect rather than the code that produced it.
+
+**Fix:** `firstPassRate` is `undefined` unless some record reports `pass > 1`,
+and it answers normally the moment one does — a real multi-pass history from
+`runRefined` still gets the metric. Absent is distinguishable from a real `0`,
+which is the whole point: `0` would mean "no run ever landed on its first pass".
+
+**Verified.** Both directions in one test: two single-pass `goal-met` records
+give `goalMetRate 1, firstPassRate undefined`; adding a `pass: 2` record gives
+`goalMetRate 1, firstPassRate 0.5`. The empty-history case now asserts `undefined`
+rather than `0`, with the reason inline.
+
+Measured on the committed history, after both this and §1bp:
+
+```
+goalMet 0.067,  firstPass undefined
+```
+
+### 1br. A typical run costs $0.00 and takes 0 steps
+
+**Observed:** the third figure from the same committed history, and the same
+question §1bp and §1bq each asked of one number. Once §1bp stopped calling the
+13 no-op turns successes, the axes still counted them:
+
+```
+runs 15,  steps.p50 0,  cost.perRun.p50 0,  goalMetCost $0.00048
+```
+
+`steps.p50 = 0` reads as *a typical run takes no steps*. What it meant was *most
+of the recorded runs never ran at all*.
+
+**Why:** every axis was computed over `records` — all 15 closed turns — and a
+turn that took no step contributes a zero to steps, cost and wall-time. That is
+correct arithmetic over a population that is mostly non-runs, and it describes
+the population rather than the loop. `goalMetCost` was the same bug once more:
+the mean of the `goal-met` set, which was 13 zero-cost no-ops plus 2 real runs,
+so the "price of success" read **$0.00048** when the two runs that actually
+succeeded averaged **$0.0056** — a tenth of the truth.
+
+**Fix:** the cost/speed axes are computed over `ran` (records with `steps > 0`),
+`goalMetCost` over `ranMet` (met *and* ran), and `measuredRuns` is reported
+beside `runs` so the narrowing is visible rather than silent. After:
+
+```
+runs 15,  measuredRuns 2
+steps p50 8 / p95 10
+cost perRun p50 $0.00496 / p95 $0.00623
+goalMetCost $0.00623
+```
+
+**Verified.** One test builds the 13-no-op history and asserts every figure above;
+removing the filter fails it. And when nothing ran at all, `goalMetCost` is
+`undefined` — a price of success is not invented from zero-cost non-runs.
+
+**The trap in my own first assertion, recorded because it is the same one three
+entries running.** At n=2, `percentile` returns the *lower* of the two values,
+so `p50 > 0.004` failed against a correct `0.004`. The code was right and the
+test's expectation was wrong — which is the failure mode this file keeps
+documenting, wearing a different hat.
+
+### 1bs. The human-escalation alert that could never fire
+
+**Observed:** `reviewFraction` — documented as "the human-escalation rate", and
+the input to `summarize`'s **"Human escalation rate > 15%" alert** — was written
+as a literal `0` by `recordTurn`. Measured 2026-10-04 on the committed history:
+14 of 15 records said `0`, and the 15th (`0.1`) came from the CLI runner, which
+is a different code path.
+
+So no harness-path record could ever exceed 0, and **the alert could not fire** —
+not rarely, not under load, not ever. A run that surfaced every single step for
+review would report a 0% escalation rate and light no bulb.
+
+**Why:** `AttentionRouter` has counted reviews since it was written —
+`reviewsRequested`, incremented in all five places a review can originate
+(`operatorRequest`, `checkpoint`, critical signal, gate hold, judge) — and
+exposes the number through its own `stats()`. The plugin then wrote `0` into the
+record instead of reading it, two objects away from where the count already was.
+
+**Fix:** `reviewFraction: policy.router.stats().fraction`.
+
+**Verified.** Two tests. The router half asserts the arithmetic through
+`createPolicy` (2 steps, checkpoint at 1 → `fraction 0.5`). The record half
+drives the real `session/event` listener with `ctx.agents` wired before `apply`
+— without it the turn is recorded against the agent-less policy, a *different*
+policy whose router never saw the reviews — and asserts the record says `1`.
+Reverting the fix fails the second one.
+
+**And two mistakes of my own, recorded because the entry above them is about a
+number being wrong.** My first poll loop was `while (readFileSync(path) === '')`,
+which throws ENOENT on a file that does not exist yet — the poll itself was the
+failure, so the test could never pass no matter what the plugin wrote. And my
+first expectation was `0.5` where the real answer is `1`: the checkpoint fires at
+step 1, before `observeStep` has seen both steps, so the fraction is taken at the
+moment of recording. Both were the test's fault and both looked like the plugin's.
+
+### 1bt. Zero milliseconds, round-trip
+
+**Observed:** §1bp, §1bq, §1br and §1bs each found ONE figure from the same
+sweep. Asking the question systematically — *which fields are computed from a set
+that is empty, constant, or never written by this path?* — found the rest at
+once:
+
+```
+wallMs p50 0 / p95 0 / latest 0,  for all 15 records
+latencyMs  p50 0 / p95 0,          for all 15 records
+latencyKind "round-trip",          for all 15 records
+```
+
+A panel reading that says a run took **0 ms** and its latency was measured
+**round-trip**. Every harness-path record claimed a measurement that was never
+taken.
+
+**Why:** unlike §1bs, there is nothing here to read — `AttentionRouter` had a
+count, but the plugin has no seam that times a step, so `wallMs: 0` and
+`latencyKind: 'round-trip'` were literals standing in for an absence. **The type
+was the defect**: `wallMs: number` and a required `latencyKind` have no way to
+say "not measured", so the absence had to wear a number's clothes.
+
+**Fix:** `RunRecord.wallMs` and `RunRecord.latencyKind` are optional. The
+harness path writes `undefined` for both; `summarize` averages wall-clock over
+records that timed something and reports `latencyKind: undefined` when none did;
+`buildOptimizerState` says `wall mean n/a` rather than `0ms`. The `ponytail`
+note that documented the old compromise — "`LatencyKind` has no 'none' value …
+upgrade path: widen `LatencyKind`" — is now the thing that was done, which is
+the outcome a `ponytail:` note is supposed to produce.
+
+**Verified.** Three assertions in three files, each of which fails if the field
+goes back to a literal: the record test asserts `wallMs === undefined` and
+`latencyKind === undefined`; a metrics test asserts an unmeasured run does not
+put a zero in the wall axis and that one timed run is enough to name the kind;
+the empty-history test asserts no kind is declared. Reverting `wallMs: 0` fails
+the first.
+
+### 1bu. The speed axis, empty since the day it was written
+
+**Observed:** §1bt made `wallMs` and `latencyKind` optional, because the harness
+path has no seam that times anything. That was true — and it was also only half
+the finding. The **CLI runner** does time every step, and has since it was
+written:
+
+```ts
+const callStartedAt = performance.now()
+// … the model call …
+const latencyMs = performance.now() - callStartedAt
+history.push({ index: step, …, latencyMs })
+```
+
+That measurement went onto `StepObservation` and **stopped there**. `runLoop` did
+not return it, so `refine.ts` — which assembles a `RunRecord` from a
+`LoopRunResult` — had nothing to write and wrote `stepLatencyMs: []`. The speed
+axis has been empty on the one path that measures it, for as long as both have
+existed.
+
+**Why it survived §1bt.** §1bt asked "which fields are empty or constant on the
+harness path" and the answer was honest for that path. It did not ask the
+follow-up: *is there a path where they are not?* There was.
+
+**Fix.** `LoopRunResult` carries `stepLatencyMs`, `wallMs` and `latencyKind`.
+The samples come from a `callLatencies` array pushed inside the timing window —
+**not** from `history`, because `history` only grows when a step dispatches a
+tool, and a model-only step would then report "no measurement" for a step that
+was measured. `wallMs` is one clock started before the run's first step.
+
+**Verified, on a real run.** `bash demo/run.sh`:
+
+```
+stepLatencyMs [1343, 2261, 3256, 2306, 1470, 8618]   ms
+wallMs        62314 ms
+latencyKind   round-trip
+```
+
+That is the first record in this repo's history with a populated speed axis, and
+`summarize` now reports `latencyMs p50 2261 / p95 8618 ms` over a history where
+it previously reported 0. Two tests, each failing if its half is reverted: one
+drives `runLoop` end to end and asserts the samples are real durations, one
+asserts the record carries them.
+
+### 1bv. The plugin path's wall clock, hiding in the event it was already reading
+
+**Observed:** §1bt made `wallMs` optional with the note "this path has no seam
+that times a step". §1bu gave the *runner* a real one. The plugin path was
+assumed to have none — and it does not need one, because it is not missing data,
+it was **not reading what it already had**.
+
+Every `SessionEvent` carries `time` (Unix epoch ms, stamped by the harness), and
+`turn/start` and `turn/end` are both logged. `recordTurn` receives the
+`turn/end` event and was reading its `type` and `data`, and writing
+`wallMs: undefined`.
+
+**Fix.** `asTurnEnd` also returns the event's `time`; `turnStartTime` walks back
+through the session log for this turn's `turn/start`; the record reports
+`event.time - openedAt`, and its `startedAt`/`endedAt` are now the harness's
+times rather than "the moment we wrote the file".
+
+**Verified.** Two tests, and the second is the one that matters: a turn whose
+`turn/start` is **not** in the log must report `wallMs: undefined`, not `0`.
+That is §1bt's exact defect, so the guard against reintroducing it is asserted
+directly. Reverting `openedAt` to the listener's default fails the first test;
+reverting `wallMs` to `0` fails **three**.
+
+**Still absent, deliberately.** `stepLatencyMs` and `latencyKind`: the plugin has
+no seam around a model call — only the turn boundary — so there is no honest
+per-step sample, and `latencyKind` would be a label for a resolution that does not
+exist. `undefined` on both is the finding from §1bt, not a leftover.
+
+**The turn, not the loop.** Worth being precise about what this measures: a
+`turn` is one harness turn, so a loop run of many steps reports the span of the
+turn it closed. That is what the field has always meant on this path (one record
+per closed turn) and it is the duration a reader of the record is asking about.
+
+### 1bw. Open: the run record still does not land on the harness path
+
+**Status: unresolved. What follows is what four rounds of instrumentation
+established, including two wrong conclusions of my own.**
+
+**The one thing that is certain.** The listener runs, `asTurnEnd` accepts a real
+`turn/end`, and `recordTurn` is called — and in the runs where it was observed,
+it threw:
+
+```
+run history record threw: Cannot read properties of undefined (reading 'log')
+```
+
+Two hours and four instrumentation rounds to see that string, because a
+**synchronous throw inside a `session/event` listener is contained by the
+harness and logged below the level the web app surfaces.** Nothing appeared in
+the feed, nothing appeared in the log, and the plugin carried on as if it had
+recorded the turn.
+
+**How it got there, and the part I got wrong twice.** `turnStartTime` calls
+`session.eventAt(...)`, and `SessionStore.eventAt` reads `this.log`. The throw
+says the object it was called on has no `log`. I concluded the listener had been
+handed a cordis **scope carrier** instead of the Session, read the harness's
+declared type (`'session/event'(this: Scoped<Session>, session: Session, …)`),
+changed the signature to three arguments — and broke it further.
+
+Then I measured the payload instead of trusting the type signature, with a
+rest-parameter probe:
+
+```
+n=2   shapes= log+surfaceManager+header / type+seq+time
+```
+
+**Two arguments**, and the first is the Session. `Events.dispatch` shifts the
+receiver off the argument list before calling `cb(...args)`; the type signature
+describes the dispatch, not the call. My carrier theory was wrong, the three-arg
+signature was worse, and both are reverted.
+
+**Where the `log` throw really comes from: not yet established.** With the
+two-argument signature restored the unit suites pass (48/48) and the live run
+still writes nothing, and the error is no longer reproduced — which means the
+throw I captured came from the three-argument version I had just introduced, not
+from the original code. **The original cause is therefore still unknown**, and
+this entry says so rather than crediting a fix that is not there.
+
+**What is kept, because each is right on its own merits:**
+
+- `global: true` — the documented switch for "receive regardless of context
+  filter checks", so the registration does not depend on the root context being
+  untagged.
+- the **synchronous** `try`/`catch` around the call, so a throw in this listener
+  becomes a feed line instead of a silent loss. That guard is why the error was
+  ever visible at all, and it is the thing a next fix needs.
+- `runlog.ts` statically imported — a load that can never settle loses a record
+  with no rejection to catch.
+
+**Status: unresolved.** Recorded so the next person does not re-derive it.
+
+**Measured on a real `dsh web` run** (2026-10-04, generated web profile, real
+model, real browser, five asks settled, three files written):
+
+| observation | value |
+|---|---|
+| `session/event` listener reached? | **yes** — 70 events for one session |
+| `turn/end` among them? | **yes** — exactly 1 |
+| `asTurnEnd` verdict on it | **accepted** |
+| `recordTurn` entered? | **yes** — its first statement printed a feed line |
+| run record written? | **no** — the history file is unchanged, and `metrics` is absent from `/api/state` |
+
+**What narrowed it, by reading the harness rather than by probing again.** Two
+facts, both from source:
+
+- `Session.append` dispatches `session/event` **synchronously**, inside the
+  append, and `invokeContainedSessionObservers` wraps each callback in
+  try/catch — so a throw before the first `await` would be swallowed with a
+  warning in the harness's own log. There is no such warning.
+- In a **web** run the turn stays open while the page sits idle. `Agent.turn()`
+  appends `turn/end` in its `finally`, after the step loop drains, and a web
+  session is not finished until the next message or teardown. So the record
+  lands when the *next* turn starts — not while the run is being watched.
+
+That second fact explains the live runs on its own, and it is consistent with the
+one run in which a `turn/end` *did* arrive during measurement. It is the reason
+no probe fired in the later runs: `turn/end` had not happened yet, so
+`recordTurn` was never entered — which is exactly what the feed shows.
+
+**Still not established:** whether the append completes once a turn does end. The
+measurement above stops at "the turn had not ended", and closing that gap needs a
+second turn in the same session, which the probe scripts do not send. Recorded as
+the open half rather than guessed.
+
+**What the fix is for, then, if not for this.** Both changes stand on their own
+and neither is cosmetic: a listener that a scope filter can drop is a silent
+failure, and a dynamic load that can never settle is a worse one. But the entry
+above is honest that neither is the cause of the missing record — which is what
+makes them worth keeping. A fix that does not fix the thing it is named after is
+either a different fix or a lie.
+
+**What this changes about the earlier entries.** §1bp through §1bv each read a
+figure off a file and found it wrong. That work stands on its own — the figures
+were wrong. What is **not** established is the causal claim I attached to them:
+that the harness path had never written a record at all. That was an inference
+from "no record exists", and the listener is demonstrably running. Correct the
+chain, do not discard it.
+
+**What did change, and is verified:** the listener is now registered with
+`{ global: true }` (the documented switch for "receive regardless of context
+filter checks"), and `runlog.ts` is imported **statically** rather than through
+`await import(...)` inside the turn closer. The dynamic import was justified as
+keeping `node:fs` out of the plugin's graph — which stopped being true when
+`readFileSync` became a static import at the top of the file — and a load that
+never settles loses the record with no rejection, so nothing catches it. A
+static import resolves at load, before any run. Both are improvements either way;
+neither is the cause, because both were in place for the run above.
+
+### 1c. `make profile` hung for nine minutes with the registry unreachable
+
+**Observed:** `bash scripts/make-profile.sh webz --port 4596` printed
+`==> install (pnpm 9 …)` and then produced nothing at all — no error, no
+progress, no timeout, for nine minutes. Every other network in the box was fine.
+
+**Why:** the install was not slow, it was waiting. Measured: the pnpm process
+burned **1.2 seconds of CPU across those nine minutes**, and `sample` put every
+one of its threads in `uv__io_poll` on five half-open sockets to
+`104.16.x:443`. TCP to that address connected, `github.com` answered 200, DNS
+resolved — the stall is the **TLS handshake after connect**, which pnpm sits on
+until its own fetch timeout with no output. To a person watching the terminal
+this is indistinguishable from a hung script, and the useful question ("is the
+network down or is my config wrong?") has no answer in the output.
+
+**Fix:** `--prefer-offline` on the install. Every package a profile needs is
+already in the local store from a previous profile, so pnpm resolves from disk
+and touches the network only for what is genuinely missing. The same install
+against the warm store now finishes in **1.4s**; a full `make profile` for the
+web app is **1m47s** end to end including the build and the in-profile import.
+
+The general form of this bug, and the fourth instance of it in this file: a
+silent failure that is *silent about being silent*. The plugin that failed to
+import, the ladder rung that resolved but was never tested, the profile that
+composed with nothing gated — none of them printed the thing that would have
+identified them. A hang is the same failure wearing a different mask.
+
+### 1d. The settings page wrote a file nothing decided with — and said so
+
+**Observed:** the Feature Loop settings page wrote
+`~/.config/dshloop/config.yaml`, displayed the saved value back, and the file's
+own header read:
+
+```
+# READ BY: the settings page only (buildStatus merges it over the patch row).
+# NOT READ BY: apply() — the running gate is built from the profile patch
+#   row alone, so nothing here changes policy until that is wired.
+```
+
+**Why it matters anyway:** the warning was **accurate**. That is the trap. A page
+that saves a setting, shows it, and admits it does nothing teaches the operator
+that the whole surface is a mock — so nobody uses it, and the correct fix (wire
+it) never gets prioritised over "remove the dead page". Honest documentation of
+an unimplemented feature is still shipping an unimplemented feature.
+
+**Fix:** `mergeRowAndSettings` in `remote.ts` applies the file OVER the patch row
+on the nine keys the page owns, and `index.ts` calls it on the way into `apply`.
+Three rules, each load-bearing:
+
+- **the file wins** — the page exists so someone can widen or tighten their own
+  gate without editing a shared patch layer other profiles inherit;
+- **an allowlist of keys**, not a denylist — a denylist silently starts applying
+  whatever the next version of the page adds, which is how a status page becomes
+  policy without anyone deciding it should be;
+- **`router` is merged, not replaced** — a file that sets only `reviewBudget`
+  must not erase the row's `judgeThreshold`.
+
+`spec`, `dashboard` and `optimize` stay row-only: the page offers no control for
+them, and a half-applied ceilings block with no price table is worse than a clear
+boundary.
+
+**Verified live on a generated profile, both directions, with the row disagreeing
+each time:**
+
+| settings file | row says | what happened |
+|---|---|---|
+| `gatePolicies: {write: auto}` | `write: always-approve` | the model wrote `proof.txt` with **no approval demanded** |
+| `gateMode: deny` | `write: always-approve` | **refused** — `denied pending review`, no file |
+
+And the nine new tests were proven to fail before being trusted: reversing the
+merge order in `remote.ts` breaks all three wiring cases, and turning the
+allowlist into a pass-everything breaks the boundary case. The merge lives in
+`remote.ts` rather than `index.ts` precisely so those tests import no harness
+package and CI actually runs them.
+
+### 1e. `policy.judge.score is not a function` — a string where an object belongs
+
+**Observed:** a settings file naming `judge: laya` booted a generated profile
+clean and then died on the first step:
+
+```
+dsh: UNKNOWN: policy.judge.score is not a function
+```
+
+**Why:** the merge was spread into `apply`'s options **after** the constructed
+`judge:`. `judge: laya` in the file is a STRING; the policy wanted a `Judge`
+object; the spread put the string last, so it won. Nothing complains at load —
+the object is still a valid value for the config schema — and nothing complains
+until a step asks the judge for a score.
+
+This is the same class as 1a–1d one level over: **a value that is wrong in a
+place nothing looks at until it is looked at.** It is also the specific hazard
+of a shallow merge over a config that mixes scalars and objects: `spec`,
+`dashboard`, `optimize` and `judge` are the four non-scalars, and a spread does
+not know which is which.
+
+**Fix:** the judge is resolved FROM the merged config, and the options spread
+names the three keys that must keep their own values — `judge` (an object),
+`dashboard` and `optimize` (blocks the file may not touch). Three of them are
+still silently orderable in one spread, which is why they are named rather than
+left to a future edit.
+
+**The instructive part is the test.** The first version called `resolveJudge`
+directly, which is the function under suspicion — and it **passed against the
+live bug**. A test that exercises the helper proves the helper works, not that
+the helper is reached correctly. Rewritten to drive `apply`, it now fails when
+the spread is put back in its live position:
+
+```
+with the merge spread after `judge:` — the live crash:
+not ok 17 - apply builds a Judge from the settings file, not the string in it
+```
+
+That is the third time in this file that a test proved a function works while
+the wiring to it was broken. Counting call sites (8b211d1), reaching the last
+hop (1d), and driving the call site rather than the callee are three different
+checks, and this bug needed the third.
+
+### 1f. `make check` could not run where it was meant to, and `make test` lied
+
+**Observed**, on a bare clone with only `npm install` (2026-10-03):
+
+```
+$ make test
+# pass 345
+# fail 6
+$ echo $?
+0                      ← six suites died on `Cannot find package '@deepseek-ai/dsh-llm'`
+
+$ make check
+make: *** [test] Error 1     ← stopped before the typecheck and all six drift checks
+```
+
+**Two separate defects, and the second one hides the first.**
+
+1. **The exit code was thrown away.** The recipe ended in `| tail -8`, and a
+   pipeline's status is its LAST command's — always 0. A green `make test` over
+   six red suites is worse than no target, because it is believed.
+
+2. **`check` depended on `test`**, which needs the harness packages. So the
+   checks that exist *because* they need no toolchain — the four drift checks —
+   were behind a toolchain. `make check` on a fresh clone had never run them,
+   and a row in this very file claimed "`make check` on the bare clone | green".
+   It was green for the wrong reason: `make` printed the failing line and the
+   row never re-read the exit code.
+
+**Fix.** `make check` now depends on a new `ci-tests`, which runs exactly the
+files CI runs (the list read from the workflow, not copied — a copy is how it
+drifted before). `make test` still runs everything and now exits non-zero on
+failure.
+
+`.SHELLFLAGS := -o pipefail -c` is the obvious fix for (1) and it **does not
+work on this make**: measured here, a `@false | tail -1` recipe exits 0 with
+it and 2 with an inline `set -o pipefail` or an explicit `bash -o pipefail -c`.
+So every recipe that pipes says so itself. A general setting that measures as
+ineffective is worse than four explicit ones, because it reads as covered.
+
+**Verified on a bare clone:** `make check` exits 0, running all 21 CI files, the
+typecheck and all six drift checks with no harness on the path; `make test`
+exits 2 there and 0 in the full worktree. The `check-test-list.mjs` boundary was
+proven in both directions — dropping the demo suite from ci.yml fails it by name.
+
+### 1g. `plugin.ts` is not typechecked by anything, and the README said it was
+
+**Claimed, in the README's own verification block, for months:**
+
+```
+npx tsc --noEmit    # clean, all of src/ incl. plugin.ts
+```
+
+**Measured (2026-10-03):** eleven errors, all in `src/plugin.ts`:
+
+```
+src/plugin.ts(1302,19): error TS2345: Argument of type '"session/event"' is not
+                           assignable to parameter of type 'keyof Events'.
+src/plugin.ts(1318,30): error TS2345: Argument of type '"agent/pre-step"' …
+src/plugin.ts(1318,57): error TS7031: Binding element 'agent' implicitly has 'any' type.
+…                                    (11 in total)
+```
+
+**Why they are there, and why nothing caught them.** `plugin.ts` needs
+`@deepseek-ai/dsh-llm`'s `Events` augmentation, and that package is **not in this
+repo's `node_modules`**. It lives in the harness monorepo under
+`packages/llm/llm-deepseek`, which is not published as `@deepseek-ai/dsh-llm`
+into `node_modules/@deepseek-ai/` — only 15 packages are linked there and it is
+not one of them. So:
+
+- `scripts/typecheck.sh` guards on `[ -d node_modules/@deepseek-ai/dsh-llm ]`,
+  that test is **false**, and the script falls through to CI's file list — which
+  excludes `plugin.ts` by name, with a reason.
+- So `plugin.ts` is typechecked by **nothing**: not CI, not `make check`, not
+  `npx tsc --noEmit`. It typechecks only inside a DSH profile, where the
+  package resolves, and `make profile` does not run a typecheck.
+
+The errors are harmless today — `ctx.on` is `any`-shaped at runtime and the
+events do exist — but the README claimed a clean typecheck of a file that no
+typecheck reaches. That is the same claim-versus-run gap as §1f, one layer up:
+**the number in the docs was copied from the CI list's scope and attributed to
+all of `src/`.**
+
+**What is NOT proposed here:** making `plugin.ts` typecheck in a bare clone
+would mean vendoring the harness's `Events` augmentation — which §"the approval
+seam" already does deliberately, for the one package that owns an event this
+plugin uses. Widening that to `dsh-llm` is a real change with a real
+maintenance cost, and it is the kind of decision a maintainer should make on
+purpose rather than a drive-by fix at the end of a session.
+
+**Fixed here:** the claim. The README now says what `tsc` actually checks, and
+`make check`'s output already said it (`typecheck clean (CI file list;
+plugin.ts needs the harness packages)`) — which is the part that was right and
+the part nobody read.
+
+### 1h. `make up` reported a dead container as up — and no HTTP probe can fix it
+
+**Observed (2026-10-03), starting from this branch's own `make up FORCE_REINIT=1`:**
+
+```
+[entrypoint] booting 'dsh-fl' on 127.0.0.1:3099 (DSH_HOME=/data)
+dsh web: http://127.0.0.1:3099/?token=…
+error: unknown option '--host'
+…
+  up (HTTP 401)
+  open: http://127.0.0.1:3090/?token=…
+```
+
+`make up` printed an open URL for a container whose harness process had exited.
+
+**Why the check could never have caught it.** The published host port is a
+**relay** — `docker/entrypoint.sh` binds the app to loopback (the harness refuses
+`0.0.0.0`) and forwards from the container's own interface. So the old exit
+condition, "the published port answers 401 or 200", was satisfied by the relay
+answering 401 **forever**, and three separate probes all reported a healthy
+dead app:
+
+| probe | with the harness dead |
+|---|---|
+| `make up`'s host-port poll | `401` → "up (HTTP 401)" |
+| the container healthcheck (`fetch 127.0.0.1:8099/`) | `healthy` |
+| `docker inspect … RestartCount` | `0` |
+
+**And then the obvious fix was also wrong, which is the part worth keeping.**
+The natural repair — take the token from the `dsh web:` line and require a `200`
+with it — was measured and abandoned:
+
+- a live app answers a fresh token with **303 + Set-Cookie**, then `200` on the
+  redirect, so "200 only" fails on a *healthy* container;
+- more decisively, `kill -STOP 1` inside the container left every HTTP probe
+  working: a token request returned **303 three times in a row** against a
+  harness that could not execute a single instruction. **No HTTP probe
+  distinguishes a live app from a wedged one**, because the relay keeps
+  answering from the last thing it saw.
+
+So a token probe is not a liveness signal either; it is a better-looking lie.
+
+**What `make up` asserts now**, and the ceiling is stated in the recipe:
+
+1. the relay answers 401 or 200 on the published port;
+2. the harness printed a `dsh web:` line in **this boot's** log.
+
+(2) is the harness's own "I got as far as booting" record, and its absence is
+exactly the failure above — an older CLI in a stale image refusing `--host`,
+which printed the dashboard line and then died before the UI existed. Proven to
+fire by pointing `COMPOSE` at a stub whose `logs` is empty: exit 2, naming the
+branch.
+
+**Not fixed here.** The healthcheck probing the relay instead of the app is a
+real defect in `docker/docker-compose.yml`, and fixing it needs a liveness
+signal that does not go through the relay — a `pid 1 is the dsh process` check,
+or an app-side health endpoint. Both belong with whoever owns the container, and
+both are recorded rather than guessed at.
+
+**A note on what this box actually had running**, because it changes how the
+evidence reads: the `dsh-feature-loop` container was started 12 hours earlier
+from `.worktrees/prod-warts/docker/`, still on the OLD ladder
+(`opencode/deepseek-v4.1-flash` → `xai/grok-4.7`), and `make up` from this
+branch targets a *different* compose project — so it never touched it.
+`docker inspect` on the container names its `working_dir`. **A container found
+by `make up` is not necessarily the one you built.**
+
+**Blocked, and then not.** The rebuild failed first — three
+`ERR_PNPM_META_FETCH_FAIL … Socket timeout` — and the cause was diagnosed rather
+than worked around. Bisected with `openssl s_client` against Cloudflare's edge:
+
+| SNI on 104.16.0.34:443 | result |
+|---|---|
+| `example.com` | `CONNECTION ESTABLISHED` |
+| `registry.yarnpkg.com` | `CONNECTION ESTABLISHED` |
+| `registry.npmjs.org` | **stalls** |
+| `npmjs.com` | **stalls** |
+
+TCP connects, DNS resolves, `github.com` answers — so it is **SNI filtering on
+this network path**, and `nc -z 443` succeeding is exactly why it presents as a
+hang rather than a failure. `registry.npmmirror.com` answers the same API and was
+verified to carry what this repo installs (`yaml` latest; `@deepseek-ai/dsh`,
+29 versions, including `0.2.0-rc.2`).
+
+`NPM_REGISTRY` is now a build **argument** in both Dockerfile stages and a
+compose `args:` entry — empty by default, so the ordinary build is unchanged, and
+set only by whoever is behind a filtered network. Not a committed `.npmrc` line:
+a mirror in a checked-in file silently changes where every package on a
+developer's machine comes from, which is a supply-chain decision nobody asked
+for. With it set, `docker compose build --build-arg NPM_REGISTRY=…` completes and
+`#21 … feature-loop imports`.
+
+**Two more defects the rebuild then exposed**, both of which had made the
+container path unverifiable rather than wrong:
+
+1. **`FORCE_REINIT=1` re-seeded the patch but NOT the settings.** The harness
+   renames a legacy `settings.yaml` to `settings.yaml.imported` on first import,
+   so a volume seeded by an older image keeps that file forever and the entry
+   point's "already present" guard skips the re-render. Measured: after
+   `FORCE_REINIT=1` the patch row carried this branch's ladder
+   (`model: execution`) while `settings.yaml.imported` still declared four
+   concrete ids and no `execution` — the patch right, the resolver wrong, and
+   the run dies `UNKNOWN_MODEL` on step 1. Exactly the 2026-10-01 bug with a
+   fresh coat of paint. `FORCE_REINIT` now removes the marker too.
+
+2. **`test/probe-container.mjs` declared the dead concrete ids itself.** It is the
+   *third* place to carry them, and it is why the container probe still failed
+   `UNKNOWN_MODEL` even with the patch row and the settings both correct: the
+   probe builds its own profile, and the settings import is one-shot so that
+   profile gets no settings of its own and resolves rungs against the list in
+   the probe's own patch. It now declares `execution` first, like every other
+   shipped deployment.
+
+**Now verified for real:** with the mirror, a rebuilt image, and the patch and
+settings in agreement, `make e2e-container` passes all three directions inside
+the container:
+
+```
+==> 1/3  fail-closed: refused, no file ✓
+==> 2/3  allow:       settle {"outcome":"allowed-once"}, written: "hello" ✓
+==> 3/3  audit trail: 1 approval/asked, 1 approval/decided=allowed-once ✓
+probe passed
+```
+
+and the probe profile's composed ladder is `{ provider: onegw, model: execution }`
+— this branch's route, in a container, on a real gated run.
+
+### 1i. The ladder check named three files and the repo has four
+
+**Found by asking the check a question it had never been asked.** Three shipped
+specs are covered — `cordis.patch.yml`, `docker/profile.patch.yml`,
+`scripts/make-profile.sh` — and every one of them was moved to `execution` in
+this branch. The **demo** was not in the list, and it ran `xiaomi/mimo-v2.5` for
+the six months before this branch, which is the exact drift the check exists to
+prevent, sitting in a fourth file nobody had enumerated.
+
+**Why a named list is the weak part.** The check's whole argument is "every
+shipped deployment is covered". That is only true if the enumeration is right,
+and an enumeration is a claim a person has to remember to extend. A row added
+later is invisible by construction.
+
+**Fix.** `demo/cli.ts` is a fourth case, and its answer is *read out of the
+source* — the default is a TS string (`model: 'onegw/execution'`), so the case
+asserts the route rather than parsing a ladder. Copying the route into the check
+would have been a second answer to "which model does the demo run", which is the
+drift class inside the drift check. Proven to fire by putting `xiaomi/mimo-v2.5`
+back: `demo/cli.ts: the default route is xiaomi/mimo-v2.5, not onegw/execution`,
+exit 1.
+
+**And the fifth: the container probe.** `test/probe-container.mjs` composes a
+profile at run time and declares its own `models:` list, because the settings
+import is one-shot and belongs to `dsh-fl` — so that list, not the container's
+settings template, decides whether a probe run can resolve a rung. It had no
+`ladder:` of its own (it copies `dsh-fl`'s row), so the rung side is inherited;
+the resolver side is its own, and it was carrying the dead concrete ids until
+§1h found them by cost. It is a case here too, asserting the half that is its
+own: that the route the inherited ladder names is resolvable from the ids it
+writes. Proven by removing `execution` from the probe's list:
+
+```
+test/probe-container.mjs: declares no model for the route onegw/execution.
+  declared here: opencode/deepseek-v4.1-flash, xai/grok-4.7
+  resolver — a run on onegw/execution dies UNKNOWN_MODEL on step 1.
+```
+
+### 1j. A safety schema that was never run — and a throw that is loud but not fatal
+
+`src/index.ts` exports `Config`, a schemastery schema, because cordis's plugin
+contract asks for it. It looked like a guard:
+
+```ts
+gateMode: z.union([z.const('ask'), z.const('deny')]),
+```
+
+**It is a type. Nothing runs it.** Measured 2026-10-03, on a profile generated by
+`scripts/make-profile.sh` and then edited to `gateMode: auto`:
+
+| step | result |
+|---|---|
+| `--dump-config` | composes, shows `gateMode: auto` (documented since 2026-10-01) |
+| live boot | the plugin **loads** and the loop **runs** — `say hi` came back |
+
+So an operator who typo'd the one setting that decides whether a human is ever
+asked got a working-looking loop that never asks — and measured, not inferred:
+`gateMode: auto`, a task to write one file, and `gm-proof.txt` appeared in the
+run's working directory containing `hello`. The gate asked nobody. The reason it did not *run
+ungated* is `createPolicy`'s `gateMode: options.gateMode ?? 'ask'` plus `ask`
+failing closed with no answerer — the right direction for a safety setting, and
+the wrong substitute for a rejection. `docker/README.md` had already recorded
+that `--dump-config` cannot catch a bad gate; the load path could not either, and
+that was the new half.
+
+**Two fixes, and only one of them is a fix.**
+
+1. `apply` now throws on an unrecognised `gateMode`, naming the field and both
+   valid values. Verified live:
+
+   ```
+   feature-loop (@freepeak/dsh-feature-loop): Error: gateMode must be "ask" or
+   "deny", received "auto". …
+   ```
+
+2. **But the throw does not stop the run.** The harness prints a failed plugin's
+   error as a *warning*, the plugin never constructs, and the turn **still
+   answers** — measured on the same profile, immediately after. So the sentence
+   is what the throw buys; the protection is still the safe default underneath.
+
+That is worth stating plainly rather than shipping as "fixed": a loud error the
+operator may not see is a better message, not a gate. The thing that actually
+keeps a typo from disarming the loop is `?? 'ask'` and `ask` refusing, and that
+is unchanged and was measured again in both directions (`ask` → denied, no file).
+
+### 1k. A hand-edited settings file can name a tool that does not exist — silently
+
+The settings page validates `gatePolicies` against the six known classes:
+
+```
+gatePolicies: unknown tool class "wrong_tool_name"; expected one of
+read, glob, grep, edit, write, bash
+```
+
+**A hand-edited `~/.config/dshloop/config.yaml` is not validated at all**, and
+that is the file this branch made authoritative. Measured 2026-10-03 on a
+generated profile, `gatePolicies: { wrong_tool_name: auto }`:
+
+| settings | what happened |
+|---|---|
+| `{ wrong_tool_name: auto }` | run **denied** the write, no file — silently |
+| `{ write: auto }` | run **wrote** the file, no approval |
+
+So the direction is fail-closed, which is the right direction and not the same
+thing as correct: `ReviewGate.check` reads `this.policies[tool]`, an unknown key
+is simply never looked up, and the run falls through to the defaults. The
+operator typed a setting, saw it saved, and it did nothing — with no message
+anywhere saying so.
+
+This is §1a's shape one level down: a value that is wrong in a place nothing
+looks at. The ladder check reads rungs from files; nothing reads the settings
+file's KEYS.
+
+**Fixed, after measuring which half actually mattered.** An unknown tool CLASS
+was the harmless half — it is never looked up, so the run falls through to the
+defaults. An unknown policy VALUE was the dangerous one, and the reason is
+structural: `ReviewGate.check` compares the value against three known strings
+and every comparison misses, so the call falls through to its final
+`review: true`. Measured on a row that said `write: auto`:
+
+```
+row: write: auto + file: {write: definitely-yes}   ->  the run DENIED the write
+```
+
+Right answer, **by luck**: it depends on that chain having three links. Add a
+fourth branch and the same typo becomes an ungated write, with no test in the
+repo to notice.
+
+So `userSettings` now filters both — unrecognised classes and values are DROPPED
+rather than fatal. Dropping restores the row's own policy, which is the
+fail-closed direction; refusing to boot would turn a typo in a file nobody
+validates into an outage. Four tests, three of them proven to fail when the
+filter is removed, and the fourth asserting a VALID file passes through
+byte-for-byte so this is a guard and not a second policy layer.
+
+Verified live on a generated profile, row `write: always-approve`:
+
+| settings file | outcome |
+|---|---|
+| `{write: definitely-yes}` | **denied** — the row's policy stands |
+| `{write: auto}` | allowed (the operator asked for it, in the file the page writes) |
+| `{bogus_tool: auto}` | **denied** — a file the gate cannot act on does not widen it |
+
+### 1l. Two shapes of a bad number in the same setting file behaved differently
+
+Measured 2026-10-03 on a generated profile, `reviewBudget` out of its band vs. not
+a number at all:
+
+| settings file | what happened |
+|---|---|
+| `reviewBudget: 0` | the plugin **throws** — `dsh-feature-loop: reviewBudget must be in (0, 1], received 0` — exit **1** |
+| `reviewBudget: "x"` | the value is **silently dropped**, the row's own `0.1` stands, the run answers, exit **0** |
+
+Both directions are the right one for the wrong reasons. The first is
+`AttentionRouter`'s own constructor guard, and it is excellent. The second was
+`userSettings`'s `typeof value !== 'number'` → `continue`: fail-closed, invisible,
+and on a file a human is invited to edit by hand (§1d made it authoritative).
+
+So the router keys are now validated in `userSettings`, with the same band
+`AttentionRouter` uses and a sentence that names the key and the value:
+
+```
+settings: reviewBudget must be a finite number, received "x". The Feature Loop
+settings page writes one; a hand-edited file must match.
+```
+
+**And it is still not fatal**, which is §1j's finding again rather than a new
+one: the harness prints the plugin's error as a warning, the plugin never
+constructs, and the turn answers anyway — `Hi! 👋` came back, exit 0. The
+sentence reaches the operator through the same channel as every other plugin
+error, which is the most this plugin can do about a load-time throw.
+
+**The deliberate asymmetry**, because two behaviours in one place read as an
+oversight until they are stated:
+
+| bad value | behaviour | why |
+|---|---|---|
+| `gatePolicies: {write: not-a-policy}` | **dropped** | it cannot widen the gate — the row's own policy stands — so silence is safe |
+| `reviewBudget: "x"`, `gateMode: maybe` | **thrown** | it silently changes how often a human is asked, or which posture the gate takes, and nothing else would say so |
+
+A test asserts each half, and the `gatePolicies` one is the earlier case
+restated with its reasoning attached rather than quietly rewritten.
+
+**And then the same question was asked of the other five keys**, because fixing
+two is not a pattern. Measured, each of these passed straight through
+`userSettings` unexamined: `confidenceThreshold: "high"`, `checkpointAtStep:
+soon`, `judge: telepathy`, `systemOneModel: 7`, `gateMode: maybe`. Every one of
+them was the safe direction **by luck** — `gateMode === 'deny'` is the only
+branch, so anything unrecognised is `ask`, and a non-number router key fell
+through to the row's value.
+
+So the constrained keys are in one table — `gateMode`, `judge`,
+`confidenceThreshold`, `checkpointAtStep` — and `systemOneModel` is
+deliberately **absent** from it: it is a provider's own alias, this repo cannot
+know the set, and a table that listed it would be a check that forbids the
+truth. A test asserts that absence, because "why isn't this one checked?" is the
+question the next reader asks.
+
+Five tests, two proven to fail when the table is disconnected. The general form:
+**a hand-edited file is validated by the page's validator only when the page
+wrote it.** One table, checked at the one function every consumer goes through.
+
+### 1m. The settings page called the strictest gate in a hand-edited file the loosest one
+
+**Observed, 2026-10-03, on a generated profile whose settings file is what the
+harness actually honours** (§1d made it authoritative):
+
+```
+gatePolicies: { write: auto, edit: auto, bash: auto }
+```
+
+No write class asks. `approvalModeFor` counted `always-approve` entries instead,
+so `asked === 0 ≠ 3` and the page showed **"Review at risky steps"** — whose own
+policies are `edit/write/bash: auto-if-confident`. The file was **looser** than
+the posture it was labelled with, and the run sided with the file: the write went
+through with no approval demanded. The page was describing a gate that was not
+running.
+
+**Fix.** `auto` is the only value that never reaches a human, so it is the one
+that decides: `auto` on every write class is `approve-every-step`, anything else
+(including nothing named, because `ReviewGate`'s default for an unclassified tool
+is `always-approve`) is `review-risky`. Two tests, proven to fail with the old
+counting restored.
+
+**And the second half is a real UI consequence, still open.** The two postures'
+own maps are on OPPOSITE ends of the line — `review-risky` asks about every
+write class, so classifying it now yields `approve-every-step`, and vice versa.
+The page renders `<select value={approvalMode}>`, so a file the operator just
+wrote with `approve-every-step` selected opens showing **the other option**, and
+a Save with nothing touched writes the other policies.
+
+**And then it was fixed anyway, because the copy decision turned out to be
+small.** The third position is now a named posture:
+
+| posture | the map it writes | label |
+|---|---|---|
+| `review-risky` | every write class `auto-if-confident` | Review at risky steps |
+| `approve-every-step` | every write class `always-approve` | Approve every step |
+| `never-ask` | every write class `auto` | **Never ask (gate off)** |
+
+`never-ask` is named for what it does rather than for a reassuring reading of it,
+because this is the posture a **typo** produces — §1m measured a hand-edited
+`write: auto` over a row saying `always-approve`, and the write went through.
+Labelling it "Approve every step" is the label that lies in the dangerous
+direction. A test asserts the label and the detail line, so the copy cannot be
+softened without someone failing a test deliberately.
+
+With three postures the round trip **holds**: each maps to itself, so the page's
+`<select value={approvalMode}>` opens on the option the file means and a Save
+with nothing touched writes the same policies back. That round trip is asserted
+in both `test/approval-bridge.test.ts` and `test/remote.test.ts`, and both were
+proven to fail when the posture is folded back in.
+
+The lesson is the one I wrote last round and then did not act on: I recorded
+"three positions exist and two postures cannot name the middle one" as a reason
+to stop, when the thing missing was a NAME, not a mechanism. The copy was an
+hour's work and the decision behind it — does the operator get told the gate is
+off — was the decision worth making, not deferring.
+
+Measured and not assumed: `{write: auto, edit: auto, bash: auto}` -> the write
+succeeded with no approval demanded; `{write: always-approve}` alone ->
+`review-risky`, correctly, because `edit` and `bash` still run unattended.
+
+### 1n. A MIXED policy file was shown one posture's copy, which was true of one class and false of the others
+
+Last round added the third posture (§1m) and the round trip held. The next
+question is what a hand-edited file looks like when it is a **mixture**, which is
+what a person actually types — three postures bracket the space and most maps are
+between them.
+
+Measured 2026-10-03 on a generated profile with
+
+```
+gatePolicies: { write: always-approve, edit: auto, bash: auto }
+```
+
+The write asked and was refused. The edit and the shell command **did not ask at
+all**. The page showed **"Review at risky steps"**, whose hint reads:
+
+> Reads never interrupt. A write is reviewed when the loop has no confidence to
+> judge it.
+
+That sentence is a claim about `write`, and `bash: auto` is the opposite claim
+about every command the loop runs. Two of the three write classes were
+unsupervised while the page described one of them as reviewed.
+
+**Fix.** `approvalModeLabel` marks any map that is not EXACTLY a posture's own —
+`' — mixed with the fields below'` — and the page prefixes its hint with "Not one
+of the postures — the per-tool fields below are what runs." The test is exact map
+equality rather than a count of `always-approve`, so a partial map (`{write:
+auto}`, where `edit` and `bash` fall back to `ReviewGate`'s default of
+`always-approve`) is marked too: it is not a mixture of postures but it is also
+not one, and being marked is the safe direction because it sends the reader to
+the fields.
+
+Three tests, two proven to fail when the marker is removed. And the honesty
+matters in the naming: the marker says "mixed with the fields below", not "you have
+misconfigured this" — the page cannot know which of the two it is.
+
+**And then the marker was driven in a real browser, which found the other half.**
+Against a running profile with the mixed file above, the tab renders:
+
+```
+When to stop and ask   [review-risky ▾]
+Not one of the postures — the per-tool fields below are what runs.
+Reads never interrupt. A write is reviewed when the loop has no confidence to judge it.
+```
+
+Three more measurements from the same session, because the questions the unit
+tests cannot answer are about the FILE and the OPERATOR:
+
+| action | what the file became |
+|---|---|
+| **Save**, nothing touched | the mixed map, unchanged — the draft comes from `buildStatus`'s merged config, so preservation is by construction and not luck |
+| **Save** on a *partial* map (`{write: auto}`) | unchanged; `edit`/`bash` are still unset, so the gate's own defaults apply and the marker is still on screen |
+| **pick** `approve-every-step`, then Save | the posture's map — `read/glob/grep: auto`, `edit/write/bash: always-approve` |
+
+The third is correct and unsurprising, and the page never said it: a person who
+has hand-set `bash: auto`, sees "mixed", and picks the strict option has just
+discarded their per-tool values without being told. So the hint now says **"Picking
+an option here REPLACES every one of them."** That is the whole UI contract for a
+mixed file — the marker says what is running, this sentence says what the control
+does — and neither half is discoverable without a browser.
+
+**And the marker was wrong in a way only the browser could have told me.** The
+first version tested EXACT map equality, which marked the **shipped row** as
+mixed. Every generated profile writes
+
+```
+{ read: auto, glob: auto, grep: auto, edit: auto-if-confident, write: always-approve }
+```
+
+— no `bash`, because the spec's `actuator` already classifies it `irreversible`.
+That is not `review-risky`'s map verbatim (its `write` differs), so the
+default row on a profile nobody had touched carried "mixed with the fields
+below". A marker that fires on the shipped default is a marker nobody reads.
+
+It now keys off BEHAVIOUR: a map is marked when it says `auto` for a write
+class and classifies as something other than `never-ask`. So the shipped row is
+unmarked (every write class asks), each posture's own map is unmarked, the mixed
+map and a partial `{write: auto}` are marked, and `{}`/`undefined` are unmarked
+because nothing named means `ReviewGate`'s `always-approve` default — the
+strictest gate there is.
+
+**And the sentence pointed at fields that do not exist.** "The per-tool fields
+below are what runs" — the Settings tab has three selects (judge, gate mode,
+posture) and **nothing that edits one class**. A hand-written map is invisible in
+the UI, so the hint now names the FILE:
+
+> Not one of the postures, and this page has no per-tool fields: it lives in
+> `~/.config/dshloop/config.yaml`. Picking an option here REPLACES every class in
+> that file.
+
+All of this is asserted by `test/e2e-settings.mjs`, which is the only place the
+rendered strings exist. Its own first version was wrong three times — a tab
+switch instead of **Reload** (the draft is fetched once on mount, so it measured a
+stale render), a `../..` subtree that swept in the next field's hint, and a
+fixture that captured the "restored" file *after* hand-editing it. Each was found
+because the assertion failed, and each is recorded in the script.
+
+Frame: `docs/evidence/settings-mixed.png`.
+
+### 1o. The demo's committed transcript was two runs spliced into one, and the prose described neither
+
+**Observed, 2026-10-03, reading what the README claims the product does.**
+
+The quick start shows a transcript under "The demo works":
+
+```
+── step 4 · onegw/execution · spent $0.0023
+[run-end] goal-met · 4 steps · $0.0030 · 1 review(s) (25% of steps)
+
+[run-end] goal-met · 12 steps · $0.0066 · 1 review(s) (8% of steps)
+```
+
+**Two different runs in one code fence**, the second from a session that no
+longer exists, with no marker between them. The prose underneath then described
+neither: "was stopped for review **twice** (once by a critical signal, once by the
+write gate)" and "the judge scored the step `0/3`". The run shown has ONE review
+and a judge score of `2.0/3`, and no critical signal. So a reader could not tell
+which half was the run, and the claims underneath matched neither.
+
+**And `demo/TRANSCRIPT.txt` — which the README points at as "full transcript" —
+was stale in a way that reads as current.** Captured from
+`.worktrees/loop-optimize/` (a worktree that no longer exists), on
+`xiaomi/mimo-v2.5` (a model this branch stopped running), showing a planted bug
+`Math.ceil((p / 100) * sorted.length)` that this branch replaced with the integer
+form. Nothing regenerates it: no script writes it, and
+`scripts/check-typecheck-list.mjs` watches `demo/cli.ts` but not the transcript
+it is the output of.
+
+**Fixed.** The spliced line is deleted; the prose now describes the run actually
+shown — 4 steps, one judge review at 2.0/3, a `tool-dominance` signal, a one-line
+fix. The transcript is regenerated from a live run on this branch's route, with
+the two machine-specific lines (sandbox path, history path) removed and a header
+that says plainly what a capture is and when it was taken.
+
+**The standing part.** A committed transcript is a claim about a run, and it goes
+stale the moment the route, the bug, or the judge changes — with nothing failing.
+So it is labelled as a capture with its date and route, the README says it is one
+rather than current output, and the claim that it makes ("the shape does not
+vary") is backed by `make check`, which fails if the planted bug and the fix stop
+agreeing. That is the difference between an artefact and a claim: the artefact can
+age, the claim is checked.
+
+### 1p. A ceiling row that proved nothing about the ceiling
+
+**Observed 2026-10-03, re-running the four terminal paths the README's "Verified
+runs" table claims.**
+
+| Command | the table claimed | what it does |
+|---|---|---|
+| `demo/run.sh` | `goal-met` 6 of 15, $0.0039, 0 reviews | `goal-met` 6 of 15, $0.0047, **1 review** |
+| `demo/run.sh --max-steps 6` | **`budget-stop` 6 of 6** | **`goal-met` at 5 steps** |
+| `demo/run.sh --budget 0.000001` | `budget-stop` 2 of 15, $0.0004 | same |
+| `demo/run.sh --judge none` | `goal-met` 4 of 15, $0.0024 | `goal-met` 4 of 15, $0.0027 |
+
+The second row is the finding. It was captioned "(step ceiling)" and quoted
+`6 of 6` — which reads as the ceiling stopping the run at the sixth step. Re-run,
+the task **finishes in 5**, so the ceiling never bound and the row demonstrated
+nothing about the ceiling at all. `--max-steps 3` and `--max-steps 4` both stop
+(`budget-stop` at 3 of 3 and 4 of 4), which is the claim worth making.
+
+**Why this is the same class as §1o and not a smaller version of it.** "I ran it
+once and it stopped" is the weakest possible evidence that a limit works: a run
+that finishes *before* the ceiling looks identical to one the ceiling stopped
+until somebody reads the outcome word. The table had the outcome word in it, and
+it was wrong — which means the table was copied from an earlier session's output
+rather than re-read, exactly like the spliced transcript.
+
+**Fixed.** Every row is re-measured, the step-ceiling row is `--max-steps 4`
+(`budget-stop` 4 of 4, $0.0028), `demo/run.sh`'s own header comment matches, and
+the prose says why both ceiling rows were re-measured rather than assuming the
+old ones were close enough.
+
+**And the stale table in §11 is marked rather than deleted**, for the same reason
+every other entry here is: a reader who arrives at the old number needs to see
+that it was wrong and why, not to find a gap.
+
+**And the four re-runs turned up a defect the table could never show.** Running
+the demo plants the bug (`reset.sh`) and the loop fixes it — so the tree after a
+run is not the tree before it, and a SECOND run starts by planting the bug again.
+Measured, on the two shapes where that survives:
+
+| | no trap | with the trap |
+|---|---|---|
+| `demo/run.sh --max-steps 2` (ceiling, never reaches the fix) | `budget-stop` exit 1, **bug planted**, `git status` dirty | exit 1, bug restored, clean |
+| `Ctrl-C` partway through | exit **-2**, **bug planted**, dirty | exit **130**, bug restored, clean |
+
+So `demo/run.sh` now restores the one file the loop is allowed to change, on
+every exit path. Two details that had to be right for it to work at all:
+
+- **`exec` had to go.** `exec node …` replaces the shell, so the EXIT trap would
+  never have fired — the restore would have been the one part of the file that
+  silently did nothing. node runs as a child now and the script's exit status is
+  propagated explicitly, which is what the `-2` / `130` difference above records:
+  130 is bash reporting an interrupt it handled, -2 is the signal arriving with
+  nothing to handle it.
+- **`trap … EXIT INT TERM`,** because the case a person actually hits is Ctrl-C,
+  and a demo that leaves the tree dirty after the case somebody stopped watching
+  is the worst possible place for it.
+
+The bug is *restored*, not the tree: `git checkout --` on one named file. A
+stash would also swallow whatever else the loop wrote, and this demo's whole point
+is that its output is disposable.
+
+### 1q. A call that ran and failed was invisible to the ladder — escalation meant "the gate stopped us"
+
+**Observed 2026-10-03, following §1n's `MODEL ESCALATION` note.** SETUP.md tells a
+reader to watch for it; the demo walkthrough showed a ladder with two rungs. Neither
+could produce it.
+
+Measured, on a generated profile with two rungs, the gate open for `bash`, and
+`escalateAfterFailures: 1`: two runs of `cat /nonexistent-file-xyz` (exit 1, twice)
+produced **no escalation notice**.
+
+**Why.** `policy.pending.error` was set in exactly one branch of
+`tools/pre-execute`: the one where the **gate blocks** a call. A call that
+*executed* and returned a failure never touched it. So `reviewStep`'s `failed` read
+a failed command as a successful step, and in a DSH deployment:
+
+- the ladder climbed only when the gate stopped the loop, never when the work
+  failed — a run failing fast and early stayed on the cheap model for the whole
+  task;
+- `error-cascade` never counted a run that was visibly failing, so the detector
+  built for that case had nothing to count.
+
+The standalone runner records the same outcome from its own tool result, which is
+why the bug exists in one path and not the other and why every test passed:
+**the plugin path had no source for the signal at all.**
+
+**Fix.** `tools/post-execute` is now subscribed — the only event that reports
+`isError` — and it flips `pending.error` for that agent's policy. The event is
+declared locally beside `approval/request`, for the same reason: the package that
+owns it is not among this repo's installed peers, so its `Events` augmentation is
+absent and `ctx.on('tools/post-execute', …)` would not typecheck at all.
+
+**And the regression test had to be built twice, which is the part worth
+keeping.** The first version asserted the climb and PASSED with the flip removed —
+because `bash` is absent from the test `SPEC`'s actuator, so it resolved
+`irreversible`, the **gate blocked it**, and a blocked call sets `pending.error` on
+its own. The test was measuring the gate, not the listener. It only became an
+assertion once `gatePolicies: {bash: 'auto', …}` was passed, leaving
+`tools/post-execute` as the sole thing that can mark the step failed. Verified by
+removing the flip with the gate open: `not ok 18`, and green again with it back.
+
+The general form, and the third time in this session it has appeared: **an
+assertion that survives the removal of the thing it names is not an assertion.**
+A passing test proves the code works; a test that fails when you break the code
+proves the test does.
+
+### 1r. A helper whose doc claimed a detector was impossible, tested by the helper itself
+
+§1q fixed the ladder. The same flag also feeds `error-cascade` — one of only two
+**critical** signals — and that turned out to need nothing more. Which left
+`noteToolOutcomes` in a strange state:
+
+- its own doc said `error-cascade` "could never fire in the plugin path, and the
+  gate would silently run on four detectors instead of six";
+- **nothing in `src/` called it**;
+- its only test, `'error-cascade can fire in the plugin path now that errors are
+  recorded'`, built the history itself and called the helper directly — so it
+  proved the DETECTOR and claimed the PLUGIN PATH.
+
+Both claims were false, in opposite directions. `error-cascade` could fire in the
+plugin path before §1q, because `policy.pending.error` reaches the committed
+observation through `reviewStep`; and this helper is not what made it possible.
+
+**Measured, both ways** — removing the helper call AND the `pending` flip fails the
+cascade test; with only the flip it passes. So the helper was left uncalled and its
+doc corrected, rather than wired in to make an export look used. Wiring a call that
+changes nothing is the same defect as dead code wearing a call site.
+
+**The real gap was the test seam, not the helper.** The signals live inside
+`prepareReview`'s return value, so there was no way for a test to read what the
+plugin path actually detected. `CreatePolicyOptions.onSignals` is now an optional
+sink — not for deployments, documented as such — and
+`test/plugin-wiring.test.ts` drives the real hooks and reads the real signals:
+
+```
+error-cascade fires in the plugin path: three failed CALLS raise the critical signal
+```
+
+Four failed steps, because the observation for step N is committed at N+1 — which
+is the "one step late" the old helper's doc warned about, now visible as a fact
+about the ordering rather than a gap.
+
+The old test keeps its coverage and loses its claim: it is named for what it
+proves (the detector), and the plugin-path proof is named as the other test. **A
+test that names the wrong subject is worse than one that names none**, because it
+discharges the obligation to prove that subject.
+
+**And the seam then answered a question nobody had asked.** With the signals
+readable, "which detectors can actually raise in a DSH deployment?" became
+answerable. Measured through the real `reviewStep` with this plugin's spec, over a
+28-step mixed run plus a repeating tail:
+
+| detector | reachable? | why |
+|---|---|---|
+| `error-cascade` | ✅ | three consecutive failed **calls** (§1q) |
+| `tool-cycle` | ✅ | three trailing identical `(tool, argsKey)` pairs |
+| `tool-dominance` | ✅ | one tool owning >60% of a **mixed** run, from step 6 |
+| `excessive-steps` | ✅ | history past 20 |
+| `budget` | ✅ on demand | needs ≥80% of the ceiling **spent**; these steps spend nothing |
+| `quality-drop` | ❌ **not at all** | needs `baselineScore`, which `prepareReview` is never given here, AND a per-step `score`, which nothing in `src/` writes |
+
+So the old doc's "four detectors instead of six" was **five**, and the fifth
+failure is `quality-drop` — for two independent reasons, either of which alone
+silences it. Both are asserted, with a control that supplies a baseline and a
+falling score and shows the detector still cannot fire, so the reason is pinned
+rather than guessed.
+
+The run needed **two shapes**, because two detectors have incompatible
+requirements: 25 identical `bash` calls leave `tool-dominance` nothing to compare
+against, and a mixed tail never produces `tool-cycle`. Forcing one run to satisfy
+both proves neither — the same trap as §1n's ceiling row, where a run that
+finished *below* the limit looked like one the limit stopped.
+
+### 1s. Five of six detectors reach a DSH deployment, and the sixth cannot
+
+§1r gave the plugin path a readable signals sink. The first question worth asking
+of a seam is not "does it work" but **"what can I now see that I could not
+see before?"** — and this is the answer.
+
+Measured through the real `reviewStep` with this plugin's own spec, over a
+28-step mixed run plus a repeating tail:
+
+| detector | reachable in a DSH deployment? | needs |
+|---|---|---|
+| `error-cascade` | ✅ | three consecutive failed **calls** — only since §1q |
+| `tool-cycle` | ✅ | three trailing identical `(tool, argsKey)` pairs |
+| `tool-dominance` | ✅ | one tool owning >60% of a **mixed** run, from step 6 |
+| `excessive-steps` | ✅ | history past 20 |
+| `budget` | ✅ | ≥80% of the ceiling **spent**, measured in `test/plugin-wiring.test.ts` |
+| `quality-drop` | ❌ **not reachable at all** | a `baselineScore` **and** a per-step `score` |
+
+So the claim in §1r's old doc — "`error-cascade` could never fire, so the gate
+would silently run on **four** detectors instead of six" — was wrong in the
+count: it is **five**, and `quality-drop` is the one that cannot fire.
+
+**And it is silenced for two independent reasons**, which matters because fixing
+either one would look like progress:
+
+1. `prepareReview` is called in `plugin.ts` **without** `baselineScore`, so the
+   detector's first condition is false;
+2. nothing in `src/` writes `StepObservation.score`, so even a baseline would
+   find no score to compare.
+
+Both are asserted in `test/plugin-wiring.test.ts`, together with a **control**
+that hands the policy a baseline and a falling score and shows the detector still
+cannot fire — which pins the reason instead of asserting a guess. And the whole
+table is proven to move: raising `excessive-steps` past the run length fails it.
+
+**The measurement needed two run shapes**, because two detectors have
+incompatible requirements. Twenty-five identical `bash` calls leave
+`tool-dominance` nothing to compare against (it counts distinct tools, and there
+is one); a mixed tail never produces `tool-cycle` (it needs three trailing
+identical pairs). Forcing one run to satisfy both proves neither — which is the
+§1n trap in a new place: a shape that looks like the thing can be the shape that
+hides it.
+
+**And the row that was "on demand" was the one that needed measuring.** It had
+no plugin-path test, which is §1n's shape: a claim in a table that reads like a
+measurement. Measured — and the first attempt failed, for a reason worth
+recording:
+
+```
+40 priced attempts × $0.30 = $12 spent
+ceiling $10  ->  120%  ->  the CEILING rejects at step 1, no signal is produced
+ceiling $15  ->   80%  ->  `budget` fires and the run continues
+```
+
+**A ceiling that stops the run before `reviewStep` means the signal never gets a
+chance** — and the test read as "unreachable" rather than "the ceiling got there
+first". The fixture now sits the ceiling *above* the spend, and both behaviours
+are asserted: `budget` fires at $15, and moving the ceiling back to $10 fails the
+assertion. This is §1n's trap once more, in the most expensive form yet — a
+guard that stops the very thing it is supposed to warn about.
+
+**What is deliberately not done.** `quality-drop` is the detector the book cares
+about most, and making it live means deciding what the plugin's per-step `score`
+IS: the judge's review-worthiness is not it (that scores the *previous* step), and
+a rubric the loop does not otherwise compute is a feature, not a fix. Recorded
+rather than invented.
+
+### 1t. Two sections of this file were numbered 1i, and the reader was the only detector
+
+**Found while renaming one and reading the other.** §1i is the ladder check's
+enumeration of model-deciding files; §1s is the detector inventory. Both were
+`1i` until this entry, so **every `§1i` in this file resolved to whichever came
+first** — and three of the four references happened to mean the ladder check, so
+nothing read as wrong. A cross-reference that lands on the wrong section is worse
+than no cross-reference: the reader has no reason to distrust it.
+
+**This file is the record of everything the session got wrong**, which makes it
+the last place that should need a check for its own errors. It is also a plain
+markdown file, for the same reason `README.md` is — and markdown has no
+cross-reference validation, so "every reference resolves" was a thing a person
+was supposed to notice and never had.
+
+**Fixed with `scripts/check-known-issues.mjs`**, in CI and in `make check`, for
+the three failures this file has actually had:
+
+1. a **duplicate letter** — two sections, one name (the live bug);
+2. a section with **no index row**, which is an entry nobody can find;
+3. an index row with **no section**, which is a promise nothing delivers.
+
+Each proven by introducing it: duplicating `1i`, deleting `1p`'s index row, and
+deleting `1p`'s heading respectively — all three exit 1 with the section named.
+The check also resolves every section reference in the prose, which caught a
+literal `§` + `1x` used as a *placeholder* in the new index header and sent me
+looking for a section that did not exist — so the header says "the numbered
+entries" instead.
+
+| § | finding |
+|---|---|
+| 1i | the ladder check named three files and the repo has four |
+| 1s | five of six detectors reach a DSH deployment; the sixth cannot |
+| 1t | KNOWN-ISSUES had two sections numbered 1i, and nothing noticed |
+
+The index the check maintains is the table at the top of this section, so the map
+a reader uses and the map the check verifies are the same rows rather than two
+things that can disagree.
+
+### 1u. The walkthrough's sandbox keeps the fix on purpose, and neither guide said so
+
+§1p made `bash demo/run.sh` restore the file the loop edits, so a run leaves the
+repository's tree clean. Verified here by running it: `git status` empty, the only
+other artefact the gitignored `.feature-loop/runs.jsonl`.
+
+**But the docs' own walkthrough does not run the demo — it copies it:**
+
+```bash
+cp -r …/demo /tmp/fl-demo
+cd /tmp/fl-demo && bash reset.sh
+```
+
+`/tmp/fl-demo` is **not a git checkout**, so `run.sh`'s `git -C "$ROOT" checkout
+-- …` cannot run there. The loop's fix simply stays. Measured: the copy has no
+`.git`, and the restore is `|| true`, so it fails silently and correctly.
+
+That is the **intent**, and neither guide said it — while both tell the operator
+to ask the agent to *"report the root cause, **the diff**, and the final test
+result"*. The diff is visible *only because* the copy keeps the fix. A reader who
+took §1p's "runs leave the tree clean" as applying to the walkthrough would
+expect the opposite, and could conclude the restore is broken.
+
+Two doc fixes, in both guides:
+
+- the copy is disposable, has no `.git`, and **keeps** the fix — which is how you
+  see the one-line change;
+- **`rm -rf /tmp/fl-demo` first.** `RUNBOOK-SERVER.md` had it; `SETUP.md` did not,
+  and a second `cp -r` into an existing directory nests a `demo/` inside it, so
+  the agent edits a tree the reader is not looking at. That is the §1n trap in a
+  `cp -r`: the second run looks like the first and works on the wrong path.
+
+Neither changes a line of code, which is the point worth recording. §1p fixed the
+**repository's** tree and created a silent asymmetry between it and the sandbox the
+docs tell people to work in. A fix that only holds on one of the two paths a
+document names is half a fix, and the half that is invisible is the half a reader
+trusts.
 
 ### 1. The stylesheet restyled the whole host UI
 
@@ -356,9 +2544,9 @@ was run on a **bare clone with only `npm install`** — no harness checkout, no
 | All three drift checks, `HOME=/tmp/empty-home` | pass, 0 local profiles |
 | CI's exact test list, 18 files | **277 pass, 0 fail** |
 | CI's exact typecheck command | exit 0 |
-| `make check` on the bare clone | green |
+| `make check` on the bare clone | green — **but it never ran the drift checks**: `check` depended on `test`, which needs the harness packages, and `test`'s exit code was swallowed by a pipe. Corrected in §1f; `make check` now runs CI's list and is green there for the right reason |
 | Does it write to a developer's machine? | **No** — scripts byte-identical after a run, and no `~/.dsh` created |
-| Summary line names its half? | now: `3 shipped specs + 18 local profile(s) under ~/.dsh/profiles` |
+| Summary line names its half? | yes — and it now reads `5 shipped specs`, because the demo and the container probe are cases too (§1i). The `18` was this machine's profile count at the time, not an assertion. |
 
 That last row was a real fix and not a nicety. The script runs in CI *and* on a
 developer's machine, and it was printing `18 local profile(s)` into a CI log
@@ -1003,7 +3191,7 @@ the real model:
 | Command | Outcome | Steps | Cost |
 |---|---|---|---|
 | `bash demo/run.sh` | `goal-met` | 6 of 15 | $0.0039 |
-| `bash demo/run.sh --max-steps 6` | `budget-stop` (step ceiling) | 6 of 6 | $0.0031 |
+| `bash demo/run.sh --max-steps 6` | `budget-stop` (step ceiling) | 6 of 6 | $0.0031 | — **not reproducible**: re-run 2026-10-03, this reaches `goal-met` at 5 steps, so the ceiling never bound. Corrected to `--max-steps 4` -> `budget-stop` 4 of 4, $0.0028 (§1p) |
 | `bash demo/run.sh --budget 0.000001` | `budget-stop` (cost ceiling) | 2 of 15 | $0.0004 |
 | `bash demo/run.sh --judge none` | `goal-met` | 4 of 15 | $0.0024 |
 

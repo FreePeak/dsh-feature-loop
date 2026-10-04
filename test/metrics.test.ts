@@ -79,14 +79,46 @@ test('latencyKind is the common measured kind, mixed when records disagree', () 
     summarize([record({ latencyKind: 'model' }), record()]).speed.latencyKind,
     'mixed',
   )
-  // A record that timed nothing declares nothing: it cannot make the kind "mixed".
+  // A record that timed nothing declares nothing: it cannot make the kind
+  // "mixed" — and when NOTHING was timed the kind is absent rather than a
+  // guess. `undefined` is not `'round-trip'`: the old default declared a
+  // MEASUREMENT KIND for a run that never took one (§1bt).
   assert.equal(
     summarize([
       record({ stepLatencyMs: [], latencyKind: 'model' }),
       record({ stepLatencyMs: [] }),
     ]).speed.latencyKind,
-    'round-trip',
+    undefined,
   )
+  assert.equal(
+    summarize([
+      record({ stepLatencyMs: [10], latencyKind: 'model' }),
+      record({ stepLatencyMs: [] }),
+    ]).speed.latencyKind,
+    'model',
+    'and one timed record is enough to name the kind',
+  )
+})
+
+test('an unmeasured run does not put a zero in the wall-clock axis', () => {
+  // §1bs found `reviewFraction` hardcoded to 0 where a count existed. These two
+  // have NO source on the harness path — the plugin never times anything — so
+  // the honest shape is an absent field, and an absent field must not enter the
+  // distribution as a zero.
+  const unmeasured = [
+    record({ outcome: 'goal-met', steps: 4, wallMs: undefined, latencyKind: undefined, stepLatencyMs: [] }),
+    record({ outcome: 'goal-met', steps: 6, wallMs: 1500, latencyKind: 'model', stepLatencyMs: [120] }),
+  ]
+  const s = summarize(unmeasured, unmeasured)
+  assert.equal(s.measuredRuns, 2, 'both runs stepped')
+  assert.equal(s.speed.wallMs.p50, 1500, 'only the timed run contributes')
+  assert.equal(s.speed.latencyKind, 'model', 'and one timed run names the kind')
+  assert.equal(s.speed.latencyMs.p50, 120)
+
+  const none = [record({ outcome: 'model-stop', steps: 2, wallMs: undefined, stepLatencyMs: [] })]
+  const n = summarize(none, none)
+  assert.equal(n.speed.wallMs.p50, 0, 'no run was timed')
+  assert.equal(n.speed.latencyKind, undefined, 'so no kind is declared either')
 })
 
 test('goalMetRate counts goal-met outcomes; firstPassRate only first-pass successes', () => {
@@ -98,6 +130,54 @@ test('goalMetRate counts goal-met outcomes; firstPassRate only first-pass succes
   ])
   assert.equal(s.quality.goalMetRate, 0.5)
   assert.equal(s.quality.firstPassRate, 0.25)
+})
+
+test('firstPassRate is absent when no record is a retry, rather than echoing goalMetRate', () => {
+  // The defect: `recordTurn` hardcodes `pass: 1`, so on the harness path
+  // `met.filter(pass === 1)` IS `met` and the two numbers are one number.
+  // Measured 2026-10-04 on the committed history — goalMetRate 0.867,
+  // firstPassRate 0.867, all 15 records pass === 1. A reader saw two
+  // independent-looking rates.
+  const single = summarize([record({ outcome: 'goal-met' }), record({ outcome: 'goal-met' })])
+  assert.equal(single.quality.goalMetRate, 1)
+  assert.equal(single.quality.firstPassRate, undefined)
+
+  // And it answers normally the moment a retry exists, which is the only way one
+  // can: the CLI's runRefined writes them.
+  const withRetry = summarize([
+    record({ outcome: 'goal-met', pass: 1 }),
+    record({ outcome: 'goal-met', pass: 2 }),
+  ])
+  assert.equal(withRetry.quality.goalMetRate, 1)
+  assert.equal(withRetry.quality.firstPassRate, 0.5, 'one of two runs needed no retry')
+})
+
+test('a zero-step run is not a sample of what a run costs', () => {
+  // Measured 2026-10-04 on the committed history: 13 of 15 records had
+  // steps: 0, so steps.p50 and cost.perRun.p50 were BOTH 0 — "a typical run
+  // costs $0.00 and takes 0 steps". Exact arithmetic, misleading reading: the
+  // zero meant "most of these never ran".
+  const history = [
+    ...Array.from({ length: 13 }, () => record({ outcome: 'model-stop', steps: 0, costUSD: 0 })),
+    record({ outcome: 'goal-met', steps: 8, costUSD: 0.004 }),
+    record({ outcome: 'goal-met', steps: 10, costUSD: 0.006 }),
+  ]
+  const s = summarize(history, history)
+  assert.equal(s.runs, 15, 'every closed turn is still a run')
+  assert.equal(s.measuredRuns, 2, 'and the axes say how many of them ran')
+  assert.equal(s.speed.steps.p50, 8, 'p50 steps of the runs that ran')
+  // n=2, so p50 is the lower of the two — the point is that it is NOT 0. With
+  // the 13 non-runs included it would have been exactly 0.
+  assert.equal(s.cost.perRun.p50, 0.004, 'p50 cost is not dragged to zero by the non-runs')
+  assert.equal(s.cost.goalMetCost, 0.005, 'the price of success, over runs that succeeded by doing something')
+
+  // And when NOTHING ran, the axes are absent rather than zero — a 0 p50 with
+  // no measurement behind it is the same false claim in a smaller font.
+  const empty = [record({ outcome: 'model-stop', steps: 0, costUSD: 0 })]
+  const e = summarize(empty, empty)
+  assert.equal(e.measuredRuns, 0)
+  assert.equal(e.cost.perRun.p50, 0, 'the axis shape is unchanged when there is nothing to measure')
+  assert.equal(e.cost.goalMetCost, undefined, 'but no price of success is invented')
 })
 
 test('meanJudge and meanQuality stay absent when nothing was scored — absent is not zero', () => {
@@ -184,7 +264,10 @@ test('an empty record list summarizes to zeros without throwing', () => {
   assert.equal(s.provisional, true)
   assert.equal(s.malformed, 0)
   assert.equal(s.quality.goalMetRate, 0)
-  assert.equal(s.quality.firstPassRate, 0)
+  // Absent, not zero: with no records there are no passes to be first of, and
+  // a 0 here would be indistinguishable from a real "no run ever landed on its
+  // first pass" — which is exactly the confusion this field is being fixed for.
+  assert.equal(s.quality.firstPassRate, undefined)
   assert.equal(s.quality.reviewFraction, 0)
   assert.equal(s.quality.meanJudge, undefined)
   assert.equal(s.quality.meanQuality, undefined)
@@ -192,7 +275,9 @@ test('an empty record list summarizes to zeros without throwing', () => {
   assert.equal(s.cost.goalMetCost, undefined)
   assert.equal(s.speed.steps.p50, 0)
   assert.equal(s.speed.steps.baseline, undefined, 'no goal-met runs, no baseline')
-  assert.equal(s.speed.latencyKind, 'round-trip')
+  // Nothing was timed, so no kind is declared. This used to be 'round-trip':
+  // a measurement kind asserted for a measurement that never happened.
+  assert.equal(s.speed.latencyKind, undefined)
   assert.equal(s.alerts.length, 0)
 })
 

@@ -16,6 +16,7 @@ import { join } from 'node:path'
 
 import { runRefined, passQuality, MIN_IMPROVEMENT } from '../src/refine.ts'
 import type { RefineOptions } from '../src/refine.ts'
+import { runLoop } from '../src/runner.ts'
 import type { LoopRunResult, LoopEvent } from '../src/runner.ts'
 import { phaseOf } from '../src/prompts.ts'
 import type { LoopSpec } from '../src/spec.ts'
@@ -44,9 +45,13 @@ function passResult(overrides: Partial<LoopRunResult> & { scores?: number[] } = 
     outcome: 'model-stop',
     steps: 4,
     spentUSD: 0.1,
+    byRoute: {},
     reviews: 0,
     reviewFraction: 0,
     signals: [],
+    stepLatencyMs: [120, 90, 140, 110],
+    wallMs: 900,
+    latencyKind: 'round-trip',
     transcript,
     lastAssistant: 'done',
     ...rest,
@@ -223,6 +228,84 @@ test('each pass appends one run record with the pass number and scores', async (
   assert.deepEqual(records[0]!.judgeScores, [1])
   assert.equal(records[1]!.outcome, 'goal-met')
   assert.equal(records[1]!.qualityScore, 3)
+})
+
+test('the runner returns the latency it measured on every step', async () => {
+  // The record test above proves `refine` writes what it is handed; this proves
+  // the runner HANDS it over. Reverting the result-boundary change leaves this
+  // green and the record test green, and the axis empty again — so the boundary
+  // needs its own assertion.
+  const started = performance.now()
+  const result = await runLoop({
+    // The phase's prompt is part of the system prompt, so it is a required
+    // option — a test that omits it exercises a TypeError, not the runner.
+    phase: phaseOf('bugfix'),
+    spec: {
+      goal: 'Answer the prompt.',
+      sensor: 'the transcript',
+      controller: { ladder: [{ model: 'mock' }], stepsPerRung: 5, escalateAfterFailures: 2 },
+      actuator: { echo: 'read' },
+      feedback: 'the answer arrived',
+      termination: { successCommand: 'true', guards: ['error-cascade'] },
+      maxSteps: 3,
+      costBudgetUSD: 1,
+      // The pre-flight refuses a route it cannot price — a real spec declares
+      // one, and a test that omits it is testing the refusal instead.
+      prices: { 'default/mock': { inputPerMTok: 0.3, outputPerMTok: 1.2 } },
+    },
+    tools: [],
+    llm: { complete: () => Promise.resolve({ content: 'done', toolCalls: [] }) },
+  })
+  assert.ok(result.stepLatencyMs.length > 0, 'the runner measured at least one step')
+  assert.ok(result.stepLatencyMs.every(ms => ms >= 0), 'and every sample is a real duration')
+  assert.equal(result.latencyKind, 'round-trip', 'the window it measured is the whole call')
+  assert.ok((result.wallMs ?? -1) > 0, `wallMs is the run, not 0 (got ${String(result.wallMs)})`)
+  assert.ok((result.wallMs ?? 0) >= started - started, 'and it is measured, not invented')
+})
+
+test('a pass record carries the latency the runner measured', async () => {
+  // §1bt found the speed axis empty on every path. `runLoop` times every step
+  // (`performance.now()` around each model call) and the whole run, and dropped
+  // both at the result boundary — so `refine` had nothing but a literal to
+  // write. One array reference and one number; this is the assertion that keeps
+  // them from being dropped again.
+  const dir = mkdtempSync(join(tmpdir(), 'refine-latency-'))
+  const historyPath = join(dir, 'runs.jsonl')
+  const { runFn } = scriptedPasses([passResult({
+    outcome: 'goal-met',
+    scores: [3],
+    stepLatencyMs: [210, 180, 260],
+    wallMs: 1500,
+    latencyKind: 'round-trip',
+  })])
+  await runRefined(options({ loops: 3, totalBudgetUSD: 10, historyPath, taskKey: 'task-1', runFn }))
+  const [line] = readFileSync(historyPath, 'utf8').trim().split('\n')
+  const record = JSON.parse(line!) as {
+    stepLatencyMs: number[], wallMs?: number, latencyKind?: string
+  }
+  assert.deepEqual(record.stepLatencyMs, [210, 180, 260], 'the measured steps, not an empty array')
+  assert.equal(record.wallMs, 1500, 'the run total, not zero')
+  assert.equal(record.latencyKind, 'round-trip')
+})
+
+test('a pass that spent money records it per route, not as an empty map', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'refine-byRoute-'))
+  const historyPath = join(dir, 'runs.jsonl')
+  const spent = passResult({
+    outcome: 'goal-met',
+    scores: [3],
+    spentUSD: 0.2,
+    byRoute: { 'onegw/execution': { steps: 4, usd: 0.2 } },
+  })
+  const { runFn } = scriptedPasses([spent])
+  await runRefined(options({ loops: 3, totalBudgetUSD: 10, historyPath, taskKey: 'task-1', runFn }))
+  const [line] = readFileSync(historyPath, 'utf8').trim().split('\n')
+  const record = JSON.parse(line!) as { costUSD: number, byRoute: Record<string, { steps: number, usd: number }> }
+  // The optimizer chooses a rung by reading exactly this field: an empty map
+  // beside a real costUSD tells it every route is free, which is what every
+  // demo-shaped run recorded until the ledger was read instead of a literal.
+  assert.equal(record.costUSD, 0.2)
+  assert.deepEqual(record.byRoute, { 'onegw/execution': { steps: 4, usd: 0.2 } })
 })
 
 test('no history file is written without both historyPath and taskKey', async () => {

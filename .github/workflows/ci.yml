@@ -132,6 +132,21 @@ jobs:
       - name: Every accepted-but-unconsulted config key is labelled a no-op
         run: node scripts/check-noop-config-keys.mjs
 
+      # The actuator table decides what a person is asked about, and it ships in
+      # three hand-edited files. They HAD diverged — the container copy was
+      # missing `task`, so one deployment enforced two policies.
+      - name: The three shipped actuator tables are the same table
+        run: node scripts/check-actuator-tables.mjs
+
+      # KNOWN-ISSUES is a record of what was wrong, corrected as each was found,
+      # and two of its entries were both numbered 1i until a cross-reference
+      # pointed at the wrong one. A cross-reference that resolves to the wrong
+      # section is worse than no cross-reference, because the reader does not
+      # know to distrust it — and this file has to be a plain `.md` for the same
+      # reason `README.md` is.
+      - name: KNOWN-ISSUES' sections, index and cross-references agree
+        run: node scripts/check-known-issues.mjs
+
       # One file per process, in a loop, and the list is the SAME list
       # `scripts/check-test-list.mjs` reads. Two reasons, and the second is the
       # reason this changed at all:
@@ -162,7 +177,8 @@ jobs:
             test/optimize.test.ts \
             test/optimizer.test.ts test/questioner.test.ts test/policy.test.ts \
             test/refine.test.ts test/runlog.test.ts test/runner.test.ts \
-            test/start-target.test.ts test/tools.test.ts ; do
+            test/start-target.test.ts test/tools.test.ts \
+            demo/test/latency-window.test.ts ; do
             echo "::group::$f"
             out=$(node --experimental-strip-types --test "$f" 2>&1) || {
               echo "$out"

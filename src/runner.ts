@@ -148,9 +148,32 @@ export interface LoopRunResult {
   outcome: Outcome
   steps: number
   spentUSD: number
+  /**
+   * Spend per route, from the same ledger `spentUSD` totals.
+   *
+   * Present because a record that omits it is not a record of absence: the
+   * optimizer reads `byRoute` to choose the cheapest rung, and the demo path
+   * wrote `byRoute: {}` beside a real `costUSD`, so a run with spend taught the
+   * optimizer that every route was free. One field, from the object that
+   * already has the number.
+   */
+  byRoute: Readonly<Record<string, { steps: number; usd: number }>>
   reviews: number
   reviewFraction: number
   signals: ReviewSignal[]
+  /**
+   * Per-step round-trip latency in ms — the speed axis, measured on every step
+   * from the `performance.now()` window around each model call.
+   *
+   * It was on `history[].latencyMs` and not here, so every `RunRecord` the
+   * runner's own path assembled had to write `stepLatencyMs: []` and the speed
+   * axis was empty on every path (§1bt).
+   */
+  stepLatencyMs: number[]
+  /** Wall-clock ms for the whole run. */
+  wallMs: number
+  /** Always `'round-trip'`: the timing window spans dispatch to settled response. */
+  latencyKind: 'round-trip'
   transcript: LoopEvent[]
   /** The last thing the model said, for a human-readable summary. */
   lastAssistant: string
@@ -202,6 +225,10 @@ export function buildSystemPrompt(spec: LoopSpec, phase: Phase): string {
  */
 export async function runLoop(options: LoopRunnerOptions): Promise<LoopRunResult> {
   const spec = validateSpec(options.spec)
+  // One clock for the whole run, so `wallMs` measures the run rather than the
+  // last step. Started before anything else so a spec that throws still has a
+  // truthful number attached to the throw's caller.
+  const runStartedAt = performance.now()
   const transcript: LoopEvent[] = []
   const emit = (event: LoopEvent): void => {
     transcript.push(event)
@@ -258,6 +285,8 @@ export async function runLoop(options: LoopRunnerOptions): Promise<LoopRunResult
   ]
 
   const history: StepObservation[] = []
+  // One sample per model call, which is one per step that asked for one.
+  const callLatencies: number[] = []
   const allSignals: ReviewSignal[] = []
   let spentUSD = 0
   let lastStepUSD: number | undefined
@@ -389,6 +418,10 @@ export async function runLoop(options: LoopRunnerOptions): Promise<LoopRunResult
     // Recorded on the step's observations below: the loop's history is where
     // the speed axis becomes visible to the detectors and to the run record.
     const latencyMs = performance.now() - callStartedAt
+    // Every step's model-call latency, whether or not the step went on to
+    // dispatch a tool: `history` below only grows for tool calls, so reading it
+    // would report "no measurement" for a step that WAS measured.
+    callLatencies.push(latencyMs)
 
     lastStepUSD = budget.spend(decision.route.provider ?? 'default', decision.route.model, result.usage)
     spentUSD = budget.snapshot().spentUSD
@@ -534,9 +567,22 @@ export async function runLoop(options: LoopRunnerOptions): Promise<LoopRunResult
     outcome,
     steps: Math.min(step, spec.maxSteps),
     spentUSD,
+    byRoute: budget.snapshot().byRoute,
     reviews: stats.reviews,
     reviewFraction: stats.fraction,
     signals: allSignals,
+    /**
+     * Per-step round-trip latency, from the same `performance.now()` window
+     * `history[].latencyMs` records.
+     *
+     * It was measured on every step and dropped here, so `refine.ts` had to
+     * write `stepLatencyMs: []` and the whole speed axis was empty on every
+     * path — including the one the optimizer reads to compare runs (§1bt). One
+     * array reference, no new measurement.
+     */
+    stepLatencyMs: callLatencies,
+    wallMs: performance.now() - runStartedAt,
+    latencyKind: 'round-trip',
     transcript,
     lastAssistant,
   }

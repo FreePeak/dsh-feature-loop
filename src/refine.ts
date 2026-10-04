@@ -245,10 +245,18 @@ export async function runRefined(options: RefineOptions): Promise<RefinedResult>
         costUSD: result.spentUSD,
         budgetUSD: loopOptions.spec.costBudgetUSD,
         unpricedSteps: 0,
-        byRoute: {},
-        stepLatencyMs: [],
-        wallMs: 0,
-        latencyKind: 'round-trip',
+        // From the ledger, not a literal: the field the optimizer reads to
+        // choose a rung was empty on every demo-shaped run that had real spend,
+        // which taught it each route was free. `unpricedSteps` stays 0 because
+        // the loop prices before it counts — an unpriced route throws there,
+        // so it cannot reach this record.
+        byRoute: { ...result.byRoute },
+        // The measured values, not empties: `runLoop` times every step and the
+        // whole run, and used to drop both at the result boundary — so every
+        // record the CLI wrote had an empty speed axis (§1bt).
+        stepLatencyMs: [...result.stepLatencyMs],
+        wallMs: result.wallMs,
+        latencyKind: result.latencyKind,
         signals: result.signals.map(s => ({ kind: s.kind, severity: s.severity })),
         judgeScores,
         reviewFraction: result.reviewFraction,
