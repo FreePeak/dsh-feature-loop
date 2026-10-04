@@ -12,6 +12,25 @@ and correctly refused for a reason that had nothing to do with the approval UI.
 
 ## Fixed
 
+### 0. The plugin was installed but composed nothing
+
+**Observed:** the `web` profile declared `@freepeak/dsh-feature-loop` as a
+dependency and booted 191 rows — none of them from this package. No Feature Loop
+page, no gate, no ceiling. The plugin was present in `package.json` and absent
+from `--dump-config`.
+
+**Why:** `dsh plugin add` installs the dependency and does not add the package to
+the profile's `dsh.profile.bundles`. A plugin composes **only** when it is listed
+there. This is the same shape as the peer-resolution failure below, and it is
+worse: the peers resolved, so every existing check passed.
+
+**Fix:** `make install` now runs `scripts/add-bundle.mjs`, which appends the
+package to that array — idempotently, and touching only that one array so the diff
+is the change rather than a reformat. Verified on the `web` profile: 191 → 194
+rows, all three `feature-loop*` rows composing, zero incompatible-row warnings.
+
+
+
 ### 1. The stylesheet restyled the whole host UI
 
 **Observed:** after the dashboard was folded into the DSH UI, the host's `<body>`

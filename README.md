@@ -302,13 +302,26 @@ make install PROFILE=fl      # build, add, and verify the plugin is not inert
 make uninstall PROFILE=fl
 ```
 
-`make install` exists because of the failure the README warns about twice: a
-profile that pulls in nothing else from the harness installs this plugin,
-composes it, shows it in the boot graph, and then **does nothing at all**. The
-harness packages are optional peers and this repo disables peer
-auto-installation, so they simply do not resolve. `make install` checks that they
-did, and exits non-zero with the fix if they did not — an installer that reports
-success on an inert plugin teaches you a lie.
+`make install` exists because of the two ways an install can silently do nothing:
+
+**The peers may not resolve.** The harness packages are optional peers and this
+repo disables peer auto-installation, so a profile that pulls in nothing else from
+the harness installs the plugin, composes it, shows it in the boot graph, and then
+does nothing: no gate, no review, no approval. `make install` checks they resolved
+and exits non-zero with the fix if they did not.
+
+**The package may not be in the profile's bundles.** `dsh plugin add` installs the
+dependency and **nothing else** — it does not append the package to
+`dsh.profile.bundles`, and a plugin composes *only* when it is listed there. So a
+plugin can be installed, present in `package.json`, absent from `--dump-config`,
+and governing nothing. `make install` appends it with
+[`scripts/add-bundle.mjs`](scripts/add-bundle.mjs), then verifies the rows are
+actually composed.
+
+Both states look identical from the UI — a healthy-looking page with no policies
+running — which is why an installer that reports success on either of them teaches
+you a lie. If you hand-write the profile manifest instead, the bundles array must
+include this package by name: see [`docs/SETUP.md`](docs/SETUP.md).
 
 <details>
 <summary>Install by hand</summary>
