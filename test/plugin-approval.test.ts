@@ -371,7 +371,13 @@ test('a closed turn records the reviews its router counted', async () => {
     id: 'sess-rev',
     session: { id: 'sess-rev', snapshotEvents: () => [] },
   }
-  Object.assign(ctx as object, { agents: { get: () => agent } })
+  Object.assign(ctx as object, {
+    agents: { get: () => agent },
+    // cordis's own lookup — the shape the production code reads. The router's
+    // count reaches the record ONLY through the resolved agent, so a fixture
+    // without this is the agent-less policy reporting 0.
+    reflect: { get: (name: string, strict?: boolean) => (name === 'agents' && strict !== true ? { get: () => agent } : undefined) },
+  })
   const dispose = apply(ctx as never, {
     spec: { ...SPEC, maxSteps: 99 } as NonNullable<CreatePolicyOptions['spec']>,
     dashboard: { enabled: false },
