@@ -1069,8 +1069,61 @@ per closed turn) and it is the duration a reader of the record is asking about.
 
 ### 1bw. Open: the run record still does not land on the harness path
 
-**Status: unresolved, and every claim below is measured.** Recorded so the next
-person does not re-derive it.
+**Status: unresolved. What follows is what four rounds of instrumentation
+established, including two wrong conclusions of my own.**
+
+**The one thing that is certain.** The listener runs, `asTurnEnd` accepts a real
+`turn/end`, and `recordTurn` is called — and in the runs where it was observed,
+it threw:
+
+```
+run history record threw: Cannot read properties of undefined (reading 'log')
+```
+
+Two hours and four instrumentation rounds to see that string, because a
+**synchronous throw inside a `session/event` listener is contained by the
+harness and logged below the level the web app surfaces.** Nothing appeared in
+the feed, nothing appeared in the log, and the plugin carried on as if it had
+recorded the turn.
+
+**How it got there, and the part I got wrong twice.** `turnStartTime` calls
+`session.eventAt(...)`, and `SessionStore.eventAt` reads `this.log`. The throw
+says the object it was called on has no `log`. I concluded the listener had been
+handed a cordis **scope carrier** instead of the Session, read the harness's
+declared type (`'session/event'(this: Scoped<Session>, session: Session, …)`),
+changed the signature to three arguments — and broke it further.
+
+Then I measured the payload instead of trusting the type signature, with a
+rest-parameter probe:
+
+```
+n=2   shapes= log+surfaceManager+header / type+seq+time
+```
+
+**Two arguments**, and the first is the Session. `Events.dispatch` shifts the
+receiver off the argument list before calling `cb(...args)`; the type signature
+describes the dispatch, not the call. My carrier theory was wrong, the three-arg
+signature was worse, and both are reverted.
+
+**Where the `log` throw really comes from: not yet established.** With the
+two-argument signature restored the unit suites pass (48/48) and the live run
+still writes nothing, and the error is no longer reproduced — which means the
+throw I captured came from the three-argument version I had just introduced, not
+from the original code. **The original cause is therefore still unknown**, and
+this entry says so rather than crediting a fix that is not there.
+
+**What is kept, because each is right on its own merits:**
+
+- `global: true` — the documented switch for "receive regardless of context
+  filter checks", so the registration does not depend on the root context being
+  untagged.
+- the **synchronous** `try`/`catch` around the call, so a throw in this listener
+  becomes a feed line instead of a silent loss. That guard is why the error was
+  ever visible at all, and it is the thing a next fix needs.
+- `runlog.ts` statically imported — a load that can never settle loses a record
+  with no rejection to catch.
+
+**Status: unresolved.** Recorded so the next person does not re-derive it.
 
 **Measured on a real `dsh web` run** (2026-10-04, generated web profile, real
 model, real browser, five asks settled, three files written):
