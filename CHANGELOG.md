@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The 0→1 product loop.** `pipeline:` turns a bounded turn into a five-phase
+  run — research → PRD → implement → test → ship — driven by one sentence of user
+  intent. Ships **disabled**; flip `pipeline.enabled` in the patch row. Each
+  phase carries its own ceiling and its own *observable* exit gate: an artifact
+  that must contain a citation, a changed-file count, or a command's exit code.
+  Every gate fails closed, because a gate that passes on absent evidence
+  measures the probe rather than the work. Design and rationale:
+  `docs/PRD-0to1.md`.
+
+- **Per-phase budgets** (`src/phase-budget.ts`). `LoopBudget` answers "can the run
+  afford another step"; this answers "can *this phase*". They are kept apart
+  because a run total that only ever goes up cannot catch a phase that spent the
+  implementation budget during research. A phase that reaches its own ceiling
+  stops even with the run budget untouched — simplify the plan rather than steal
+  from execution.
+
+- **Wall-clock ceilings**, per phase and per run. A step ceiling is only reached
+  by *spending* steps, and a loop that is slow rather than busy never spends its
+  way to one.
+
+- **YOLO: `gateMode: auto`** (`src/yolo.ts`). The three-way review verdict
+  collapses to allow/deny — there is no `ask`, which is the whole definition, so
+  no prompt can be raised, timed out or rubber-stamped. Safety moves into an
+  envelope: a throwaway git worktree (`src/sandbox.ts`, which refuses outside a
+  repository rather than degrading), a tested deny-list covering protected-branch
+  pushes, force-push, merge, publish, deploy, credential access and worktree
+  escapes, and a kill-switch file checked on every tool call. Anything the
+  envelope cannot read is **denied**, not allowed on a guess.
+
+- **An evidence bundle per run** (`src/evidence.ts`): `REPORT.md`, `steps.jsonl`,
+  `phases.json` and `artifacts/`, reusing the shape this repo already built by
+  hand for `docs/evidence/local-loop-20260930-214354/`. The rule that makes it
+  worth having: **a step with no artifact cannot be reported as a success.**
+  Unevidenced write steps are counted, carried in the run record, and printed —
+  a run that reached its goal *and* wrote something it cannot show reads
+  `UNVERIFIED`.
+
+- **The ship phase** (`src/ship.ts`): commit on the run's branch, push it, open a
+  pull request whose body is assembled from the run's own numbers. Ship stops at
+  the PR; there is no merge, release or deploy path in this package. Every
+  failure degrades — a missing `gh` leaves the work committed and reports the sha
+  — and no failure path can produce a `prUrl`.
+
+- **A phase rail on the Feature Loop page**, showing the current phase and *its*
+  spend against *its* ceiling. The rail renders nothing at all for a run with no
+  pipeline, rather than five empty stages that teach the reader to ignore it.
+
+- **`make install`**, which builds, adds the plugin to a DSH profile, and
+  verifies the plugin actually composes — refusing to report success on an
+  **inert** install, the failure this README warns about twice.
+
+### Fixed
+
+- **The cost ceiling was evaluated one step late.** `agent/pre-step` called
+  `next()` — which is where the model call happens — and only then computed the
+  verdict, so the money for step *N* was spent before the verdict for step *N*
+  was known. `pipelinePreCallGuard` now runs *before* `next()`, stopping at 90%
+  so the last 10% can pay for the terminal report. The regression test asserts
+  not merely that the guard fires but that `next()` is never reached, because a
+  guard placed after the call returns the same reject and still spends the money;
+  verified by moving the guard back and watching exactly that test fail.
+
+- **`remote.ts`'s settings validator rejected `gateMode: auto`**, so saving YOLO
+  from the dashboard would have been refused.
+
+- **Artifact name sanitising let `..` survive.** `../../etc/passwd` became
+  `..-..-etc-passwd`. Not exploitable as a filename, but a traversal-shaped
+  string surviving a sanitiser is an invitation to re-introduce the traversal
+  later; dot-runs are now collapsed before the character pass.
+
+
 ### Changed
 
 - **De-forked.** The package no longer vendors `@deepseek-ai/dsh-agent-loop`.

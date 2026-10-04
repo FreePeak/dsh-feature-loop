@@ -31,6 +31,7 @@ import type { ThreadMessageLike, ToolCallMessagePartProps } from '@assistant-ui/
 import { outcomeForResponse, toApprovalGate } from '../src/approval-bridge.ts'
 import type { BridgeOutcome } from '../src/approval-bridge.ts'
 import type { BriefNode, DashboardSnapshot, PendingApproval } from '../src/dashboard.ts'
+import { PHASE_ORDER, phaseFraction, phaseRail } from '../src/phases.ts'
 import { WATCHER_TTL_MS } from '../src/watcher-ttl.ts'
 
 /** Where this page gets its state and sends its decisions. */
@@ -692,9 +693,62 @@ function WorkspaceTree({
   )
 }
 
+/**
+ * The five-stage phase rail.
+ *
+ * Renders nothing at all for a run with no pipeline, rather than five empty
+ * stages — a rail that is always there and always empty teaches the reader to
+ * ignore it, which is the same failure the detectors' `tool-dominance` guard
+ * exists to prevent on the policy side.
+ */
+function PhaseRail({ run }: { run: DashboardSnapshot['runs'][number] }): React.ReactElement | null {
+  const stages = phaseRail(run, PHASE_ORDER)
+  if (stages.length === 0) return null
+  const fraction = phaseFraction(run)
+  return (
+    <div className="phase-rail" role="list" aria-label="Pipeline phases">
+      {stages.map((stage) => (
+        <div key={stage.name} role="listitem" className={`phase phase-${stage.state}`}>
+          <span className="phase-dot" aria-hidden="true" />
+          <span className="phase-name">{stage.name}</span>
+        </div>
+      ))}
+      <div className="phase-meter">
+        <span className="k">this phase</span>
+        <span className="v mono">
+          {fraction === undefined
+            ? 'not measured'
+            : `${run.phaseSpentUSD!.toFixed(4)} / ${run.phaseBudgetUSD!.toFixed(4)} (${Math.round(fraction * 100)}%)`}
+        </span>
+        {fraction !== undefined && (
+          <Meter
+            value={run.phaseSpentUSD!}
+            max={run.phaseBudgetUSD!}
+            label={`${run.phase ?? 'phase'} budget ${Math.round(fraction * 100)}% spent`}
+          />
+        )}
+      </div>
+      {run.prUrl !== undefined && (
+        <a className="phase-link" href={run.prUrl} target="_blank" rel="noreferrer noopener">
+          pull request ↗
+        </a>
+      )}
+      {run.evidenceDir !== undefined && (
+        <span className="phase-evidence mono" title={run.evidenceDir}>
+          evidence: {run.evidenceDir}
+        </span>
+      )}
+      {run.stopArmed === true && (
+        <span className="tag tag-bad" role="status">stop requested</span>
+      )}
+    </div>
+  )
+}
+
 function RunCard({ run }: { run: DashboardSnapshot['runs'][number] }): React.ReactElement {
   return (
     <div className="run-card">
+      <PhaseRail run={run} />
       <div className="run-grid">
         <div>
           <div className="k">run</div>

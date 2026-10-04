@@ -102,7 +102,7 @@ const ASSETS: Record<string, { body: Buffer, contentType: string }> = {
 export type ApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
 
 /** Feed line categories, in the order they read best. */
-export type FeedKind = 'step' | 'signals' | 'judge' | 'route' | 'gate' | 'approval' | 'note'
+export type FeedKind = 'step' | 'phase' | 'signals' | 'judge' | 'route' | 'gate' | 'approval' | 'note'
 
 /** One activity-feed line. */
 export interface FeedEntry {
@@ -145,6 +145,38 @@ export interface RunSnapshot {
   judgeScore?: number
   route?: string
   signals: ReviewSignal[]
+
+  // ── the 0→1 pipeline's additions ──
+  //
+  // Every one optional, and absence stays meaningful: a deployment with no
+  // pipeline serves none of these, and the page renders a plain run rather than
+  // a phase rail with five empty stages. That rule is why they are not a
+  // required sub-object — a required one would force every reader to branch on
+  // whether it was populated.
+
+  /** Which phase this run is in, when the pipeline is on. */
+  phase?: string
+  /** Where that phase is in the spine, 0-based. */
+  phaseIndex?: number
+  /** How many phases the run has. Absent means "not a pipeline run". */
+  phaseCount?: number
+  /**
+   * What THIS phase has spent, beside the run total.
+   *
+   * Separate because the two answer different questions and the page shows
+   * both: "can the run afford this?" and "can this phase afford this?".
+   */
+  phaseSpentUSD?: number
+  /** The ceiling for this phase alone. */
+  phaseBudgetUSD?: number
+  /** The run's wall-clock ceiling, when one is configured. */
+  timeoutMs?: number
+  /** Whether the operator has armed the kill switch. */
+  stopArmed?: boolean
+  /** Where this run's evidence bundle is, for the Evidence link. */
+  evidenceDir?: string
+  /** The pull request this run opened, once it has. */
+  prUrl?: string
 }
 
 /**
@@ -531,6 +563,43 @@ export class DashboardState {
   recordRoute(runId: string, route: string): void {
     const run = this.run(runId)
     run.route = route
+    this.touch(run)
+    this.changed()
+  }
+
+  /**
+   * Record where a 0→1 run is and what its current phase has spent.
+   *
+   * A separate recorder from `recordStep` because the phase is not per-step
+   * data: it changes a handful of times per run while steps arrive continuously,
+   * and folding it into the step patch would make every step write re-assert the
+   * phase — which reads fine until a phase advances between two writes and the
+   * page briefly renders the old one.
+   *
+   * Every field is optional so a caller can update the phase without the page
+   * having to remember whether it knows the budget yet.
+   *
+   * @param runId - the run.
+   * @param patch - the phase fields to set.
+   */
+  recordPhase(runId: string, patch: Pick<RunSnapshot, 'phase' | 'phaseIndex' | 'phaseCount' | 'phaseSpentUSD' | 'phaseBudgetUSD' | 'evidenceDir' | 'prUrl'>): void {
+    Object.assign(this.run(runId), patch)
+    const run = this.run(runId)
+    this.touch(run)
+    this.changed()
+  }
+
+  /**
+   * Record that the operator armed or released the kill switch.
+   *
+   * Separate from `recordPhase` because it is the one field that changes without
+   * any step happening, and a page that only re-reads on a step would not learn
+   * about it until the next thing the loop did — which is precisely when a stop
+   * would be least useful.
+   */
+  recordStopArmed(runId: string, armed: boolean): void {
+    const run = this.run(runId)
+    run.stopArmed = armed
     this.touch(run)
     this.changed()
   }

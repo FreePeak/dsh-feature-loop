@@ -244,8 +244,8 @@ export function validateSettings(settings: FeatureLoopSettings): Record<string, 
   if (clean.judge !== undefined && !['none', 'chat', 'laya'].includes(String(clean.judge))) {
     throw new Error(`judge must be "none", "chat" or "laya", received ${JSON.stringify(clean.judge)}`)
   }
-  if (clean.gateMode !== undefined && !['ask', 'deny'].includes(String(clean.gateMode))) {
-    throw new Error(`gateMode must be "ask" or "deny", received ${JSON.stringify(clean.gateMode)}`)
+  if (clean.gateMode !== undefined && !['ask', 'deny', 'auto'].includes(String(clean.gateMode))) {
+    throw new Error(`gateMode must be "ask", "deny" or "auto", received ${JSON.stringify(clean.gateMode)}`)
   }
   for (const key of NUMERIC_KEYS) {
     const value = clean[key]

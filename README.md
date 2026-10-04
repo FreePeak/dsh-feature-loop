@@ -44,15 +44,93 @@ build.
 
 ---
 
+## The 0→1 loop
+
+Describe a product in one sentence. The loop researches it, writes a PRD,
+implements it, proves it with your test suite, and opens a pull request — every
+step carrying an evidence artifact, every phase carrying its own budget.
+
+> **New in `dsh/zero-to-one`.** Off by default; flip `pipeline.enabled` in the
+> patch row. Full design and rationale: [`docs/PRD-0to1.md`](docs/PRD-0to1.md).
+
+```bash
+make install                       # build, add to a profile, verify it is NOT inert
+```
+
+Then, in the Feature Loop page, describe what you want built.
+
+### Five phases, five budgets, five gates
+
+| Phase | What it does | Exit gate — observable | Share |
+|---|---|---|---|
+| `research` | Decompose into sub-questions, ≤5 sources each, **every claim cited** | `docs/0-research.md` exists and cites a source | 10% |
+| `prd` | Product-agent fit test, scope, **explicit non-goals**, success criteria, metrics | `docs/PRD.md` has Scope / Success / Metrics | 10% |
+| `implement` | Read before write, search-and-replace edits, smallest change | ≥1 tracked file changed | 35% |
+| `test` | Write-test-fix, **3 attempts then report**, diff carried forward | your test command exits 0 | 15% |
+| `ship` | Commit on the run's branch → push → `gh pr create` | a PR URL is recorded | 20% |
+| — | *buffer* — reserved for the terminal report, never spent on work | — | 10% |
+
+A phase that reaches its own ceiling **stops**, even with the run budget
+untouched. A phase cannot borrow from the next one — the book's rule is to
+simplify the plan rather than steal from execution.
+
+Set `pipeline.testCommand` to your project's runner. There is deliberately no
+default: the test phase's gate *is* that command's exit code, and a guessed one
+would report success for a project whose tests never ran.
+
+### YOLO — bounded autonomy
+
+`gateMode: auto` never prompts. Safety moves into an envelope instead:
+
+| Allowed | Denied outright |
+|---|---|
+| reads, writes **inside the run's worktree** | push to `main` / any protected branch (every refspec spelling) |
+| test commands | force-push, `git reset --hard`, `git clean`, rebase |
+| `git commit` on the run's own branch | `gh pr merge`, `gh release`, `gh api` |
+| `git push -u origin fl/<slug>` | `npm publish`, `terraform apply`, `kubectl`, `docker push` |
+| `gh pr create` | any write escaping the worktree, or touching `.env` / `*.pem` / credentials |
+| | any tool or command shape it cannot read — deny, not guess |
+
+The run lives in a throwaway **git worktree**, so a runaway run can dirty a
+directory you delete with one command and never your checkout. Outside a git
+repository YOLO refuses to start rather than degrading.
+
+**Stop it:** `touch .feature-loop/worktrees/<runId>/.feature-loop/STOP`, or the
+Stop button on the page. Checked on every tool call, so it lands within one call.
+
+Ship stops at the pull request. There is no merge, release or deploy path in
+this package, and the envelope denies the commands that would perform one.
+
+### Evidence at every step
+
+```
+.feature-loop/runs/<runId>/
+  REPORT.md     # goal · phase table with budgets · outcomes · artifacts · PR · verdict
+  steps.jsonl   # one line per step: tool, cost, latency, signals, evidence
+  phases.json   # per-phase spend beside the ceiling that would have stopped it
+  artifacts/    # research.md · PRD.md · test output · pr-url.txt
+```
+
+**A step with no artifact cannot be reported as a success.** Write steps whose
+evidence list is empty are counted, carried in the run record, and printed in
+their own section — a run that reached its goal *and* wrote something it cannot
+show reads `UNVERIFIED`, not green. Checking only the final output misses the 80%
+of failures that live in intermediate steps.
+
+---
+
 ## Features
 
 | | |
 |---|---|
-| **Budget the loop** | Step and USD ceilings that stop the run — a limit, not an invoice |
+| **0→1 product loop** | research → PRD → implement → test → ship, each phase gated and budgeted |
+| **Bounded YOLO** | Never prompts; a worktree, a tested deny-list and a kill switch instead |
+| **Evidence per step** | A bundle per run; unverified writes can never render as a success |
+| **Budget the loop** | Step and USD ceilings — per run *and* per phase — checked before the call |
 | **Cheap-first routing** | Model ladder by step type (`onegw/cheap` → execution) |
 | **Loop hygiene** | Tool-cycle, error-cascade, budget trajectory, and related detectors |
 | **Fail-closed review gate** | Tiered by reversibility; low judge confidence → ask the human |
-| **HITL ops dashboard** | Workspaces, activity, grouped runs, Allow / Reject + optional feedback |
+| **HITL ops dashboard** | Phase rail, workspaces, activity, grouped runs, Allow / Reject |
 | **One policy, two paths** | Standalone runner and DSH plugin share the same rules |
 
 ---
@@ -181,7 +259,7 @@ and that is the intended behaviour, not a miss.
 ## Quick start
 
 ```bash
-# 296 tests, no network, no model call — the policy layer is pure
+# 600 tests, no network, no model call — the policy layer is pure
 node --experimental-strip-types --test test/*.test.ts
 
 # the end-to-end demo (needs onegw on :8080 and xiaomi/mimo-v2.5)
@@ -217,7 +295,23 @@ only this plugin, and pins the permission preset that makes the approval panel
 appear. See **[`docker/README.md`](docker/README.md)** — including the two hosts
 DSH refuses to bind, and the small relay that resolves it.
 
-### Installing it into DSH by hand
+### Installing it into DSH
+
+```bash
+make install PROFILE=fl      # build, add, and verify the plugin is not inert
+make uninstall PROFILE=fl
+```
+
+`make install` exists because of the failure the README warns about twice: a
+profile that pulls in nothing else from the harness installs this plugin,
+composes it, shows it in the boot graph, and then **does nothing at all**. The
+harness packages are optional peers and this repo disables peer
+auto-installation, so they simply do not resolve. `make install` checks that they
+did, and exits non-zero with the fix if they did not — an installer that reports
+success on an inert plugin teaches you a lie.
+
+<details>
+<summary>Install by hand</summary>
 
 To run the plugin inside a local harness profile — including alongside Agent
 Teams — follow **[`docs/SETUP.md`](docs/SETUP.md)**. It covers the build, a
@@ -240,7 +334,10 @@ bundle (Agent Teams' profile bundle is the usual one) and the peers resolve.
 The one-second check is pnpm's virtual-store key — a `_@deepseek-ai+c_…`
 suffix means resolved, no suffix means the plugin is inert:
 [`docs/KNOWN-ISSUES.md` §4](docs/KNOWN-ISSUES.md), and
-[`docs/SETUP.md`](docs/SETUP.md) §Step 2.
+[`docs/SETUP.md`](docs/SETUP.md) §Step 2. `make install` performs this check for
+you and refuses to finish on an inert install.
+
+</details>
 
 Once it is running, a gated step **prompts you in the browser**: the composer
 shows the reason with **Reject** / **Allow once**, and your answer decides
@@ -289,6 +386,16 @@ gets reached.
 | `BUG_FIX_PROMPT` (6 rules) | `prompts.ts` | `BUG_FIX_RULES` |
 | `FEATURE_PROMPT` (5 rules) | `prompts.ts` | `FEATURE_RULES` |
 | "Separate success from stopping" | `runner.ts` | success check after every step |
+| Plan-and-Execute above ReAct | `pipeline.ts` | phases plan; the harness's ReAct loop runs inside each |
+| "Model every agent as a state machine" | `pipeline.ts` | `VALID_TRANSITIONS`; an illegal move throws |
+| "3 attempts, then report" | `pipeline.ts`, `phases.ts` | the 4th `TEST → IMPLEMENT` is an invalid transition |
+| Phase token budget (30/50/20 + buffer) | `phases.ts` `PIPELINE_BUDGET` | 10/10/35/15/20 + a 10% reserved buffer |
+| "Check budget BEFORE each call, at 90%" | `phase-budget.ts` `preCallGuard` | reserves the buffer for the terminal report |
+| Timeout guard (independent of steps) | `phase-budget.ts` | per-phase and per-run wall-clock ceilings |
+| "File operations happen in a restricted directory" | `sandbox.ts` | a throwaway git worktree; refuses without a repo |
+| "Never swallow errors silently" | `ship.ts` | 3 legal dispositions; no failure path yields a `prUrl` |
+| Uncited = unverified (15–25% → <3%) | `phases.ts` `RESEARCH_PHASE` | the research gate requires a citation |
+| "Every write must be idempotency-checked" | `yolo.ts` | `ENVELOPE` — irreversible ops are denied, not asked |
 
 Every threshold is quoted from the playbook in `BOOK_THRESHOLDS`, because a
 threshold with no provenance is a number someone liked.
@@ -607,6 +714,41 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 ---
 
 ## Known limits
+
+### The 0→1 pipeline
+
+- **Phase progression is not yet driven end to end.** The state machine, the
+  budgets, the gate, the envelope, the sandbox and the ship phase all exist and
+  are tested, but a run still advances through `research` until something calls
+  `transition()`. The page shows the rail; it does not yet walk it. Until the
+  step hook evaluates each phase's gate and advances, a run is a well-bounded
+  research phase. **This is the largest open item in the change.**
+- **The gate evaluators are pure, but nothing fills a `PhaseObservation` yet.**
+  `evaluateGate` reads an already-observed snapshot; the code that reads
+  `docs/0-research.md`, asks git what changed, and runs your test command is not
+  written. The gates fail closed, so today no phase can pass — which is the safe
+  direction, but it means the pipeline does not complete.
+- **`ship()` is not yet called by the plugin.** It is tested against its exact
+  argv and is ready; nothing invokes it at the end of a `ship` phase.
+- **`createSandbox` is not yet called by the plugin.** Same: tested, ready, and
+  `CreatePolicyOptions.worktree` accepts the result, but the caller that creates
+  one does not exist yet. Until it does, `gateMode: auto` denies every write,
+  because containment with nothing to contain against is not containment.
+- **No end-to-end run has been performed.** Every claim in this section is from
+  unit tests and a typecheck. There is no `docs/evidence/` pack for a real
+  five-phase run yet, and that pack is the next thing to produce.
+- **`commandWords` is not a shell parser.** It tokenises with quotes honoured,
+  which answers "which subcommand is this" and nothing more. `cat x | sh` is four
+  tokens to it, not three. Anything it cannot read is denied rather than allowed,
+  so the limit is in the safe direction — but a determined bypass through shell
+  syntax is not what this defends against.
+- **The test phase's ceiling is the book's 3 attempts, enforced by control flow.**
+  `pipeline.ts` refuses the fourth transition, so a loop that ignores the prompt
+  cannot reach it. What the loop does with those three attempts is still prompt
+  text.
+
+### Everything else
+
 
 - **`src/plugin.ts` is not typechecked in CI.** It imports `@deepseek-ai/dsh-*`
   at versions CI cannot resolve (there is no lockfile, and
