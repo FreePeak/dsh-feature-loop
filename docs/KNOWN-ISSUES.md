@@ -85,6 +85,7 @@ rather than a list of letters:
 | 1bz | The alert said "15% of runs" and measured 15% of steps |
 | 1ca | A green e2e, on a bundle that had no panel in it |
 | 1cb | A composer answering in the open was denied as "nobody is watching" |
+| 1cc | `recommendations` was forwarded by nobody and set by nobody |
 
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
@@ -1426,6 +1427,64 @@ which is the median of the runs that were actually timed. `latest` deliberately
 still reads the last record's value, so an old shape remains visible there;
 hiding it would be the roll-up inventing a measurement. The main checkout's
 tracked history was restored byte-for-byte afterwards.
+
+### 1cc. `recommendations` was forwarded by nobody and set by nobody
+
+**Observed:** `projectLive` has forwarded `recommendations` since a65257b, and
+`grep -rn recommendations web/` found **zero** renderers — the same shape as the
+`metrics` gap a65257b closed. But the deeper fact is the one a renderer search
+cannot find: `grep -rn setRecommendations --include=*.ts .` (whole repo, no
+node_modules) returns **only `src/dashboard.ts` and `test/dashboard.test.ts`**.
+There was no production writer. The field could never be present on the wire, so
+the question "which component renders it" had no answer because there was
+nothing to render.
+
+**Why it stayed that long.** The optimizer is deliberately CLI-only: §1bv's
+comment says recommendations "stay a CLI affair (`--derive`) until a
+`session/flush`-cadence design exists". That decision was correct about the
+CADENCE and wrong about the DESTINATION: `advisoryFor` returns
+`{metrics, recommendations, unavailable}` in one value, the state object already
+has `setRecommendations`, the snapshot already has the key, and `projectLive`
+already forwarded it. Everything but the writer existed.
+
+**Fix.** `recordTurn` asks for the battery once the history is long enough to be
+evidence (`RECOMMENDATION_MIN_RUNS = 5`, the same number
+`MetricsSummary.provisional` uses for "a tail would be an anecdote"), guarded by
+a process-wide in-flight counter because a battery is seven sequential judge
+round trips and two concurrent runs must not pay it twice. A judge outage is
+rule 1, not a turn failure: the rejection is swallowed with a feed line, exactly
+as a failed history append is, and the roll-up published just above is untouched.
+
+**And a ReferenceError hiding in the first attempt** — the class this whole chain
+keeps meeting. The guard was written as `if (historyEnabled && …)`; that
+binding lives in `apply`, not in `recordTurn`, so the identifier threw AFTER
+`appendRecord`. The history grew to 6 lines, the battery never ran once, and
+**nothing was reported anywhere** — because the throw happened in a promise
+nobody awaited. Measured by driving the real listener, not by reading the diff:
+the same observable (records written, no proposal) as a wiring that simply
+wasn't there.
+
+**Verified** in three directions, each proven to bite:
+
+- four turns: the judge is **never** called (asked === 0);
+- the fifth turn: the snapshot's `recommendations` is non-empty — asserted on
+  the SNAPSHOT, not on the feed line, because the feed line is written on both
+  branches and asserting it passed against a build that computed the battery and
+  dropped every proposal;
+- `state.setRecommendations([])` in place of the real list fails that assertion;
+  so does disabling the guard.
+
+**Live, on a generated profile with no judge configured** — the honest result
+rather than a fabricated one:
+
+```
+recommendations on the wire: []
+optimizer: no proposals — all 7 asked questions reported: judge error: no judge configured
+```
+
+That is the shape §1bq requires: the key is PRESENT (the battery ran) and the
+list is EMPTY (the judge had nothing to say), instead of an absent key that
+reads as "nothing ran".
 
 ### 1cb. A composer answering in the open was denied as "nobody is watching"
 

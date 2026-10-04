@@ -941,6 +941,122 @@ test('apply builds a Judge from the settings file, not the string in it', async 
   })
 })
 
+test('the optimizer is asked only once the history is evidence, and then it writes', () => {
+  // `recommendations` was forwarded by `projectLive` (a65257b) and set by NOBODY:
+  // `setRecommendations` had no production caller in the repo, so the key could
+  // never be present on the wire and no renderer could have drawn it. The gap
+  // is the WRITER — found by asking who writes a field, not by hunting for a
+  // missing component (which is how a65257b's sibling, `metrics`, was found).
+  //
+  // Both facts matter and only one is obvious: the battery must not run per
+  // turn (seven sequential judge round trips on the hot path of every closed
+  // turn), and what it produces must be PUBLISHED — a list computed and dropped
+  // is indistinguishable from no list at all, which is the shape of every
+  // defect in this chain.
+  return (async () => {
+    const { mkdtempSync, readFileSync, existsSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-advisory-'))
+    const historyPath = join(dir, 'runs.jsonl')
+    const { RECOMMENDATION_MIN_RUNS } = await import('../src/plugin.ts')
+
+    let asked = 0
+    const judge = {
+      score: async (_state: string, questions: Record<string, { type?: string, options?: unknown[] }>) => {
+        asked += 1
+        for (const question of Object.values(questions)) {
+          if (question.type === 'choice' && Array.isArray(question.options)) {
+            return { score: question.options[0] as string, error: undefined }
+          }
+          if (question.type === 'noul') return { score: 0.5, error: undefined }
+          return { score: 2, error: undefined }
+        }
+        return { score: 0, error: undefined }
+      },
+    } as unknown as FeatureLoopPolicy['judge']
+
+    // The snapshot is what the page reads, and `DashboardState.note` is the one
+    // method every path through this plugin passes — so capturing `this` there
+    // yields the live state without a seam into the plugin's internals. The
+    // patch is undone in a `finally` because this file runs in one process with
+    // every other case, and a leaked prototype patch would make every later
+    // case's feed assertions pass vacuously.
+    let captured: { snapshot(): { recommendations?: unknown[], feed: { text: string }[] } } | undefined
+    const stateModule = await import('../src/dashboard.ts')
+    const realNote = stateModule.DashboardState.prototype.note
+    stateModule.DashboardState.prototype.note = function capture(
+      this: unknown, kind: string, text: string, runId?: string,
+    ): void {
+      captured = this as typeof captured
+      return (realNote as (...a: unknown[]) => unknown).call(this, kind, text, runId)
+    } as typeof stateModule.DashboardState.prototype.note
+
+    try {
+      const handlers = new Map<string, (...args: unknown[]) => unknown>()
+      const ctx = {
+        on(event: string, fn: (...args: unknown[]) => unknown): () => void {
+          handlers.set(event, fn)
+          return () => { handlers.delete(event) }
+        },
+      }
+      const dispose = apply(ctx as never, {
+        spec: SPEC,
+        judge,
+        dashboard: { enabled: false },
+        optimize: { history: historyPath },
+      } as never)
+
+      const sessionHandler = handlers.get('session/event')
+      assert.ok(sessionHandler !== undefined, 'session/event must register when history is on')
+      const endTurn = (turn: number): void => {
+        sessionHandler(
+          { id: 'sess-advisory' },
+          { type: 'turn/end', data: { turn, reason: { kind: 'completed' } } },
+        )
+      }
+      // One turn short of the threshold: the battery must not have been paid.
+      for (let turn = 1; turn < RECOMMENDATION_MIN_RUNS; turn += 1) endTurn(turn)
+      await new Promise(resolve => { setTimeout(resolve, 60) })
+      assert.equal(asked, 0,
+        `${String(RECOMMENDATION_MIN_RUNS - 1)} turns is not evidence; seven judge `
+        + 'round trips are not a per-turn cost')
+
+      // The turn that reaches it. Wait for the PUBLICATION, not the first judge
+      // call: the battery is seven sequential awaits, so `asked > 0` is true
+      // long before the list exists. Waiting on `asked` here passed against a
+      // build that dropped every proposal.
+      endTurn(RECOMMENDATION_MIN_RUNS)
+      const deadline = Date.now() + 5000
+      while (Date.now() < deadline && captured?.snapshot().recommendations === undefined) {
+        await new Promise(resolve => { setTimeout(resolve, 10) })
+      }
+      assert.ok(asked > 0, 'the battery runs once the history is long enough')
+      // The SNAPSHOT, not the feed line: a feed line naming the count is written
+      // on both branches, so asserting it passes against a build that computes
+      // the battery and drops every proposal. `recommendations` is the field
+      // `projectLive` forwards, so this is the value the page would render.
+      const snapshot = captured?.snapshot()
+      assert.notEqual(snapshot?.recommendations, undefined,
+        'the recommendations must reach the SNAPSHOT — the key `projectLive` '
+        + 'forwards, and the one no renderer could ever see')
+      assert.ok((snapshot?.recommendations?.length ?? 0) > 0,
+        'and it must be non-empty: the battery answered, so a zero-length list '
+        + 'means the proposals were computed and thrown away')
+      assert.ok(snapshot?.feed.some(f => f.text.includes('proposal(s)')),
+        'and the feed must say what was published')
+
+      assert.ok(existsSync(historyPath), 'the records the battery read are on disk')
+      assert.ok(readFileSync(historyPath, 'utf8').split('\n').filter(Boolean).length >= RECOMMENDATION_MIN_RUNS,
+        'and every closed turn is in them — a torn write would read as a shorter '
+        + 'history and re-arm the threshold')
+      dispose()
+    } finally {
+      stateModule.DashboardState.prototype.note = realNote
+    }
+  })()
+})
+
 // ── a call that RAN and failed ──────────────────────────────────────────────
 
 test('a tool that RAN and FAILED climbs the ladder; one that succeeded does not', async () => {

@@ -102,6 +102,7 @@ import { budgetStopText, budgetWarnText, escalationText, reviewText } from './me
 // and a load that never settles loses the record with no error at all
 // (KNOWN-ISSUES §1bw). A static import resolves at load, before any run.
 import { summarize } from './metrics.ts'
+import { advisoryFor } from './optimize.ts'
 import { appendRecord, readRecords, specFingerprint, taskKeyOf } from './runlog.ts'
 import type { RunRecord, StepRecord } from './runlog.ts'
 import type { RunOutcome } from './runlog.ts'
@@ -1878,6 +1879,21 @@ function turnStartTime(session: unknown, turn: number): number | undefined {
   return undefined
 }
 
+/**
+ * Closed turns before the optimizer is asked for proposals.
+ *
+ * A battery of judge questions is evidence-gathering, and one turn is not
+ * evidence: a proposal computed from a single 4-step run says more about that
+ * run than about the loop. Five is the same number `MetricsSummary.provisional`
+ * already uses for "a tail would be an anecdote", so the page marks both with
+ * the same word. Exported so a test can assert the number rather than a
+ * comment's promise.
+ */
+export const RECOMMENDATION_MIN_RUNS = 5
+
+/** Judge batteries in flight, whole process. See the `advisoryInFlight` read below. */
+let advisoryInFlight = 0
+
 async function recordTurn(input: TurnRecordInput): Promise<void> {
   const { session, event, openedAt, options, policyFor, resolveAgent, state, historyPath } = input
   const agent = agentOfSession(session, resolveAgent)
@@ -1943,6 +1959,50 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
   // reader, never thrown — the panel shows a smaller history, not an error.
   const { records, malformed } = readRecords(historyPath)
   state.setMetrics(summarize(records, { malformed }))
+
+  // The optimizer's proposals, on a CANDIDATE: one turn's history is not the
+  // evidence a battery of judge questions is for, and a card that says "raise
+  // maxSteps to 8" after a single 4-step run is a card nobody should trust.
+  // They are produced here and published only once enough closed turns exist,
+  // which is what `RECOMMENDATION_MIN_RUNS` states. Seven sequential round trips
+  // is the ceiling `proposeOptimizations` documents; paying it on the hot path
+  // of every turn is how that becomes the loop's own latency.
+  //
+  // Before this, `recommendations` was forwarded by `projectLive` (a65257b) and
+  // set by nobody: `setRecommendations` had no production caller in the whole
+  // repo, so the key could never be present. Measured 2026-10-04 by grep — the
+  // first of the "data arrives, nothing draws it" family to be found by asking
+  // who WRITES the field rather than by looking for a missing renderer.
+  // One battery at a time, for the whole process. A turn is short and a second
+  // pass would multiply seven round trips by the number of concurrent runs.
+  // `historyPath`, not the `historyEnabled` flag from `apply`: this function
+  // does not have that binding, so naming it here was a ReferenceError thrown
+  // AFTER `appendRecord` — which is why the history grew to 6 lines while the
+  // battery never ran once, with no error anywhere. Same class as §1bw's
+  // contained throw: a real failure, invisible because nothing owned it.
+  if (historyPath.trim() !== '' && records.length >= RECOMMENDATION_MIN_RUNS && advisoryInFlight === 0) {
+    advisoryInFlight += 1
+    void advisoryFor({ records, malformed, spec, judge: policy.judge })
+      .then((advisory) => {
+        state.setRecommendations(advisory.recommendations)
+        state.note(
+          'note',
+          advisory.unavailable === undefined
+            ? `optimizer: ${String(advisory.recommendations.length)} proposal(s) from `
+              + `${String(records.length)} recorded runs`
+            : `optimizer: no proposals — ${advisory.unavailable}`,
+        )
+      })
+      // A judge outage is a normal state (rule 1), not a turn failure: the
+      // roll-up above is already published and this must not take the turn
+      // with it. So the rejection is swallowed with a feed line, exactly as a
+      // failed history append is.
+      .catch((error: unknown) => {
+        state.setRecommendations([])
+        state.note('note', `optimizer: no proposals — ${error instanceof Error ? error.message : String(error)}`)
+      })
+      .finally(() => { advisoryInFlight -= 1 })
+  }
 }
 
 /**
