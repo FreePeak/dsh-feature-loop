@@ -250,12 +250,43 @@ test('cycle alert fires exactly at 2% of runs, silent below it', () => {
   assert.equal(below.alerts.length, 0)
 })
 
-test('review alert fires exactly at a 0.15 mean reviewFraction, silent below it', () => {
+test('the review alert fires on the share of RUNS, and names that', () => {
+  // The book's sentence is "Human escalation rate … > 15% of RUNS". The alert
+  // used to fire on the share of STEPS while printing "(15% of runs)" — so the
+  // number and the label were different quantities.
   const at = summarize([record({ reviewFraction: 0.15 }), record({ reviewFraction: 0.15 })])
-  assert.equal(at.alerts.length, 1, JSON.stringify(at.alerts))
-  assert.equal(at.alerts[0].kind, 'review')
-  const below = summarize([record({ reviewFraction: 0.149 }), record({ reviewFraction: 0.149 })])
-  assert.equal(below.alerts.length, 0)
+  assert.ok(at.alerts.some(a => a.kind === 'review'), JSON.stringify(at.alerts))
+  assert.match(at.alerts.find(a => a.kind === 'review')!.detail, /of runs surfaced a step/)
+
+  // The step share keeps its own bar and its own label: a loop that reviews a
+  // quarter of its STEPS is drowning a human even when every run involves one.
+  assert.ok(at.alerts.some(a => a.kind === 'review-fraction'))
+  assert.match(at.alerts.find(a => a.kind === 'review-fraction')!.detail, /% of steps/)
+})
+
+test('a heavy review on FEW runs is reported by both numbers, and they disagree', () => {
+  // One review in a single 100-step run: 1% of steps, 100% of runs. Under the old
+  // single number this read as "no human was involved" and the alert stayed
+  // silent.
+  const heavyFew = summarize([record({ reviewFraction: 0.01, steps: 100 })], [record()])
+  assert.equal(heavyFew.quality.reviewFraction, 0.01, 'a share of steps')
+  assert.equal(heavyFew.quality.reviewRunRate, 1, 'a share of runs')
+  assert.ok(heavyFew.alerts.some(a => a.kind === 'review'), 'the run share fires its bar')
+  assert.equal(heavyFew.alerts.filter(a => a.kind === 'review-fraction').length, 0, 'the step share does not')
+
+  const lightMany = summarize(
+    [record({ reviewFraction: 0.01, steps: 2 }), record({ reviewFraction: 0.01, steps: 2 }),
+     record({ reviewFraction: 0.01, steps: 2 }), record({ reviewFraction: 0, steps: 2 })],
+    [record()],
+  )
+  assert.equal(lightMany.quality.reviewRunRate, 0.75)
+  assert.equal(Math.round(lightMany.quality.reviewFraction * 100) / 100, 0.01)
+})
+
+test('reviewRunRate is absent with no records — zero runs is not zero escalation', () => {
+  const none = summarize([], [])
+  assert.equal(none.quality.reviewRunRate, undefined)
+  assert.equal(none.quality.reviewFraction, 0, 'the step share has no denominator and stays 0')
 })
 
 test('an empty record list summarizes to zeros without throwing', () => {

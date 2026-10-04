@@ -109,8 +109,24 @@ export interface MetricsSummary {
     meanJudge?: number
     /** Mean of `qualityScore` over the runs that asked for one. Absent when none did — not scored is not zero. */
     meanQuality?: number
-    /** Mean `reviewFraction` across runs: the human-escalation rate. */
+    /**
+     * Mean `reviewFraction` across runs — where each record's `reviewFraction` is
+     * reviews ÷ STEPS in that run.
+     *
+     * So this is a **share of steps**, and it used to be labelled the share of
+     * RUNS. Both numbers are worth having and they disagree: one review in a
+     * single 100-step run is 1% of steps and 100% of runs. The step share answers
+     * "how much attention am I spending", the run share answers "how often does
+     * a session involve a human" — so both are reported and neither is
+     * mislabelled.
+     */
     reviewFraction: number
+    /**
+     * Share of RUNS in which at least one step was surfaced for review. Absent
+     * when there are no records: zero runs and zero escalation are different
+     * facts.
+     */
+    reviewRunRate?: number
   }
   /** Only the thresholds that actually fired, in the book's order. */
   alerts: { kind: string; severity: string; detail: string }[]
@@ -198,6 +214,11 @@ export function summarize(
   const qualities = records.flatMap(r => (r.qualityScore === undefined ? [] : [r.qualityScore]))
   const unpricedSteps = records.reduce((sum, r) => sum + r.unpricedSteps, 0)
   const reviewFraction = runs > 0 ? mean(records.map(r => r.reviewFraction)) : 0
+  // The share of RUNS, which is what the book's sentence names. A run counts once
+  // however many of its steps were surfaced — otherwise a 100-step run with one
+  // review contributes 0.01 to the mean and reads as "no human was involved".
+  const withReviews = records.filter(r => r.reviewFraction > 0)
+  const reviewRunRate = records.length > 0 ? withReviews.length / records.length : undefined
 
   // Only records that actually timed steps declare a kind: an empty
   // `stepLatencyMs` has no measurement to label.
@@ -281,9 +302,16 @@ export function summarize(
     }
   }
 
-  // The book: "Human escalation rate … > 15% of runs".
+  // The book: "Human escalation rate … > 15% of runs" — so this fires on the
+  // share of RUNS and says so. It used to fire on the share of STEPS while
+  // printing "(15% of runs)".
+  if (reviewRunRate !== undefined && reviewRunRate >= 0.15) {
+    push('review', `${(reviewRunRate * 100).toFixed(0)}% of runs surfaced a step for review (>= 15%)`)
+  }
+  // The step share is a separate reading with its own bar: a loop that asks about
+  // every third step is drowning a human even when every run involves one.
   if (reviewFraction >= 0.15) {
-    push('review', `mean review fraction ${reviewFraction.toFixed(2)} >= 0.15 (15% of runs)`)
+    push('review-fraction', `reviews are ${(reviewFraction * 100).toFixed(0)}% of steps (>= 15%)`)
   }
 
   return {
@@ -321,6 +349,7 @@ export function summarize(
       meanJudge: judges.length > 0 ? mean(judges) : undefined,
       meanQuality: qualities.length > 0 ? mean(qualities) : undefined,
       reviewFraction,
+      ...(reviewRunRate === undefined ? {} : { reviewRunRate }),
     },
     alerts,
   }

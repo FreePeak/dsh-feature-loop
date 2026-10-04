@@ -82,6 +82,7 @@ rather than a list of letters:
 | 1bw | One unbound method call, and it was the reason no run record existed |
 | 1bx | Three ways to lose an agent, one class |
 | 1by | What the panel says about a history this plugin actually wrote |
+| 1bz | The alert said "15% of runs" and measured 15% of steps |
 
 
 ### 1a. Nothing in this repo ran on the model it was supposed to run on
@@ -1255,6 +1256,57 @@ latency axis for this path rather than a zero. That is §1bt's shape working, no
 a gap — but it does mean the plugin path has no per-step speed figure, and the
 two `latency`/`steps` alerts that DO fire come from the CLI-runner records in the
 same file.
+
+### 1bz. The alert said "15% of runs" and measured 15% of steps
+
+**Observed.** §1by gave the review alert its first real input, and reading it
+against the sentence exposed a mismatch that had been there since the alert was
+written:
+
+```
+if (reviewFraction >= 0.15)
+  push('review', `mean review fraction … >= 0.15 (15% of runs)`)
+```
+
+`reviewFraction` is a mean of **per-run shares of STEPS** (`reviews ÷ steps`).
+The sentence names **runs**. Two quantities, one number.
+
+**Why it never showed.** Before §1bx the field was a literal `0`, so the alert
+could not fire at all (§1bs) — and a mismatched label on a number that is always
+zero is invisible twice over. §1bs fixed the input; this is what became visible
+once the input was real.
+
+**What it gets wrong, concretely.** One review in a single 100-step run:
+
+| | value | the old alert |
+|---|---|---|
+| share of steps | 0.01 | **silent** |
+| share of runs | 1.0 | — |
+
+A run where a human was involved in every step reads as 1% and trips nothing,
+while the sentence printed beside it says "15% of runs".
+
+**Fix.** Both numbers, both labelled, each with its own bar:
+
+- `reviewRunRate` — share of **runs** in which any step was surfaced. This is what
+  the book's sentence names, and it is what the `review` alert now fires on.
+- `reviewFraction` — share of **steps**, documented as such, with its own
+  `review-fraction` bar: a loop that reviews a quarter of its steps is drowning a
+  human even when every run involves one.
+
+**Verified** in both directions by a test that builds the case the old code got
+wrong: one review in one 100-step run gives `reviewFraction 0.01, reviewRunRate
+1`, fires `review` and does **not** fire `review-fraction`. Reverting the alert
+to the step share fails it. And `reviewRunRate` is `undefined` with no records —
+zero runs and zero escalation are different facts, which is §1bq's rule applied
+to the new field.
+
+**One thing I checked and did not change.** The Metrics roll-up is served over
+`/api/state` and **no page renders it** — there is no `goalMetRate`,
+`reviewFraction` or `alerts` reference anywhere under `web/` or `assets/`. So
+these numbers are correct for whoever reads the API, and fixing the label does
+not put it in front of a human. That gap is bigger than the label and is not
+addressed here.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
