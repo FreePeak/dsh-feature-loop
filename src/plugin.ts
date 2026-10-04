@@ -63,6 +63,9 @@ import type { PipelinePhase } from './phases.ts'
 import { goalNotice, phaseNotice, terminalNotice } from './phase-notice.ts'
 import { advancePhase, gateCurrentPhase, runShip } from './driver.ts'
 import { writeBundle } from './evidence.ts'
+
+/** Where run artifacts land, relative to the workspace root. Mirrors the config default. */
+const RUNS_DIR = '.feature-loop/runs'
 import { spawnSync } from 'node:child_process'
 import { ModelLadder, routeLabel } from './routing.ts'
 import { AttentionRouter, ReviewGate, judgeQuestion } from './review.ts'
@@ -248,6 +251,14 @@ export interface FeatureLoopPolicy {
    * both is the kind of duplication that drifts.
    */
   taskGoal?: string
+  /**
+   * The phase whose instructions have already been delivered.
+   *
+   * Without it the notice is recomputed every step and the model re-reads the
+   * same block on every step, or — the version this replaces — it is sent only
+   * on step 1 and a mid-turn transition is never announced at all.
+   */
+  noticedPhase?: string
 }
 
 /**
@@ -1014,7 +1025,15 @@ function phaseJustEntered(policy: FeatureLoopPolicy, turn: number, step: number,
   if (!(PHASE_ORDER as readonly string[]).includes(state)) {
     return terminalNotice(state, 'The run stopped before this step.')
   }
-  if (step !== 1) return undefined
+  // Delivered when the phase CHANGES, not only on step 1. A transition happens
+  // mid-turn, and a single-turn run never reaches the next step 1 — so keying on
+  // the step number meant the PRD instructions were computed and never sent, and
+  // the run sat in a phase the model had never been told about.
+  const first = policy.noticedPhase === undefined
+  const changed = policy.noticedPhase !== state
+  if (!changed) return undefined
+  policy.noticedPhase = state
+  if (!first) return phaseNotice(state as PipelinePhase)
   return turn === 1
     ? `${goalNotice(goal ?? policy.spec?.goal ?? 'the stated goal')}\n\n${phaseNotice(state as PipelinePhase) ?? ''}`
     : phaseNotice(state as PipelinePhase)
@@ -1036,9 +1055,21 @@ function advanceIfGated(policy: FeatureLoopPolicy): { notice: string } | undefin
   if (pipeline === undefined) return undefined
   const sandbox = pipeline.worktree
   if (sandbox === undefined) return undefined
+  // The verify command MUST come from the deployment's `pipeline.testCommand`.
+  // Passing an empty config here is what made the test gate answer "no verify
+  // command was run" on every attempt — so the phase could never pass, bounced
+  // back to implement three times, and blocked a run whose code was already
+  // correct and whose tests already passed. `verifyCommand` is carried on the
+  // runtime precisely so this call site cannot forget it.
   const options = {
     repoRoot: '', goal: '', runId: '',
-    run: pipeline.run, budget: pipeline.budget, config: {}, runner: spawnSyncCommand,
+    run: pipeline.run,
+    budget: pipeline.budget,
+    config: {
+      ...(pipeline.verifyCommand === undefined ? {} : { testCommand: pipeline.verifyCommand }),
+      runsDir: '.feature-loop/runs',
+    },
+    runner: spawnSyncCommand,
   }
   let moved: { moved: boolean; note: string }
   try {
@@ -1387,8 +1418,9 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
   const spec = policy.spec ?? options.spec
   const now = Date.now()
   const steps = snapshot?.steps ?? 0
+  const runId = sessionIdOf(session)
   const record: RunRecord = {
-    runId: sessionIdOf(session),
+    runId,
     startedAt: now,
     endedAt: now,
     pass: 1,
@@ -1408,6 +1440,13 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
     judgeScores: [],
     reviewFraction: 0,
     specFingerprint: spec === undefined ? 'none' : runlog.specFingerprint(spec),
+    // Where the 0→1 pipeline got to, and what it may spend next. A phase change
+    // needs a TURN to deliver its instructions, so a run that finishes its turn
+    // mid-pipeline resumes at the next one — which means the resume point has to
+    // be on the record, or an operator reading the history sees "research → prd"
+    // and no way to tell that the PRD is waiting for someone to send another
+    // message.
+    ...pipelineFields(policy, String(runId)),
   }
   runlog.appendRecord(historyPath, record)
   // The Metrics panel reads what just landed: the roll-up is over the file,
@@ -1440,6 +1479,36 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
  * @returns the agent, or `undefined` when the session has none yet — which is a
  *   real state for a session whose agent was never created, not an error.
  */
+/**
+ * The pipeline's slice of a run record, or nothing when there is no pipeline.
+ *
+ * Returns `{}` rather than absent fields so a record from a plain bounded loop
+ * keeps exactly the shape it had before the pipeline existed.
+ *
+ * @param policy - the run's policies.
+ * @param runId - the run's id, which names the evidence bundle.
+ * @returns the additive pipeline fields.
+ */
+function pipelineFields(policy: FeatureLoopPolicy, runId: string): Record<string, unknown> {
+  const pipeline = policy.pipeline
+  if (pipeline === undefined) return {}
+  const usage = pipeline.budget.allUsage()
+  return {
+    phase: pipeline.run.state,
+    evidenceDir: `${RUNS_DIR}/${runId}`,
+    phases: usage.map(u => ({
+      phase: u.phase,
+      steps: u.steps,
+      costUSD: u.spentUSD,
+      budgetUSD: u.maxSpendUSD,
+      maxSteps: u.maxSteps,
+      outcome: u.steps === 0 ? 'pending' : u.phase === pipeline.run.state ? 'current' : 'passed',
+      wallMs: u.wallMs,
+    })),
+    ...(policy.worktreeRoot === undefined ? {} : { worktree: policy.worktreeRoot }),
+  }
+}
+
 function agentOfSession(agents: AgentRegistry | undefined, session: unknown): Agent | undefined {
   if (agents === undefined) return undefined
   const id = sessionIdOf(session)
@@ -1862,6 +1931,12 @@ export function apply(
       const key = `${sessionIdOf(session)}#${String(end.turn)}`
       if (recordedTurns.has(key)) return
       recordedTurns.add(key)
+      // The gate is checked ONE more time here, because a phase can be finished
+      // by the turn's very last step and a step-boundary check never gets to see
+      // it. Without this a run that wrote a perfectly good research note and then
+      // finished its turn left the pipeline in `research` with the note sitting
+      // there, and the next turn re-entered a phase that was already done.
+      advanceIfGated(policyFor(agentOfSession(agents, session)))
       void recordTurn({ session, event: end, options, policyFor, state, historyPath: path, agents })
         .catch((error: unknown) => {
           // A failed append must never fail the turn: the record is
