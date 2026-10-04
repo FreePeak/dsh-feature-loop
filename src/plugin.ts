@@ -25,7 +25,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentRegistry, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContextFormed, LlmCallConfig, UserMessage } from '@deepseek-ai/dsh-llm'
 
@@ -1154,6 +1154,14 @@ interface TurnRecordInput {
   policyFor: (agent: Agent | undefined) => FeatureLoopPolicy
   state: DashboardState
   historyPath: string
+  /**
+   * The harness agent registry, used to resolve the session's agent.
+   *
+   * On the input rather than read from a module global because this function is
+   * module-level and a deployment may mount several contexts; a captured global
+   * would silently record every turn against the first context's agents.
+   */
+  agents?: AgentRegistry
 }
 
 /**
@@ -1211,9 +1219,9 @@ function outcomeOf(reasonKind: string, policy: FeatureLoopPolicy): RunOutcome {
  * @param input - the closed turn and everything the record is built from.
  */
 async function recordTurn(input: TurnRecordInput): Promise<void> {
-  const { session, event, options, policyFor, state, historyPath } = input
+  const { session, event, options, policyFor, state, historyPath, agents } = input
   const runlog = await import('./runlog.ts')
-  const agent = agentOfSession(session)
+  const agent = agentOfSession(agents, session)
   const policy = policyFor(agent)
   const snapshot = policy.budget?.snapshot()
   const spec = policy.spec ?? options.spec
@@ -1251,27 +1259,35 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
 }
 
 /**
- * The agent behind a session, when the harness can resolve one.
+ * The agent behind a session, via the harness's own registry.
  *
- * `session/event` hands the session, not the agent — but the per-agent policy
- * (budget, spec, history) is keyed by agent. Rather than importing the agents
- * service (a second service injection for one lookup), this reads the session's
- * owner structurally: the harness sets `session.owner`/`session.agentId`
- * depending on the release, and neither is stable enough to depend on. When
- * neither resolves, the record falls back to the agent-less policy — the same
- * fail-closed stance `policyFor` takes for agent-less calls: shared ceilings,
- * honestly labelled, rather than no record at all.
+ * This used to return `undefined` unconditionally, with a note describing the
+ * upgrade path. Running the loop for real showed what that cost: the
+ * `turn/end` handler looked the policy up by this, so every run record was
+ * written against the shared agent-less policy — which never sees a step,
+ * because steps land on the per-agent policy. The result was a history file full
+ * of `steps: 0, costUSD: 0` records for runs that had demonstrably done work.
  *
- * ponytail: O(n) scan over the policy map per turn is avoided by NOT caching
- * here at all — the lookup below is O(1) only when the harness exposes the
- * agent directly on the session. Ceiling: when it does not, every turn records
- * against the shared agent-less policy, so per-agent spend splits are lost and
- * concurrent agents' records share one budget's numbers. Upgrade path: inject
- * the `agents` service and resolve `session.id` through it (the
- * `goal-round-driver` precedent: `ctx.agents.get(session.id)`).
+ * That is the failure this package's own PRD names: a module that looks wired and
+ * silently does nothing. The ceiling is not worth having when it is reported as
+ * zero, and a `$0.00` history is worse than no history — it is believed.
+ *
+ * `ctx.agents.get(sessionId)` is the documented registry lookup, and this plugin
+ * already injects `agents`, so there was never a second injection to add.
+ *
+ * @param agents - the harness agent registry.
+ * @param session - the session the event belongs to.
+ * @returns the agent, or `undefined` when the session has none yet — which is a
+ *   real state for a session whose agent was never created, not an error.
  */
-function agentOfSession(_session: unknown): Agent | undefined {
-  return undefined
+function agentOfSession(agents: AgentRegistry | undefined, session: unknown): Agent | undefined {
+  if (agents === undefined) return undefined
+  const id = sessionIdOf(session)
+  if (id === undefined || id.length === 0) return undefined
+  // The registry is keyed by a branded `SessionId`. The id read here is that
+  // brand at runtime — a string that came from the session itself — so it needs
+  // no cast and no re-validation.
+  return agents.get(id as Parameters<AgentRegistry['get']>[0]) ?? undefined
 }
 
 /**
@@ -1668,6 +1684,16 @@ export function apply(
   // below cannot see that — so the path is captured once, inside the branch,
   // rather than asserted at the call site. A `!` here would trade a load-time
   // guarantee for a reader's trust exercise.
+  // Resolved once here rather than per turn: `agents` is a service this plugin
+  // already injects, and a listener closure can read it directly. Without it,
+  // every record falls to the shared agent-less policy and reports zero steps
+  // and zero cost for runs that did work.
+  //
+  // Read defensively rather than with a bare `ctx.get`: a deployment that mounts
+  // no agent registry, and a test harness that stubs the context, both land here,
+  // and neither should crash the plugin on the way to a fail-closed record.
+  const agents = typeof ctx.get === 'function' ? ctx.get('agents') as AgentRegistry | undefined : undefined
+
   const disposeSession = !historyEnabled ? undefined : (() => {
     const path: string = historyPath
     return ctx.on('session/event', (session: unknown, event: unknown) => {
@@ -1676,7 +1702,7 @@ export function apply(
       const key = `${sessionIdOf(session)}#${String(end.turn)}`
       if (recordedTurns.has(key)) return
       recordedTurns.add(key)
-      void recordTurn({ session, event: end, options, policyFor, state, historyPath: path })
+      void recordTurn({ session, event: end, options, policyFor, state, historyPath: path, agents })
         .catch((error: unknown) => {
           // A failed append must never fail the turn: the record is
           // evidence, not control. The feed line says so in the harness's

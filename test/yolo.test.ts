@@ -12,6 +12,7 @@
  */
 
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { describe, it } from 'node:test'
 
 import {
@@ -431,6 +432,35 @@ describe('escapesWorktree', () => {
 
   it('allows an absolute path inside the worktree', () => {
     assert.equal(escapesWorktree(['cat', '/wt/src/a.ts'], '/wt'), undefined)
+  })
+})
+
+describe('the run record reports what the run spent', () => {
+  // Found by running the loop, not by reading it. `agentOfSession` returned
+  // `undefined` unconditionally with a note naming the upgrade path, so every
+  // `turn/end` record was written against the shared agent-less policy — which
+  // never sees a step, because steps land on the per-agent one. The history file
+  // filled with `steps: 0, costUSD: 0` for runs that had demonstrably done work.
+  //
+  // A ceiling reported as zero is not a ceiling, and a `$0.00` history is worse
+  // than no history: it is believed.
+  it('resolves the session\'s agent through the harness registry', () => {
+    const source = readFileSync(new URL('../src/plugin.ts', import.meta.url), 'utf8')
+    assert.doesNotMatch(
+      source,
+      /function agentOfSession\(_session: unknown\)[\s\S]*?\{\s*return undefined\s*\}/,
+      'agentOfSession must not be a stub that always returns undefined',
+    )
+    assert.match(source, /agents\.get\(/, 'the record must resolve its policy through ctx.agents.get(sessionId)')
+  })
+
+  it('does not call ctx.get unguarded — a stubbed context must not crash the record', () => {
+    // Found by the suite the moment the lookup landed: five approval tests drive
+    // `apply` with a context that has no `get`, and the plugin crashed on the way
+    // to a perfectly good fail-closed record.
+    const source = readFileSync(new URL('../src/plugin.ts', import.meta.url), 'utf8')
+    assert.doesNotMatch(source, /const agents = ctx\.get\('agents'\)/)
+    assert.match(source, /typeof ctx\.get === 'function'/)
   })
 })
 
