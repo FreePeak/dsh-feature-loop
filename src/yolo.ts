@@ -412,8 +412,14 @@ export interface ShellPolicy {
  * survive without a path check on their output.
  */
 export const READ_ONLY_COMMANDS: ReadonlySet<string> = new Set([
-  'ls', 'pwd', 'cat', 'head', 'tail', 'wc', 'grep', 'rg', 'find', 'file', 'stat',
+  'ls', 'pwd', 'cd', 'cat', 'head', 'tail', 'wc', 'grep', 'rg', 'find', 'file', 'stat',
   'which', 'env', 'true',
+  // Composers. They run no other program, and every operand still goes through
+  // the path check below, so `cd ../..` and `cd /elsewhere` are both denied.
+  // A live run refused the model's first move — `cd` — and the loop then ended
+  // without doing the work, which is the worst way for a containment rule to be
+  // strict: not safer, just useless.
+  'echo', 'mkdir', 'touch', 'cp', 'mv', 'ln', 'sed', 'tee',
 ])
 
 /**

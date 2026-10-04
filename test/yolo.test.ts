@@ -389,6 +389,26 @@ describe('the shell cannot escape the worktree', () => {
     assert.match(r.reason, /no worktree/)
   })
 
+  it('allows the verbs an agent reaches for first, since the path check contains them', () => {
+    // A live run refused the model's opening `cd` and the loop ended without
+    // doing any work. Strictness that makes the loop useless is not safety.
+    for (const command of ['cd src', 'ls -la', 'cat package.json', 'echo hi', 'mkdir -p out', 'touch a.txt']) {
+      assert.equal(shell(command).kind, 'allow', `should have allowed: ${command}`)
+    }
+  })
+
+  it('still contains every one of those verbs when the path leaves the worktree', () => {
+    for (const command of [
+      'cd ..',
+      'cd /Users/somewhere/else',
+      'cp package.json /Users/somewhere/else/package.json',
+      'mkdir -p /Users/somewhere/else/out',
+      'tee /Users/somewhere/else/x',
+    ]) {
+      assert.equal(shell(command).kind, 'deny', `should have denied: ${command}`)
+    }
+  })
+
   it('allows reading inside the worktree', () => {
     for (const command of ['ls -la src', 'cat package.json', 'grep -r foo src', 'wc -l README.md', 'find . -name "*.ts"']) {
       assert.equal(shell(command).kind, 'allow', `should have allowed: ${command}`)
