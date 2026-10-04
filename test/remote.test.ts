@@ -536,6 +536,32 @@ test('projectLive hands the page the dashboard snapshot verbatim', async () => {
   assert.deepEqual(live.feed, [{ t: 1, runId: 'r1', kind: 'gate', text: 'ask: write' }])
 })
 
+test('projectLive forwards the roll-up, and OMITS it when nothing was measured', async () => {
+  // `projectLive` is the in-UI page's ONLY data source (`remoteSource.load()`
+  // calls `svc.live()`), so before this the surface a person actually uses
+  // could not see a single figure §1bp–§1bz exist to produce: the standalone
+  // page had them over `/api/state` and this page had none. The `grep` that
+  // found no `metrics` reference under `web/` was reporting the projection, not
+  // the page.
+  const { projectLive } = await import('../src/remote.ts')
+  const summary = { runs: 3, provisional: false, malformed: 0, quality: { goalMetRate: 0.667, reviewFraction: 0.222 } }
+  const source = (metrics: unknown) => ({
+    snapshot: () => ({ runs: [], feed: [], ...(metrics === undefined ? {} : { metrics }) }),
+    pendingApprovals: () => [],
+    answers: () => true,
+    settleApproval: () => true,
+    config: () => ({}),
+  })
+
+  const measured = projectLive(source(summary) as never)
+  assert.deepEqual(measured.metrics, summary, 'the roll-up reaches the page')
+
+  // Absent, not `{…zeros}`: `metrics?` is optional precisely so "measured
+  // nothing" and "measured zero" stay distinguishable on the wire.
+  const unmeasured = projectLive(source(undefined) as never)
+  assert.equal('metrics' in unmeasured, false, 'no metrics key when nothing was measured')
+})
+
 test('projectLive with no published state reads empty, never zeros', async () => {
   const { projectLive } = await import('../src/remote.ts')
   assert.deepEqual(projectLive(undefined), { answers: true, pending: [], runs: [], feed: [] })

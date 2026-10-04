@@ -1301,12 +1301,26 @@ to the step share fails it. And `reviewRunRate` is `undefined` with no records �
 zero runs and zero escalation are different facts, which is §1bq's rule applied
 to the new field.
 
-**One thing I checked and did not change.** The Metrics roll-up is served over
-`/api/state` and **no page renders it** — there is no `goalMetRate`,
-`reviewFraction` or `alerts` reference anywhere under `web/` or `assets/`. So
-these numbers are correct for whoever reads the API, and fixing the label does
-not put it in front of a human. That gap is bigger than the label and is not
-addressed here.
+**And the surface that could show them could not receive them.** §1bz's closing
+note observed that no page renders the roll-up. Reading *why* found a second
+layer: `remoteSource.load()` — the in-UI page's only data source — calls
+`svc.live()`, which is `projectLive`, and `projectLive` projected
+`answers`/`pending`/`runs`/`feed` and **dropped `metrics` and
+`recommendations`**. So the standalone page had the roll-up over `/api/state`,
+the in-UI page had nothing, and my `grep` was reporting the projection rather
+than the page.
+
+Fixed here: `projectLive` forwards both keys, **omitted** rather than defaulted
+when absent, because `metrics?` is optional precisely so "measured nothing" and
+"measured zero" stay distinguishable on the wire. A test asserts both directions
+and the page's own type already carried `metrics?: MetricsSummary`, so nothing
+in the UI needed to change to receive it.
+
+**What is still missing, and is a bigger job than a projection.** No component
+in `web/` *renders* the roll-up: the data now arrives and nothing draws it. A
+Metrics panel is a design task — which numbers, at what size, where — and the
+standalone page's own layout is the reference. Deliberately not built here,
+because a half-built panel is worse than an absent one.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 

@@ -641,6 +641,18 @@ export function projectLive(source: LiveSource | undefined): FeatureLoopLive {
     pending: source.pendingApprovals(),
     runs: snap.runs,
     feed: snap.feed,
+    // The roll-up and the optimizer's reading of it, forwarded for the first
+    // time. `projectLive` is the in-UI page's ONLY data source, so before this
+    // the surface a person actually uses could not see a single one of the
+    // figures §1bp–§1bz exist to produce — the standalone page had them via
+    // `/api/state`, and this page had neither. Measured 2026-10-04: `grep`
+    // found no `metrics` reference anywhere under `web/`, which is a fact about
+    // the projection, not about the page.
+    //
+    // Absent keys are omitted rather than defaulted: `metrics?` is optional
+    // precisely so "measured nothing" and "measured zero" stay distinguishable.
+    ...(snap.metrics === undefined ? {} : { metrics: snap.metrics }),
+    ...(snap.recommendations === undefined ? {} : { recommendations: snap.recommendations }),
   }
 }
 
