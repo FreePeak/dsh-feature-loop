@@ -146,6 +146,28 @@ describe('artifact gates', () => {
     assert.match(result.detail, /no heading for/)
   })
 
+  it('accepts a PRD that names the concepts in its own words', () => {
+    // Two live runs wrote `## 2. Scope` and then `## In scope (the MVP)` and
+    // failed their own gate. Both documents were complete. This is the third
+    // version of this gate, and the lesson each time is the same: a gate that
+    // measures form gets worked around, so it measures whether the four things a
+    // PRD has to settle are settled.
+    const prdGate = PIPELINE_PHASES.prd.gate
+    const inItsOwnWords = {
+      'docs/PRD.md': '## Problem\n## In scope (the MVP)\n## Explicitly NOT in this MVP\n'
+        + '## Success criteria (observable checks)\n## Metrics to watch once it ships\n',
+    }
+    assert.equal(evaluateGate(prdGate, obs({ artifacts: inItsOwnWords })).pass, true)
+  })
+
+  it('still fails a PRD that never mentions scope at all', () => {
+    const prdGate = PIPELINE_PHASES.prd.gate
+    assert.equal(
+      evaluateGate(prdGate, obs({ artifacts: { 'docs/PRD.md': '# PRD\nWe should build a thing.\n' } })).pass,
+      false,
+    )
+  })
+
   it('accepts a PRD whose headings are numbered', () => {
     // A live run wrote `## 2. Scope`, `## 3. Success criteria`, `## 4. Metrics`
     // and failed its own gate on the literal string. Numbering a section is not

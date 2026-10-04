@@ -22,7 +22,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { evaluateGate, renderRules, pipelinePhaseOf } from './phases.ts'
+import { evaluateGate, renderRules, pipelinePhaseOf, PHASE_ORDER } from './phases.ts'
 import { PIPELINE_PHASE_NAMES } from './spec.ts'
 import type { GateResult, PhaseObservation, PipelinePhase, VerifyResult } from './phases.ts'
 import { canTransition, transition } from './pipeline.ts'
@@ -117,7 +117,14 @@ export function observeCurrentPhase(
   sandbox: Sandbox,
   written: readonly string[] = [],
 ): PhaseObservation {
-  const phase = options.run.state as PipelinePhase
+  const state = options.run.state
+  // A terminal state is not a phase. Casting it to one is what made a blocked
+  // run report `unknown pipeline phase "blocked"` from the gate evaluator instead
+  // of simply having no gate left to check.
+  if (!(PHASE_ORDER as readonly string[]).includes(state)) {
+    return { phase: 'research', written: [...written], changed: [], artifacts: {}, attempts: options.run.testAttempts }
+  }
+  const phase = state as PipelinePhase
   const isTest = phase === 'test'
   const observeOptions: ObserveOptions = {
     phase,
@@ -143,7 +150,14 @@ export function gateCurrentPhase(
   sandbox: Sandbox,
   written: readonly string[] = [],
 ): GateResult {
-  const phase = options.run.state as PipelinePhase
+  const state = options.run.state
+  // A terminal state is not a phase and has no gate. Answering here rather than
+  // letting `pipelinePhaseOf` throw is the difference between "the run is over"
+  // and "the plugin crashed while reporting that it is over".
+  if (!(PHASE_ORDER as readonly string[]).includes(state)) {
+    return { pass: false, detail: `the run reached "${state}" — there is no phase gate left to check` }
+  }
+  const phase = state as PipelinePhase
   return evaluateGate(pipelinePhaseOf(phase).gate, observeCurrentPhase(options, sandbox, written))
 }
 

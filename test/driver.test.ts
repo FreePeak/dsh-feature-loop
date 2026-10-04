@@ -220,6 +220,29 @@ describe('gateCurrentPhase', () => {
   })
 })
 
+describe('a terminal state has no gate to check', () => {
+  // A blocked run reported `unknown pipeline phase "blocked"` from the gate
+  // evaluator: a terminal state was cast to a phase and then looked up in the
+  // phase table.
+  it('observes an empty gate result rather than casting the state', () => {
+    const opts = driver()
+    opts.run.state = 'blocked'
+    const sandbox = { worktreeRoot: scratch(), branch: 'fl/x', stopSentinel: '/wt/.feature-loop/STOP' }
+    const result = gateCurrentPhase(opts, sandbox)
+    assert.equal(result.pass, false)
+    assert.doesNotMatch(result.detail, /unknown pipeline phase/)
+  })
+
+  it('does the same for stopped and done', () => {
+    for (const state of ['stopped', 'done'] as const) {
+      const opts = driver()
+      opts.run.state = state
+      const sandbox = { worktreeRoot: scratch(), branch: 'fl/x', stopSentinel: '/wt/.feature-loop/STOP' }
+      assert.doesNotThrow(() => gateCurrentPhase(opts, sandbox))
+    }
+  })
+})
+
 describe('advancePhase', () => {
   it('moves forward on a passing gate', () => {
     const opts = driver()

@@ -204,11 +204,16 @@ export const PRD_PHASE: PipelinePhaseDef = {
     kind: 'artifact',
     path: 'docs/PRD.md',
     label: 'PRD with scope, success criteria and metrics',
-    // Matched as headings, optionally numbered, and case-insensitively. A literal
-    // `## Scope` is not a stronger PRD than `## 2. Scope` — it is the same section
-    // with a counter, and a live run wrote exactly that and failed its own gate.
-    // A gate that measures formatting is a gate that gets worked around.
-    mustMatch: [/^#{1,3}\s*(?:\d+[.)]\s*)?scope\b/im, /^#{1,3}\s*(?:\d+[.)]\s*)?success\b/im, /^#{1,3}\s*(?:\d+[.)]\s*)?metrics\b/im],
+    // Matched as CONCEPTS anywhere in the document, not as exact headings. Two
+    // live runs wrote `## 2. Scope` and then `## In scope (the MVP)`, and failed
+    // their own gate both times — the PRD was complete and the heading was not
+    // the one the regex wanted.
+    //
+    // This is the third version of this gate and the lesson is the same each
+    // time: a gate that measures form gets worked around. What it must measure is
+    // whether the four things a PRD has to settle are settled — what is in scope,
+    // what is explicitly out, what success is, and what will be watched.
+    mustMatch: [/\bscope\b/i, /\bsuccess\b/i, /\bmetrics?\b/i],
   },
   produces: ['docs/PRD.md'],
 }
@@ -400,9 +405,16 @@ export function evaluateGate(gate: ExitGate, obs: PhaseObservation): GateResult 
   if (obs.verify === undefined) {
     return { pass: false, detail: `${gate.label}: no verify command was run` }
   }
-  return obs.verify.exitCode === 0
-    ? { pass: true, detail: `${gate.label}: exit 0` }
-    : { pass: false, detail: `${gate.label}: exit ${obs.verify.exitCode}` }
+  if (obs.verify.exitCode === 0) return { pass: true, detail: `${gate.label}: exit 0` }
+  // The command's own last line of output, because an exit code alone sent the
+  // investigation in the wrong direction twice: 126 is npm's "script failed to
+  // execute" and this function's own refusal code, and the two are
+  // indistinguishable from the code alone.
+  const tail = (obs.verify.output ?? '').trim().split('\n').filter(l => l.trim().length > 0).at(-1)
+  return {
+    pass: false,
+    detail: `${gate.label}: exit ${obs.verify.exitCode}${tail === undefined ? '' : ` — ${tail.slice(0, 160)}`}`,
+  }
 }
 
 /**

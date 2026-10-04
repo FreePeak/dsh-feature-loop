@@ -115,10 +115,14 @@ export function changedFiles(ctx: ObserverContext): string[] {
 export function runVerify(ctx: ObserverContext, command: string): VerifyResult | undefined {
   if (command.trim().length === 0) return undefined
   const result = ctx.run('sh', ['-c', command], ctx.worktreeRoot)
+  // Both streams. A refusal writes to stderr and a failing npm test writes most
+  // of its diagnosis there too, so capturing stdout alone produced an empty
+  // tail — which is how a refusal came to look identical to a test failure.
+  const combined = [result.stdout, result.stderr].filter(t => t.trim().length > 0).join('\n')
   return {
     command,
     exitCode: result.code,
-    output: result.stdout.split('\n').slice(0, MAX_OUTPUT_LINES).join('\n'),
+    output: combined.split('\n').slice(0, MAX_OUTPUT_LINES).join('\n'),
   }
 }
 

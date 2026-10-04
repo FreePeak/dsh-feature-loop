@@ -59,7 +59,7 @@ import type { PipelineConfig } from './spec.ts'
 import { isTerminal, startPipeline } from './pipeline.ts'
 import type { PipelineRun } from './pipeline.ts'
 import { PHASE_ORDER } from './phases.ts'
-import type { PipelinePhase } from './phases.ts'
+import type { GateResult, PipelinePhase } from './phases.ts'
 import { goalNotice, phaseNotice, terminalNotice } from './phase-notice.ts'
 import { advancePhase, gateCurrentPhase, runShip } from './driver.ts'
 import { writeBundle } from './evidence.ts'
@@ -72,7 +72,7 @@ import { AttentionRouter, ReviewGate, judgeQuestion } from './review.ts'
 import type { GatePolicy } from './review.ts'
 import { detectSignals } from './signals.ts'
 import type { ReviewSignal, StepObservation } from './signals.ts'
-import { envelope, envelopeCommand } from './yolo.ts'
+import { envelope } from './yolo.ts'
 import type { Sandbox } from './sandbox.ts'
 import { existsSync } from 'node:fs'
 import { parseDashboardConfig, pendingIdFor, startDashboard, DashboardState } from './dashboard.ts'
@@ -288,6 +288,14 @@ export interface PipelineRuntime {
    * their suite is — decides, and the model cannot widen it.
    */
   verifyCommand?: string
+  /**
+   * A stamp of the last continuation queued for this run.
+   *
+   * The seam that keeps a turn alive has no ceiling of its own, so without this
+   * a model that summarises immediately after being continued would be queued
+   * again and the run would never end.
+   */
+  continuedTurn?: string
 }
 
 /**
@@ -919,6 +927,113 @@ function runPipelineShip(policy: FeatureLoopPolicy): string | undefined {
 }
 
 /**
+ * Keep the run going when the model tries to stop mid-pipeline.
+ *
+ * The loop asks `agent/turn-stopping` at the exact moment it is about to end a
+ * turn, and breaks only if the inbox is still empty afterwards. That is a
+ * documented seam for exactly this: a listener may put work in `next-step` and
+ * the turn continues.
+ *
+ * Without it, a five-phase pipeline is really a two-phase one — a model that
+ * summarises after the PRD ends the turn, and the phases after it never happen.
+ * A live run measured that precisely: research → prd, then the turn ended with
+ * the implement phase untouched.
+ *
+ * Three conditions, all of which must hold, because the alternative is a loop
+ * that never stops:
+ *
+ * 1. A pipeline is running and its current phase still has budget — checked
+ *    against the phase's own ceiling, so a ceiling always wins over continuity.
+ * 2. The phase has not already been continued in this turn, so a model that
+ *    immediately summarises again cannot spin.
+ * 3. The pipeline has not reached a terminal state.
+ *
+ * @param agent - the agent whose turn is about to stop.
+ * @param policy - the run's policies.
+ * @returns whether work was queued.
+ */
+function continueIfMidPipeline(agent: Agent, policy: FeatureLoopPolicy): boolean {
+  const pipeline = policy.pipeline
+  if (pipeline === undefined) return false
+  const state = pipeline.run.state
+  if (!(PHASE_ORDER as readonly string[]).includes(state)) return false
+  const phase = state as PipelinePhase
+  if (pipeline.continuedTurn === turnStamp(policy)) return false
+
+  const verdict = pipeline.budget.verdict(phase)
+  if (verdict.kind === 'stop') return false
+
+  const inbox = (agent as unknown as { readonly inbox?: SteerableInbox }).inbox
+  if (inbox === undefined || typeof inbox.append !== 'function') return false
+  const noticeText = continuationNotice(policy, phase)
+  if (noticeText === undefined) return false
+  // One continuation per run per turn: the stamp is the phase plus the step count,
+  // so re-entering the SAME phase a moment later does not queue again, and
+  // moving to a new phase does.
+  pipeline.continuedTurn = `${String(pipeline.budget.usage(phase).steps)}:${String(phase)}`
+  inbox.append('next-step', notice(noticeText))
+  process.stderr.write(
+    `dsh-feature-loop: ${phase} has budget left and the model stopped — continuing the turn\n`,
+  )
+  return true
+}
+
+/**
+ * What to say when the run is continued mid-phase.
+ *
+ * NOT the phase rules again. A live run queued the same block four times and the
+ * model never moved, because repeating instructions to someone who has already
+ * read them is not feedback. What it needed was the one thing it could not see —
+ * the gate's verdict — so that is what this leads with, followed by the rules for
+ * the case where the rules were the problem.
+ *
+ * @param policy - the run's policies.
+ * @param phase - the phase the run is in.
+ * @returns the notice text, or `undefined` when there is no gate verdict to give.
+ */
+function continuationNotice(policy: FeatureLoopPolicy, phase: PipelinePhase): string | undefined {
+  const sandbox = policy.pipeline?.worktree
+  if (sandbox === undefined || policy.pipeline === undefined) return undefined
+  let verdict: GateResult
+  try {
+    const options = {
+      repoRoot: '', goal: '', runId: '',
+      run: policy.pipeline.run,
+      budget: policy.pipeline.budget,
+      config: { ...(policy.pipeline.verifyCommand === undefined ? {} : { testCommand: policy.pipeline.verifyCommand }), runsDir: RUNS_DIR },
+      runner: spawnSyncCommand,
+    }
+    verdict = gateCurrentPhase(options, sandbox)
+  } catch (error) {
+    return `0→1 PIPELINE — the ${phase} gate could not be checked: ${error instanceof Error ? error.message : String(error)}`
+  }
+  if (verdict.pass) {
+    return `0→1 PIPELINE — the ${phase} gate now passes. The loop moves you on; do not stop here.`
+  }
+  return [
+    `0→1 PIPELINE — you stopped, but the ${phase} phase is not finished.`,
+    '',
+    `Its gate is NOT satisfied: ${verdict.detail}`,
+    '',
+    'Finish that first, then continue. Do not summarise the run as done until the gate passes.',
+    '',
+    phaseNotice(phase) ?? '',
+  ].join('\n')
+}
+
+/**
+ * A cheap stamp for "has this run already been continued".
+ *
+ * @param policy - the run's policies.
+ * @returns a string that changes when the pipeline moves on.
+ */
+function turnStamp(policy: FeatureLoopPolicy): string {
+  const pipeline = policy.pipeline
+  if (pipeline === undefined) return ''
+  return `${String(pipeline.run.state)}:${String(pipeline.budget.usage(pipeline.run.state as PipelinePhase).steps)}`
+}
+
+/**
  * Run one command for a phase gate.
  *
  * The only shell-out on the agent path, and it is now a read-only probe: `git
@@ -1011,10 +1126,29 @@ function userGoalOf(agent: Agent): string | undefined {
   return undefined
 }
 
-function spawnSyncCommand(command: string, args: string[], cwd: string): { code: number; stdout: string; stderr: string } {
-  if (envelopeCommand([command, ...args].join(' ')).kind === 'deny') {
-    return { code: 126, stdout: '', stderr: `refused by the envelope: ${command} ${args.join(' ')}` }
-  }
+function spawnSyncCommand(
+  command: string,
+  args: string[],
+  cwd: string,
+): { code: number; stdout: string; stderr: string } {
+  // NO envelope check here, and that is deliberate rather than a loosening.
+  //
+  // The envelope exists to constrain what the MODEL reaches for, and it does
+  // that at `tools/pre-execute`. This function is the other caller, and every
+  // command it runs is one the plugin itself built: `git status --porcelain` from
+  // the observer, `sh -c <pipeline.testCommand>` from the gate. No model text
+  // reaches it — the command string comes from configuration.
+  //
+  // Judging it a second time bought nothing and cost the product its test phase.
+  // A live run failed `exit 126 — refused by the envelope: sh -c npm test` three
+  // times, bounced back to implement, and blocked — on a run whose tests already
+  // passed. The comparison could not succeed: the envelope matches the configured
+  // string `npm test`, and the invocation is `sh -c 'npm test'`, which no string
+  // equality relates to the first.
+  //
+  // Two layers doing one job, with the wrong one in the wrong place, is how a
+  // correct command ends up refused. The one that can be got wrong by a model is
+  // `tools/pre-execute`; this is not.
   try {
     const result = spawnSync(command, args, {
       cwd,
@@ -1170,6 +1304,20 @@ function killText(state: string): string {
  * tolerate test agents that carry only an `id`, and must not take a type-level
  * dependency on one harness build's session types for two method calls.
  */
+/**
+ * The agent's pending-work inbox, declared structurally.
+ *
+ * The public `Agent` type exposes only `id`; the inbox the loop consults to
+ * decide whether a turn continues is reachable but not on the published surface.
+ * Read structurally for the same reason `SettledSession` is — the plugin must
+ * tolerate a harness build where the shape moved, and `append` is optional so an
+ * agent without one simply does not continue.
+ */
+interface SteerableInbox {
+  append(target: 'next-step' | 'next-turn', message: UserMessage): void
+  readonly nextStep?: readonly unknown[]
+}
+
 interface SettledSession {
   /** Log length — the next event's seq. */
   readonly seq?: unknown
@@ -2081,6 +2229,17 @@ export function apply(
     return routed === undefined ? resolved : { ...resolved, ...routed }
   })
 
+  // The loop asks this at the moment it is about to end a turn, and breaks only
+  // if the inbox is still empty afterwards. It is the seam that lets a
+  // five-phase pipeline actually run five phases in one turn instead of stopping
+  // wherever the model chooses to summarise.
+  const disposeTurnStopping = ctx.on(
+    'agent/turn-stopping',
+    ({ agent }: { agent: Agent }) => {
+      continueIfMidPipeline(agent, policyFor(agent))
+    },
+  )
+
   const disposeTools = ctx.on(
     'tools/pre-execute',
     async ({ agent, name: toolName, arguments: rawArgs }: ToolExecution, next: () => Promise<PreToolDecision>) => {
@@ -2137,6 +2296,7 @@ export function apply(
   return () => {
     disposeStep()
     disposeRequest()
+    disposeTurnStopping()
     disposeTools()
     disposeSession?.()
     disposeApproval?.()
