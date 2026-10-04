@@ -274,6 +274,12 @@ try {
     console.log(`e2e-in-ui (reject): ${String(settled)} × ${buttonLabel} → no file written, waits ${waits.join(', ') || 'none'}ms`)
   }
   await page.screenshot({ path: `docs/evidence/in-ui-${outcome}.png` })
+  // The measurements pane, when the roll-up has something to draw. Taken
+  // separately because it lives in the rail beside the run list, and a frame
+  // cropped to the approval thread cannot show whether a figure is on screen.
+  if (await page.locator('#metrics').count() > 0) {
+    await page.locator('#metrics').screenshot({ path: 'docs/evidence/in-ui-metrics.png' })
+  }
 } finally {
   await browser.close()
   // Never leave the proof behind: a stale one makes the next run pass for free.

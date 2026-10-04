@@ -1316,11 +1316,27 @@ when absent, because `metrics?` is optional precisely so "measured nothing" and
 and the page's own type already carried `metrics?: MetricsSummary`, so nothing
 in the UI needed to change to receive it.
 
-**What is still missing, and is a bigger job than a projection.** No component
-in `web/` *renders* the roll-up: the data now arrives and nothing draws it. A
-Metrics panel is a design task — which numbers, at what size, where — and the
-standalone page's own layout is the reference. Deliberately not built here,
-because a half-built panel is worse than an absent one.
+**Built, and read back off a real page.** A `MetricsPanel` now sits above the
+run list in the in-UI dashboard's rail. It renders only what `summarize`
+computed, draws nothing when `metrics` is absent, and names both review
+readings. Verified by reading the RENDERED TEXT rather than the source — which
+is the point of §1bz's closing lesson:
+
+```
+label: MEASUREMENTS
+tiles: ["50%\nGoal met", "$0.0032\nCost / run", "11s\nWall clock", "0%\nReviews"]
+```
+
+against a live run whose API roll-up read `runs 2, measuredRuns 1,
+goalMetRate 0.5, reviewRunRate 0`. The `e2e-in-ui` script now captures the pane
+on every run (`docs/evidence/in-ui-metrics.png`), because a frame cropped to the
+approval thread cannot show whether a figure is on screen at all — which is
+this file's §1bz lesson again, one layer over.
+
+**What is deliberately not in the panel.** `stepLatencyMs` has no harness-path
+samples (§1bu), so there is no speed axis to draw; `goalMetCost` and the P50/P95
+spreads are in the API but not on the screen, because four tiles is what fits
+beside a run list and a fifth is noise rather than information.
 
 ### 1c. `make profile` hung for nine minutes with the registry unreachable
 
