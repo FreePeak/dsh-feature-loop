@@ -37,6 +37,8 @@ const EXCLUDED = {
   'test/plugin-wiring.test.ts': 'imports src/plugin.ts — it exists to test that wiring',
   'test/remote.test.ts': 'imports src/remote.ts, which imports @deepseek-ai/cordis',
   'test/change-event.test.ts': 'imports src/change-event.ts, which augments two @deepseek-ai modules',
+  'test/patch-config.test.ts': 'reads cordis.patch.yml with the `yaml` dependency; the job installs nothing',
+  'test/pipeline-guard.test.ts': 'imports src/plugin.ts, which imports the harness',
 }
 
 const ci = readFileSync(join(repo, '.github/workflows/ci.yml'), 'utf8')

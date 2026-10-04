@@ -184,6 +184,15 @@ jobs:
             test/optimizer.test.ts test/questioner.test.ts test/policy.test.ts \
             test/refine.test.ts test/runlog.test.ts test/runner.test.ts \
             test/start-target.test.ts test/tools.test.ts ; do
+            test/agent-policy.test.ts             test/approval-bridge.test.ts             test/approvals.test.ts \
+            test/assistant-ui.test.ts             test/brief.test.ts             test/budget.test.ts \
+            test/envelope.test.ts             test/evidence.test.ts             test/explainer.test.ts \
+            test/judge.test.ts             test/llm.test.ts             test/metrics.test.ts \
+            test/optimize.test.ts             test/optimizer.test.ts             test/phase-budget.test.ts \
+            test/phases.test.ts             test/pipeline.test.ts             test/policy.test.ts \
+            test/questioner.test.ts             test/refine.test.ts             test/runlog.test.ts \
+            test/runner.test.ts             test/sandbox.test.ts             test/ship.test.ts \
+            test/start-target.test.ts             test/tools.test.ts             test/yolo.test.ts ; do
             echo "::group::$f"
             out=$(node --experimental-strip-types --test "$f" 2>&1) || {
               echo "$out"
