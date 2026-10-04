@@ -72,6 +72,36 @@ export interface ShipOptions {
   stopArmed?: () => boolean
 }
 
+/**
+ * The branch a pull request should target.
+ *
+ * Prefers what the remote itself advertises (`origin/HEAD`), because that is the
+ * branch the repository's own interface merges into. Falls back to the remote's
+ * first head, then to nothing — in that order, because a wrong guess is worse
+ * than letting `gh` decide.
+ *
+ * @param invoke - the command runner, so this is testable without a real repo.
+ * @returns the base branch, or `undefined` when nothing could be determined.
+ */
+function defaultBase(invoke: (command: string, args: string[]) => CommandResult): string | undefined {
+  const head = invoke('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
+  const advertised = /^refs\/remotes\/origin\/(.+)$/.exec(head.stdout.trim())?.[1]
+  if (advertised !== undefined && advertised.length > 0) return advertised
+
+  const remotes = invoke('git', ['remote'])
+  if (remotes.code !== 0) return undefined
+  for (const name of remotes.stdout.split('\n').map(l => l.trim()).filter(l => l.length > 0)) {
+    const list = invoke('git', ['ls-remote', '--heads', name])
+    if (list.code !== 0) continue
+    const heads = list.stdout.split('\n')
+      .map(l => (l.split(/\s+/)[1] ?? '').replace(/^refs\/heads\//, ''))
+      .filter(h => h.length > 0)
+    const fallback = heads.find(h => h === 'main') ?? heads.find(h => h === 'master') ?? heads[0]
+    if (fallback !== undefined) return fallback
+  }
+  return undefined
+}
+
 /** A bounded, boring commit subject. Never assembled from the model's output. */
 function subjectFor(goal: string): string {
   const oneLine = goal.replace(/\s+/g, ' ').trim()
@@ -175,7 +205,18 @@ export function ship(options: ShipOptions): ShipResult {
     }
   }
 
-  const gh = invoke('gh', ['pr', 'create', '--title', subjectFor(goal), '--body', body])
+  // `--base` is resolved rather than left to `gh`, which falls back to the
+  // repository's default branch. That is `main` here and `master` on half the
+  // world's repositories, so a run whose PR silently targets the wrong branch is a
+  // real outcome, not a hypothetical one. When nothing can be determined the flag
+  // is omitted and `gh` decides, which is no worse than before.
+  const base = defaultBase(invoke)
+  const gh = invoke('gh', [
+    'pr', 'create',
+    '--title', subjectFor(goal),
+    '--body', body,
+    ...(base === undefined ? [] : ['--base', base]),
+  ])
   if (gh.code !== 0) {
     return {
       ...(commitSha === undefined ? {} : { commitSha }),
