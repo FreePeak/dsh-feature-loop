@@ -495,17 +495,23 @@ describe('the pipeline goal is the user request, not the deployment spec', () =>
     }
   })
 
-  it('documents the measured limit: snapshotEvents starts AFTER the user turn', () => {
-    // Measured, not assumed. A probe on a fresh headless run returned six events
-    // — permission/preset, sandbox/mode, approval/policy, agent/inbox/spliced,
-    // turn/start, agent/inbox/spliced — so the opening user turn is outside the
-    // snapshot window and this reader returns undefined today. The function says
-    // so, names the two accessors that do hold it, and points at the command that
-    // already receives the task.
+  it('documents the two harness facts that made the obvious reading wrong', () => {
+    // Both were measured, because both plausible guesses were wrong and guessing
+    // cost three runs that researched the deployment's goal instead of the task:
+    // `session.header` carries no task at all, and `snapshotEvents(0)` opens at
+    // the first live seq — six events on a fresh run, no user turn — but returns
+    // the whole log when read mid-turn.
     const source = readFileSync(new URL('../src/plugin.ts', import.meta.url), 'utf8')
-    assert.match(source, /KNOWN LIMIT/)
-    assert.match(source, /eventsSnapshot/)
-    assert.match(source, /header/)
+    assert.match(source, /session\.header/)
+    assert.match(source, /snapshotEvents\(0\)/)
+    assert.match(source, /data\.content/)
+  })
+
+  it('strips the launcher word the headless app prepends to the task', () => {
+    // The task arrives as "headless Say OK." — reading it verbatim tells the
+    // pipeline the run was launched by the headless app.
+    const source = readFileSync(new URL('../src/plugin.ts', import.meta.url), 'utf8')
+    assert.match(source, /headless\|web\|tui\|desktop\|rescue/)
   })
 
   it('still falls back to the spec goal when the session exposes no user turn', () => {

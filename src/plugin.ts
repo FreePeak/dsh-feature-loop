@@ -945,19 +945,21 @@ function runPipelineShip(policy: FeatureLoopPolicy): string | undefined {
  * plugin could be led: it is the one string in the system that is, by
  * construction, what the human typed.
  *
- * KNOWN LIMIT, measured against the live harness rather than assumed:
- * `session.snapshotEvents(0)` does NOT return the whole log. Its window starts
- * at the session's first live/lifecycle seq, so a probe on a fresh headless run
- * returns six events — `permission/preset`, `sandbox/mode`, `approval/policy`,
- * `agent/inbox/spliced`, `turn/start`, `agent/inbox/spliced` — and the user's
- * opening turn is BEFORE it. This function therefore returns `undefined` on
- * every real run today, and the pipeline falls back to `spec.goal`.
+ * Measured against the live harness, because both plausible readings were wrong
+ * and guessing cost three runs that researched the wrong thing entirely:
  *
- * The session carries two accessors this does not yet use: `header` (which is
- * where `sessionCwdOf` already reads `cwd`) and `eventsSnapshot`. One of them
- * holds the opening user turn. Until that is found, the honest options are to
- * read it from `header`/`eventsSnapshot`, or to have the caller pass the task in
- * explicitly — the `/loop` command already receives it.
+ * - `session.header` carries only `{version, id, createdAt, cwd, isSeeded}` — no
+ *   task.
+ * - `session.snapshotEvents(0)` is NOT the whole log. Its window opens at the
+ *   session's first live/lifecycle seq: on a fresh run it returns six events
+ *   (`permission/preset`, `sandbox/mode`, `approval/policy`,
+ *   `agent/inbox/spliced`, `turn/start`, `agent/inbox/spliced`) with no user turn
+ *   among them. Read again mid-turn it returns the full log, user turn included.
+ *
+ * So the read happens where the log is populated — at notice time, not when the
+ * policy is built — and the user turn's blocks live at `data.content`, not
+ * `data.message.content`. The headless app also prepends its own name, so the
+ * task arrives as "headless Say OK." and the launcher word is stripped.
  *
  * @param agent - the agent whose session carries the transcript.
  * @returns the task text, or `undefined` when the session exposes none.
@@ -999,7 +1001,11 @@ function userGoalOf(agent: Agent): string | undefined {
         || trimmed.startsWith('The available skills')
         || trimmed.startsWith('You are an AI agent')
         || trimmed.includes('A skill is a reusable set of task-specific instructions')) continue
-      return trimmed.slice(0, 400)
+      // The headless app prepends its own name: the task arrives as
+      // "headless Say OK." Strip it so the pipeline reads the request, not the
+      // launcher.
+      const withoutLauncher = trimmed.replace(/^(?:headless|web|tui|desktop|rescue)\s+/i, '')
+      return withoutLauncher.slice(0, 400)
     }
   }
   return undefined
