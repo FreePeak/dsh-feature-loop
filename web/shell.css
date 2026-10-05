@@ -323,9 +323,14 @@ html.fl-standalone main {
   flex-direction: column;
   overflow: auto;
 }
+/* `flex-shrink: 0` and no `min-height: 0`: `main` is the scroller, so `#root`
+   must be as tall as its content and let `main` scroll past it. Allowed to
+   shrink, it was squeezed to the viewport while its content overflowed, and
+   the `<details class="help">` that follows it in `main` sat at `#root`'s
+   (short) bottom edge — painted over the Workspaces/Runs panes the moment the
+   page scrolled. */
 html.fl-standalone #root {
-  flex: 1 1 auto;
-  min-height: 0;
+  flex: 1 0 auto;
   display: flex;
   flex-direction: column;
 }
@@ -361,10 +366,18 @@ html.fl-standalone #root {
     overflow: hidden;
   }
   /* No `70vh` here: a viewport unit capping a page-height element is wrong at
-     every width, and at this one the rail is a full-width row under the thread
-     rather than a column beside it. The pane scrolls inside itself instead
-     (`min-height: 0` + the pane's own scroller). */
-  .rail { grid-column: 1 / -1; max-height: none; overflow: hidden; }
+     every width. The pane scrolls inside itself instead (`min-height: 0` +
+     the pane's own scroller).
+
+     The rail is a row under the thread, in the thread's column — NOT a
+     full-width row. `position: sticky` is bounded by the grid CONTAINER, not
+     by the grid area the item sits in, so a sticky sidebar in row 1 rode down
+     over a full-width rail in row 2: the Workspaces/Activity panes painted on
+     top of the Runs cards for the whole length of the page. The sidebar spans
+     both rows instead, so everything it can stick alongside is in column 2. */
+  .sidebar { grid-column: 1; grid-row: 1 / span 2; }
+  .stage { grid-column: 2; grid-row: 1; }
+  .rail { grid-column: 2; grid-row: 2; max-height: none; overflow: hidden; }
 }
 
 /* Three columns: workspaces · thread · runs, each in its own track. */
@@ -373,8 +386,12 @@ html.fl-standalone #root {
     grid-template-columns: minmax(220px, 260px) minmax(0, 1.5fr) minmax(280px, 340px);
     gap: 24px;
   }
+  /* Three tracks, one row: release the two-column placement above. */
+  .sidebar,
+  .stage { grid-column: auto; grid-row: auto; }
   .rail {
     grid-column: auto;
+    grid-row: auto;
     position: sticky;
     top: calc(var(--header-h) + 12px);
     height: calc(100cqh - var(--header-h) - 28px);
@@ -408,6 +425,13 @@ html.fl-standalone #root {
     overflow: hidden;
   }
 }
+
+/* Standalone: the sticky columns stick inside `main`, which already sits below
+   the header, so the header's height must not be added to `top` a second time.
+   With it, the sidebar stuck 68px low and its last 56px (the end of the
+   activity feed) hung below the window. */
+html.fl-standalone .sidebar,
+html.fl-standalone .rail { top: 12px; }
 
 .stage { min-width: 0; }
 .sidebar,
