@@ -26,7 +26,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentRegistry, PreStepDecision } from '@deepseek-ai/dsh-agent'
-import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { boundContextSummary, createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { ContextFormed, LlmCallConfig, UserMessage } from '@deepseek-ai/dsh-llm'
 
 /**
@@ -668,6 +668,14 @@ export async function reviewStep(
 /**
  * The ladder's route for one step, as an LLM call override.
  *
+ * `reasoningEffort` is the rung's own, when it declares one: the ladder
+ * advertises the field (`Route.reasoningEffort`) but used to drop it here, so
+ * every rung silently inherited the session's effort. That inheritance is what
+ * broke the desktop profile — a session picked `space-bunny-free` at effort
+ * `high`, the rung rewrote the route to `onegw/execution`, and the effort rode
+ * along onto a model that does not offer it, so every turn died with
+ * `UNSUPPORTED_REASONING_EFFORT` before the model was reached.
+ *
  * @param policy - the agent's policies.
  * @param step - the 1-based step.
  * @param lastStepUSD - what the previous step cost, for the cost-based rung.
@@ -680,7 +688,17 @@ export function routeForStep(
 ): Partial<LlmCallConfig> | undefined {
   if (policy.ladder === undefined) return undefined
   const decision = policy.ladder.forStep(step, lastStepUSD)
-  return { provider: decision.route.provider, model: decision.route.model }
+  return {
+    provider: decision.route.provider,
+    model: decision.route.model,
+    // A rung that declares no effort still overrode provider/model, so the
+    // inherited one belongs to a model that is no longer being called. Omitting
+    // the key lets the harness resolve the routed model's own default — the same
+    // rule `model-selection` applies when its selected effort is absent.
+    ...decision.route.reasoningEffort === undefined
+      ? {}
+      : { reasoningEffort: ReasoningEffortId(decision.route.reasoningEffort) },
+  }
 }
 
 /**
@@ -2343,7 +2361,13 @@ export function apply(
         }),
       )
     }
-    return routed === undefined ? resolved : { ...resolved, ...routed }
+    if (routed === undefined) return resolved
+    // Drop the effort the session was on before applying the rung. Same reason
+    // `routeForStep` carries the rung's own: an effort belongs to a model, and
+    // `{ ...resolved, ...routed }` keeps a key `routed` does not mention — so a
+    // route change alone carried `high` onto a model that never offered it.
+    const { reasoningEffort: _inheritedEffort, ...rest } = resolved
+    return { ...rest, ...routed }
   })
 
   // The loop asks this at the moment it is about to end a turn, and breaks only

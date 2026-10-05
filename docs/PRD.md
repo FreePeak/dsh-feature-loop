@@ -2,7 +2,14 @@
 
 **Status:** Phase 1 complete (de-fork executed). Phase 2 not started.
 **Owner:** Linh Doan
-**Last updated:** 2026-09-29 (plugin page brought onto the harness's own design
+**Last updated:** 2026-09-30 (the cheap-first ladder no longer carries a model's
+reasoning effort onto the wrong route — `routeForStep` hands the rung's own
+effort over and a rung with none drops the session's, so a profile whose rungs
+are gateway aliases works beside a UI selection instead of failing every turn
+with `UNSUPPORTED_REASONING_EFFORT`. See §8 and
+`test/routing-effort.test.ts`)
+
+Earlier: 2026-09-29 (plugin page brought onto the harness's own design
 metrics; browser click path driven end to end on an isolated instance — see
 [`KNOWN-ISSUES.md`](KNOWN-ISSUES.md) § "The browser click path, and the page's
 own geometry" and `test/css-parity.test.ts`)
@@ -270,6 +277,17 @@ estimate is now **denied** rather than dispatched.
   called with real usage for the cost ceiling to mean anything; the plugin
   currently reads spend from the budget snapshot rather than pricing each settled
   attempt from `agent/request` usage. **This is the largest correctness gap.**
+- **A reasoning effort belongs to a model, so a route change must drop it.**
+  `Route.reasoningEffort` is the rung's own, and the harness refuses any explicit
+  effort a model does not advertise (`UNSUPPORTED_REASONING_EFFORT`, thrown
+  before provider I/O). A session that picked a model *with* an effort and then
+  met the ladder lost every turn: the rung rewrote provider/model, the merge kept
+  the session's effort, and that effort arrived at a model which never offered it.
+  Fixed — a rung that declares an effort applies it, and a rung that declares
+  none drops the inherited one. The deployment consequence is in
+  `cordis.patch.yml`: a hand-written provider model needs `reasoningEfforts`
+  declared, or pi-ai falls back to the installed catalog, reports no reasoning
+  capability at all, and refuses every explicit effort.
 - **`run_tests` timeouts kill the direct child, not grandchildren** (marked
   `ponytail:` in `tools.ts`; upgrade path is detached spawn + `kill(-pid)`).
 - **The price table is an estimate.** `mimo-v2.5` runs on a subscription plan,
