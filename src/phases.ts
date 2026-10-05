@@ -148,7 +148,7 @@ export interface PipelinePhaseDef {
  * unverified by definition"*. A research phase that ends in a confident,
  * uncited document hands the PRD phase fiction to build on.
  */
-export const RESEARCH_PHASE: PipelinePhaseDef = {
+const RESEARCH_PHASE: PipelinePhaseDef = {
   name: 'research',
   label: 'Research',
   rules: [
@@ -183,7 +183,7 @@ export const RESEARCH_PHASE: PipelinePhaseDef = {
  * exclusions (no editing, no template library, no API) as by its features, and
  * Ch18's scaling rule refuses new task types until the current one is reliable.
  */
-export const PRD_PHASE: PipelinePhaseDef = {
+const PRD_PHASE: PipelinePhaseDef = {
   name: 'prd',
   label: 'PRD',
   rules: [
@@ -227,7 +227,7 @@ export const PRD_PHASE: PipelinePhaseDef = {
  * existing patterns becomes a second pattern, *"and the second pattern is the
  * expensive one"*.
  */
-export const IMPLEMENT_PHASE: PipelinePhaseDef = {
+const IMPLEMENT_PHASE: PipelinePhaseDef = {
   name: 'implement',
   label: 'Implement',
   rules: [
@@ -259,7 +259,7 @@ export const IMPLEMENT_PHASE: PipelinePhaseDef = {
  * test without seeing its own prior edits *"repeat the same fix 70% of the
  * time"*, and carrying the diff forward cuts that under 20%.
  */
-export const TEST_PHASE: PipelinePhaseDef = {
+const TEST_PHASE: PipelinePhaseDef = {
   name: 'test',
   label: 'Test',
   rules: [
@@ -289,7 +289,7 @@ export const TEST_PHASE: PipelinePhaseDef = {
  * release and no deploy edge in the machine at all. That is a scope decision
  * recorded in the PRD, expressed as the absence of a transition.
  */
-export const SHIP_PHASE: PipelinePhaseDef = {
+const SHIP_PHASE: PipelinePhaseDef = {
   name: 'ship',
   label: 'Ship',
   rules: [

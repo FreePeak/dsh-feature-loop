@@ -74,7 +74,7 @@ export const PROTECTED_BRANCHES: readonly string[] = ['main', 'master', 'develop
  * irreversible from the loop's side: a merge is a human's decision, and a
  * release cut is permanent.
  */
-export const FORBIDDEN_GH_SUBCOMMANDS: readonly string[] = [
+const FORBIDDEN_GH_SUBCOMMANDS: readonly string[] = [
   'pr merge',
   'pr close',
   'pr ready',
@@ -89,7 +89,7 @@ export const FORBIDDEN_GH_SUBCOMMANDS: readonly string[] = [
  * Commands whose whole purpose is to publish or destroy. Matched as a leading
  * token pair, so `npm run build` is not caught by `npm publish`.
  */
-export const FORBIDDEN_COMMAND_PREFIXES: readonly string[] = [
+const FORBIDDEN_COMMAND_PREFIXES: readonly string[] = [
   'npm publish',
   'pnpm publish',
   'yarn publish',
@@ -112,7 +112,7 @@ export const FORBIDDEN_COMMAND_PREFIXES: readonly string[] = [
  * pre-commit hook enforces on a human: keys do not live in a repo, and they must
  * not arrive through a loop either.
  */
-export const SECRET_FILE_PATTERNS: readonly RegExp[] = [
+const SECRET_FILE_PATTERNS: readonly RegExp[] = [
   /(^|\/)\.env(\..+)?$/i,
   /(^|\/)credentials\.(ya?ml|json)$/i,
   /(^|\/)id_(rsa|dsa|ecdsa|ed25519)$/i,
@@ -128,7 +128,7 @@ export const SECRET_FILE_PATTERNS: readonly RegExp[] = [
  * to paths: these are the directories where a loop's mistakes are not recoverable
  * by `git checkout`.
  */
-export const FORBIDDEN_PATH_SEGMENTS: readonly string[] = ['.git', 'node_modules/.cache']
+const FORBIDDEN_PATH_SEGMENTS: readonly string[] = ['.git', 'node_modules/.cache']
 
 /** Read a string field from unknown arguments without throwing. */
 function argString(args: unknown, key: string): string | undefined {

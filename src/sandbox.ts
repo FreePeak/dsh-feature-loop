@@ -37,7 +37,7 @@ export interface Sandbox {
 }
 
 /** Where worktrees go, relative to the repository root. */
-export const WORKTREE_DIR = '.feature-loop/worktrees'
+const WORKTREE_DIR = '.feature-loop/worktrees'
 
 /** The namespace a run's branch lives in, so cleanup can find every one. */
 export const BRANCH_PREFIX = 'fl/'

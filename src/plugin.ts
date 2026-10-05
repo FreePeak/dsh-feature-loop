@@ -793,7 +793,7 @@ function stopArmed(policy: FeatureLoopPolicy): boolean {
 }
 
 /** The sentinel's path, relative to a workspace root. */
-export const STOP_SENTINEL = '.feature-loop/STOP'
+const STOP_SENTINEL = '.feature-loop/STOP'
 
 /**
  * The gate's verdict for one tool call.
@@ -2277,7 +2277,7 @@ export function apply(
       // there, and the next turn re-entered a phase that was already done.
       const turnAgent = agentOfSession(session, resolveAgent)
       if (turnAgent !== undefined) advanceIfGated(policyFor(turnAgent), turnAgent)
-      void recordTurn({ session, event: end, options, policyFor, state, historyPath: path })
+      void recordTurn({ session, event: end, options, policyFor, resolveAgent, state, historyPath: path })
         .catch((error: unknown) => {
           // A failed append must never fail the turn: the record is
           // evidence, not control. The feed line says so in the harness's
