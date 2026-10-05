@@ -211,7 +211,9 @@ decision.
 
 For headless and CI there is still an opt-in loopback page — set
 `dashboard.standalone: true` in the patch row — which serves the same components
-on `127.0.0.1` with its own token. Details:
+on `127.0.0.1` with its own token. It is built from its own entry
+(`web/standalone.tsx`) against the same `web/app.tsx`, so both surfaces carry
+every panel; `make e2e-standalone-panes` proves it in a real browser. Details:
 [`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md).
 
 ---

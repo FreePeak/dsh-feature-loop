@@ -361,6 +361,10 @@ e2e-dashboard: ## Click the real dashboard page in a real browser (needs Playwri
 	@node --experimental-strip-types test/e2e-dashboard.mjs allow && \
 	 node --experimental-strip-types test/e2e-dashboard.mjs reject
 
+.PHONY: e2e-standalone-panes
+e2e-standalone-panes: ## Prove the opt-in loopback page draws MEASUREMENTS and PROPOSALS (needs Playwright + Chromium; opt-in, not part of verify)
+	@node --experimental-strip-types test/e2e-standalone-panes.mjs
+
 .PHONY: e2e-in-ui
 e2e-in-ui: ## Click Allow/Reject on the in-UI page against a RUNNING profile (DSH_URL=… PROOF_DIR=…)
 	@test -n "$(DSH_URL)" || { echo "DSH_URL is required: paste the 'dsh web:' line from the server log"; exit 2; }

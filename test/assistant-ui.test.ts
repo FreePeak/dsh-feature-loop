@@ -16,7 +16,7 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { createHash } from 'node:crypto'
-import { readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -156,9 +156,12 @@ test('the checked-in bundle was built from the sources in the tree', () => {
   assert.ok(recorded !== undefined,
     'MANIFEST.txt must record sources-sha256 — run `make dashboard-bundle`')
 
-  // Recompute the builder's hash over the same inputs, in the same order.
+  // Recompute the builder's hash over the same inputs, in the same order. Both
+  // entries are named: `web/standalone.tsx` builds `dashboard.js`, and a hash
+  // that omitted it let that artefact drift from source without a word (§1cf).
   const inputs = [
-    'web/entry.tsx', 'web/app.tsx', 'web/plugin.css', 'web/shell.css', 'web/start-target.ts',
+    'web/entry.tsx', 'web/standalone.tsx', 'web/app.tsx', 'web/plugin.css',
+    'web/shell.css', 'web/start-target.ts',
   ]
   const now = createHash('sha256')
     .update(inputs.map((f) => readFileSync(join(repo, f))).join('\u0000'))
@@ -169,6 +172,43 @@ test('the checked-in bundle was built from the sources in the tree', () => {
     'the bundle is stale: web/ has changed since it was built. '
     + 'Run `make dashboard-bundle` and commit the result — otherwise the page '
     + 'serves the old code while every other check passes.')
+})
+
+test('the standalone bundle has a builder, and it covers its own entry', () => {
+  // §1cf. The loopback page's bundle had NO builder between `633c1e2` (which
+  // repointed `web/build.mjs` at `web/entry.tsx` and dropped the `outfile` line,
+  // keeping `dashboard.js` for the standalone opt-in) and now — so it served the
+  // component set frozen at `3973e3a`, with no metrics pane and no proposals
+  // pane, and nothing failed. Two checks, because either one alone is a comment:
+  //
+  //  1. the builder writes `dashboard.js` again, and
+  //  2. the staleness hash covers `web/standalone.tsx`, so a change to the page
+  //     the standalone entry mounts fails the check above rather than waiting
+  //     for somebody to notice a missing pane.
+  //
+  // `test/e2e-standalone-panes.mjs` is the half that needs a browser; this is
+  // the half that runs in CI on a bare clone, and it fails in the same commit
+  // either way.
+  const here = dirname(fileURLToPath(import.meta.url))
+  const repo = join(here, '..')
+  const build = readFileSync(join(repo, 'web/build.mjs'), 'utf8')
+
+  assert.match(build, /outfile:\s*join\(outDir, 'dashboard\.js'\)/,
+    'the builder must write the standalone bundle again — the loopback page serves it')
+  assert.match(build, /entryPoints:\s*\[join\(root, 'web\/standalone\.tsx'\)\]/,
+    'and it must be built from the standalone entry, which mounts DashboardApp '
+    + 'over the loopback endpoints')
+  assert.ok(existsSync(join(repo, 'web/standalone.tsx')),
+    'web/standalone.tsx is the entry the builder above names')
+
+  // The hash below is over `client.js` inputs. Without the standalone entry in
+  // that list, a page change that only affects the loopback surface is invisible
+  // to it — which is precisely how ten days of components went missing from one
+  // surface without a failure.
+  const staleness = build.match(/const SOURCE_INPUTS = \[([^\]]*)\]/s)?.[1] ?? ''
+  assert.ok(staleness.includes("'web/standalone.tsx'"),
+    'the staleness hash must cover web/standalone.tsx, or a change that only '
+    + 'affects the loopback page is invisible to it')
 })
 
 test('the sizes the manifest recorded are still the sizes on disk', () => {
