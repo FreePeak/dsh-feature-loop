@@ -169,16 +169,17 @@ jobs:
       - name: Run the test suite
         run: |
           total=0
-            demo/test/latency-window.test.ts test/agent-policy.test.ts test/approval-bridge.test.ts test/approvals.test.ts \
-            test/assistant-ui.test.ts test/brief.test.ts test/budget.test.ts test/dashboard.test.ts \
-            test/driver.test.ts test/envelope.test.ts test/evidence.test.ts test/explainer.test.ts \
-            test/judge-config.test.ts test/judge.test.ts test/llm.test.ts test/messages.test.ts \
-            test/metrics.test.ts test/optimize.test.ts test/optimizer.test.ts test/phase-budget.test.ts \
-            test/phases.test.ts test/pipeline.test.ts test/plugin-approval.test.ts test/policy.test.ts \
-            test/questioner.test.ts test/refine.test.ts test/runlog.test.ts test/runner.test.ts \
-            test/sandbox.test.ts test/ship.test.ts test/start-target.test.ts test/tools.test.ts \
-            test/yolo.test.ts ; do
-            demo/test/latency-window.test.ts ; do
+          for f in \
+            demo/test/latency-window.test.ts test/agent-policy.test.ts test/approval-bridge.test.ts \
+            test/approvals.test.ts test/assistant-ui.test.ts test/brief.test.ts \
+            test/budget.test.ts test/driver.test.ts test/envelope.test.ts \
+            test/evidence.test.ts test/explainer.test.ts test/judge.test.ts \
+            test/llm.test.ts test/messages.test.ts test/metrics.test.ts \
+            test/optimize.test.ts test/optimizer.test.ts test/phase-budget.test.ts \
+            test/phases.test.ts test/pipeline.test.ts test/policy.test.ts \
+            test/questioner.test.ts test/refine.test.ts test/runlog.test.ts \
+            test/runner.test.ts test/sandbox.test.ts test/ship.test.ts \
+            test/start-target.test.ts test/tools.test.ts test/yolo.test.ts ; do
             echo "::group::$f"
             out=$(node --experimental-strip-types --test "$f" 2>&1) || {
               echo "$out"
@@ -189,7 +190,7 @@ jobs:
             echo "::endgroup::"
             total=$((total + $(printf '%s\n' "$out" | sed -nE 's/^# pass ([0-9]+)$/\1/p')))
           done
-          echo "== $total tests passed across 19 files" 
+          echo "== $total tests passed across 30 files"
 
   typecheck:
     name: typecheck (harness-free src/ modules)
@@ -249,14 +250,14 @@ jobs:
             --target ES2024 --module NodeNext --moduleResolution NodeNext \
             --strict --esModuleInterop --skipLibCheck --isolatedModules \
             --allowImportingTsExtensions \
-            src/agent-policy.ts src/approval-bridge.ts src/approvals.ts src/brief.ts src/budget.ts \
-            src/change-event.ts src/dashboard-page.ts src/dashboard.ts src/driver.ts src/envelope.ts \
-            src/evidence.ts src/explainer.ts src/index.ts src/judge.ts src/laya.ts \
-            src/llm.ts src/messages.ts src/metrics.ts src/observation.ts src/optimize.ts \
-            src/optimizer.ts src/phase-budget.ts src/phase-notice.ts src/phases.ts src/pipeline.ts \
-            src/plugin.ts src/prompts.ts src/questioner.ts src/refine.ts src/review.ts \
-            src/routing.ts src/runlog.ts src/runner.ts src/sandbox.ts src/ship.ts \
-            src/signals.ts src/spec.ts src/tools.ts src/watcher-ttl.ts src/yolo.ts
+            src/agent-policy.ts src/approvals.ts src/approval-bridge.ts src/brief.ts src/budget.ts \
+            src/dashboard.ts src/dashboard-page.ts src/driver.ts src/envelope.ts src/evidence.ts \
+            src/explainer.ts src/judge.ts src/laya.ts src/llm.ts src/messages.ts src/metrics.ts \
+            src/observation.ts src/optimize.ts src/optimizer.ts src/phase-budget.ts \
+            src/phase-notice.ts src/phases.ts src/pipeline.ts src/prompts.ts src/questioner.ts \
+            src/refine.ts src/review.ts src/routing.ts src/runlog.ts src/runner.ts \
+            src/sandbox.ts src/ship.ts src/signals.ts src/spec.ts src/tools.ts \
+            src/watcher-ttl.ts src/yolo.ts \
 
       # The list is hand-maintained and has already drifted twice — see the
       # `change-event` note above — so this step recomputes it and fails on a
