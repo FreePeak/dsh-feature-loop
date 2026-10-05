@@ -138,13 +138,33 @@
           controller:
             # Cheap-first: most steps run on the first rung, and the loop climbs
             # only on evidence (steps spent, consecutive failures) — never on
-            # vibes. `execution`/`planning` are onegw role aliases, resolved by
-            # the gateway; swap in provider/model pairs if you route directly.
+            # vibes.
+            #
+            # These ARE your desktop profile's models, so the loop keeps
+            # answering on the model you picked in the UI instead of silently
+            # swapping in a second one. Two consequences worth knowing:
+            #
+            #   * The ladder OVERRIDES the selection on every step. `high` below
+            #     is the rung's own effort, applied whatever the UI has selected —
+            #     which is why it must be declared rather than inherited: an effort
+            #     belongs to a model, and a rung that names none now drops the
+            #     session's instead of carrying it onto a model that never
+            #     offered it (that bug killed every turn with
+            #     UNSUPPORTED_REASONING_EFFORT).
+            #   * A rung needs its model to offer the effort it asks for. Both
+            #     models below declare `high` in the profile's `llm-pi-ai` block;
+            #     a hand-written model with no `reasoningEfforts` reports no
+            #     reasoning capability at all and refuses every explicit effort.
+            #
+            # For a gateway cheaper than your own tier (the original onegw role
+            # aliases), point the ladder there instead and declare the same
+            # `reasoningEfforts` for that provider in the same patch.
             ladder:
-              - provider: onegw
-                model: execution
-              - provider: onegw
-                model: planning
+              - provider: deepseek-official
+                model: opencode/space-bunny-free
+                reasoningEffort: high
+              - provider: deepseek-official
+                model: xai/grok-4.5
             stepsPerRung: 5
             escalateAfterFailures: 2
 
@@ -173,17 +193,20 @@
           costBudgetUSD: 1.00
 
           # Without a price table the cost ceiling cannot price a step and would
-          # read $0.00 forever — the failure budget.ts refuses to hide. These are
-          # the plan rates for the onegw aliases above; replace them if you
-          # route to different models.
+          # read $0.00 forever — the failure budget.ts refuses to hide. The keys
+          # MUST match the ladder's `provider/model` exactly, or every step falls
+          # through to `unpricedFallback` and the ceiling prices a lie.
+          #
+          # No published rate for the `opencode/` free tier, so the first rung
+          # uses the fallback's figures deliberately; replace these with your
+          # own plan's rates.
           prices:
-            onegw/execution:
+            deepseek-official/opencode/space-bunny-free:
+              inputPerMTok: 0.00
+              outputPerMTok: 0.00
+            deepseek-official/xai/grok-4.5:
               inputPerMTok: 0.30
               outputPerMTok: 1.20
-              cacheReadPerMTok: 0.03
-            onegw/planning:
-              inputPerMTok: 2.50
-              outputPerMTok: 10.00
           unpricedFallback:
             inputPerMTok: 0.30
             outputPerMTok: 1.20
