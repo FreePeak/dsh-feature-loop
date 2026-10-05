@@ -13,11 +13,15 @@ Probe: curl -X POST 127.0.0.1:8091/v1/systemone -H 'Content-Type: application/js
 This is the SOURCE copy. The one macOS actually runs is the installed
 `~/.local/share/laya-sidecar/laya-sidecar.py`, started at login by the
 launchd job `ai.hermes.laya-sidecar` on port 8092 and shared by hermes,
-x-trader, sale-loop and xdev. Do not start a second instance -- one resident
-checkpoint is ~2.4 GB on a 16 GB Mac. When you change the request-handling
-path here, copy it over the installed file and
+x-trader, sale-loop and xdev. Do not start a second instance: one resident
+checkpoint is ~2.4 GB on a 16 GB Mac, and two hot ones ~3.2 GB. When you
+change the request-handling path here, copy it over the installed file and
 `launchctl kickstart -k gui/$(id -u)/ai.hermes.laya-sidecar`, then check
 `curl -s http://127.0.0.1:8092/health`.
+
+Tunables the launchd plist owns, not this script: LAYA_PRELOAD (which
+checkpoints to prefer), LAYA_MAX_LOADED (how many stay resident) and
+LAYA_EAGER (load at boot instead of on first request).
 """
 
 from __future__ import annotations
