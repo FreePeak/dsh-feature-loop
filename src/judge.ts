@@ -32,7 +32,11 @@ import type { LlmClient } from './llm.ts'
 export interface ChatJudgeConfig {
   /** The transport to ask. */
   llm: LlmClient
-  /** The model id to ask, e.g. `xiaomi/mimo-v2.5`. */
+  /**
+   * The route to ask, in the same `provider/model` form the actor uses.
+   * `createOnegwClient` resolves it to a gateway id, so a route key and a bare
+   * id are both accepted here.
+   */
   model: string
   /**
    * Cap on the judge's own output. Generous, because a reasoning model spends

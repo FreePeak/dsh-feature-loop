@@ -28,9 +28,14 @@ import {
   useExternalStoreRuntime,
 } from '@assistant-ui/react'
 import type { ThreadMessageLike, ToolCallMessagePartProps } from '@assistant-ui/react'
-import { outcomeForResponse, toApprovalGate } from '../src/approval-bridge.ts'
-import type { BridgeOutcome } from '../src/approval-bridge.ts'
-import type { BriefNode, DashboardSnapshot, PendingApproval } from '../src/dashboard.ts'
+import {
+  expiredOutcomeOf,
+  outcomeForResponse,
+  resolutionForOutcome,
+  toApprovalGate,
+} from '../src/approval-bridge.ts'
+import type { BridgeAsk, BridgeOutcome } from '../src/approval-bridge.ts'
+import type { BriefNode, DashboardSnapshot, FeedEntry, PendingApproval } from '../src/dashboard.ts'
 import { PHASE_ORDER, phaseFraction, phaseRail } from '../src/phases.ts'
 import { WATCHER_TTL_MS } from '../src/watcher-ttl.ts'
 
@@ -48,6 +53,16 @@ export interface DashboardSource {
   onChange?(listener: () => void): () => void
   /** Settle one ask. Rejects so the card can report a refused decision. */
   respond(id: string, outcome: BridgeOutcome, feedback: string): Promise<void>
+  /**
+   * The deployment's own config, when the transport carries it.
+   *
+   * Optional because the two surfaces differ: the in-UI remote has a `status()`
+   * method, and the standalone loopback dashboard does not. The page uses it for
+   * exactly one question — is `dashboard.brief.enabled` true — because a brief
+   * that FAILED is news on a deployment that asked for one and noise on every
+   * other, and that difference is in the config rather than in the card.
+   */
+  status?(): Promise<{ config?: Record<string, unknown> }>
 }
 
 declare global {
@@ -57,8 +72,22 @@ declare global {
   }
 }
 
-/** One pending ask as an assistant-ui message with an approval gate. */
-function askToMessage(ask: PendingApproval): ThreadMessageLike {
+/**
+ * One pending ask as an assistant-ui message with an approval gate.
+ *
+ * `decided` carries an ask that left `pending` WITHOUT this page answering it —
+ * an expiry, or an abort. Without it the card simply vanishes and the operator
+ * sees a decision disappear with nothing named; the only record is a feed line
+ * that reads `expired: write — no answer within 20000ms`, naming the TOOL but
+ * not the ask, so a run with two writes in flight cannot say which card just
+ * went blank.
+ *
+ * `ApprovalGate.resolution` and the card's own "Expired — no answer in time."
+ * text already existed and were unreachable on this path: the field was only
+ * ever set from the response the page itself sent. `approvals.ts` now puts the
+ * ask's id in the feed line, and `expiredOutcomeOf` reads it back out.
+ */
+function askToMessage(ask: PendingApproval, decided?: BridgeOutcome): ThreadMessageLike {
   const gate = toApprovalGate({
     id: ask.id,
     toolName: ask.toolName,
@@ -67,6 +96,11 @@ function askToMessage(ask: PendingApproval): ThreadMessageLike {
     ...ask.runId === undefined ? {} : { runId: ask.runId },
     askedAt: ask.askedAt,
   })
+  if (decided !== undefined) {
+    const resolution = resolutionForOutcome(decided)
+    if (resolution !== undefined) gate.resolution = resolution
+    else gate.approved = decided === 'allowed-once'
+  }
   return {
     id: `ask-${ask.id}`,
     role: 'assistant',
@@ -82,6 +116,32 @@ function askToMessage(ask: PendingApproval): ThreadMessageLike {
       },
     ],
   } as unknown as ThreadMessageLike
+}
+
+/**
+ * Is `dashboard.brief.enabled` true on this deployment?
+ *
+ * Read once per source and treated as UNKNOWN when the transport cannot answer
+ * — the standalone loopback dashboard has no `status()`. Unknown means the card
+ * keeps its old behaviour: render `failed` as a line, because on a source that
+ * cannot tell us, silence for a feature the deployment may have enabled is the
+ * worse default. Every in-UI deployment CAN answer, which is where the noise
+ * this replaces actually appeared.
+ */
+function useBriefsEnabled(source: DashboardSource): boolean | undefined {
+  const [on, setOn] = useState<boolean | undefined>(undefined)
+  useEffect(() => {
+    let alive = true
+    if (source.status === undefined) return () => undefined
+    void source.status()
+      .then((s) => {
+        const brief = s.config?.dashboard as { brief?: { enabled?: unknown } } | undefined
+        if (alive) setOn(brief?.brief?.enabled === true)
+      })
+      .catch(() => undefined)
+    return () => { alive = false }
+  }, [source])
+  return on
 }
 
 /** Operator chat bubble (local only — never model-authored). */
@@ -127,13 +187,40 @@ function BriefNodeView({ node }: { node: BriefNode }): React.ReactElement {
   return <p className="brief-para">{node.text}</p>
 }
 
-function BriefView({ ask }: { ask: PendingApproval }): React.ReactElement | null {
+/**
+ * The brief is ADVISORY and off by default (`dashboard.brief.enabled`), so
+ * "unavailable" is the expected state on a deployment that never turned it on —
+ * and it was rendering as a red-flag line on every single card. The feed
+ * confirmed it: every ask logged `review brief requested: write` and then
+ * `Review brief unavailable.`, because `requestBrief` runs for EVERY claimed
+ * ask, calls `markBriefPending` before it looks at the explainer, and
+ * `NO_EXPLAINER.explain()` resolves `undefined` — which lands in
+ * `recordBrief(id, undefined)`, i.e. the failed branch.
+ *
+ * So this reported a broken feature that was never enabled, on a card whose
+ * gate had just worked perfectly. Silence is the honest rendering of
+ * "this deployment has no brief", and a deployment that HAS enabled it is
+ * better served by its own load-time error (resolveBriefExplainer throws when
+ * `brief.enabled` is set and the gateway key is missing).
+ */
+function BriefView({ ask, briefsOn }: { ask: PendingApproval, briefsOn: boolean }): React.ReactElement | null {
+  // `none` means briefs were never asked for. `failed` means they were, and the
+  // call did not come back — which is news ONLY on a deployment that turned
+  // briefs on, and noise on every other one. That distinction is the whole fix:
+  // the previous version returned null for both, which silenced the card on a
+  // deployment that DID enable briefs and whose brief failed, and this one makes
+  // it depend on whether briefs are enabled at all.
+  //
+  // The page knows: `brief.enabled` is part of the `config` the status payload
+  // carries (see `buildStatus`), so this is a fact on hand rather than a guess
+  // from the state.
   if (ask.briefState === 'none') return null
+  if (!briefsOn) return null
+  if (ask.briefState === 'failed') {
+    return <div className="brief-note error">Review brief unavailable — the approval itself is unaffected.</div>
+  }
   if (ask.briefState === 'pending') {
     return <div className="brief-note">Writing review brief…</div>
-  }
-  if (ask.briefState === 'failed') {
-    return <div className="brief-note">Review brief unavailable.</div>
   }
   return (
     <div className="brief">
@@ -170,6 +257,17 @@ function useFeedback(): FeedbackApi {
 }
 
 /** One decision plate: eyebrow, tool, meta, reason, brief, actions. */
+/**
+ * Whether briefs are enabled, for the card.
+ *
+ * Module-level, and set by `ApprovalThread` on every render, because
+ * `ApprovalCard` is assistant-ui's `tools.Override` — React hands it
+ * `ToolCallMessagePartProps` and nothing else, so a prop is not available. It is
+ * written during render rather than in an effect, which is what a value shared
+ * across a subtree normally needs to be, and the thread is the only writer.
+ */
+let BRIEFS_ON: boolean | undefined
+
 function ApprovalCard(props: ToolCallMessagePartProps): React.ReactElement {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -212,7 +310,7 @@ function ApprovalCard(props: ToolCallMessagePartProps): React.ReactElement {
         </div>
       )}
       {gate?.prompt !== undefined && <div className="reason">{gate.prompt}</div>}
-      {ask !== undefined && <BriefView ask={ask} />}
+      {ask !== undefined && <BriefView ask={ask} briefsOn={BRIEFS_ON} />}
       {gate?.resolution !== undefined && (
         <div className="brief-note settled">
           {gate.resolution === 'expired' ? 'Expired — no answer in time.' : 'Cancelled — the ask was withdrawn.'}
@@ -369,12 +467,80 @@ function AssistantBubble(): React.ReactElement {
   )
 }
 
-function ApprovalThread({ pending, source }: {
+function ApprovalThread({ pending, feed, source, briefsOn }: {
   pending: PendingApproval[]
+  feed: FeedEntry[]
   source: DashboardSource
+  briefsOn: boolean | undefined
 }): React.ReactElement {
-  ASK_BY_ID.clear()
+  // The ask's details, as last seen. `clear()` on every render is what let a
+  // re-materialised card degrade: the ask had left `pending`, so its entry was
+  // gone, and `toApprovalGate`'s fallback prompt — "write needs approval" —
+  // replaced the gate's real reason text. Keeping what was seen and only
+  // ADDING to it is what the name says and what the card needs: a settled ask
+  // still has to read as the thing a human was asked about.
+  //
+  // Bounded by the same slice the settled list uses, so this cannot grow for
+  // the life of the page.
   for (const ask of pending) ASK_BY_ID.set(ask.id, ask)
+  const live = new Set(pending.map(a => a.id))
+  // Written during render, for `ApprovalCard` — see the note on BRIEFS_ON.
+  BRIEFS_ON = briefsOn
+
+  // The thread is built from `pending`, so an ask that has LEFT that list has
+  // no message to render and no card to carry its outcome — which is the whole
+  // bug: `ApprovalGate.resolution` and the card's "Expired — no answer in
+  // time." text already existed and were unreachable, because the field was
+  // only ever set from the response this page itself sent. An ask that nobody
+  // answered left no trace in the thread at all.
+  //
+  // So a settled ask is re-materialised from the one record that survives it:
+  // the feed line `approvals.ts` writes, which now carries the ask's id. The
+  // tool name and reason come back out of `ASK_BY_ID` for as long as the page
+  // has seen them; a card whose ask was never seen live falls back to the tool
+  // name in the feed line itself. Bounded by the feed's own retention.
+  const settledAsks = useMemo(() => {
+    const out: BridgeAsk[] = []
+    for (const entry of feed) {
+      if (entry.kind !== 'approval') continue
+      const m = /^(allowed once|rejected|cancelled|expired): ([\w./-]+)(?: — (.*?))? \[([0-9a-f-]{36})\]$/
+        .exec(entry.text)
+      if (m === null) continue
+      const [, , tool, reason, id] = m
+      if (live.has(id)) continue
+      const seen = ASK_BY_ID.get(id)
+      out.push({
+        id,
+        toolName: seen?.toolName ?? tool,
+        ...reason === undefined ? {} : { reason: `${tool}: ${reason}` },
+        ...seen?.runId === undefined ? {} : { runId: seen.runId },
+        askedAt: entry.t,
+      })
+    }
+    // The window is in STEPS, not wall-clock: a settled ask whose card is still
+    // on screen keeps its buttons, and a card with buttons on a tool that has
+    // already run is worse than no card at all — it invites a click that
+    // settles nothing. Twelve is enough to cover a human working through a
+    // burst; the feed's own 200-line retention is the outer bound.
+    const kept = out.slice(-12)
+    // Keep the details for exactly the asks the thread is showing.
+    for (const ask of kept) {
+      const entry: PendingApproval = {
+        id: ask.id,
+        toolName: ask.toolName,
+        ...ask.callId === undefined ? {} : { callId: ask.callId },
+        ...ask.reason === undefined ? {} : { reason: ask.reason },
+        ...ask.runId === undefined ? {} : { runId: ask.runId },
+        askedAt: ask.askedAt,
+        briefState: 'none',
+      }
+      if (!ASK_BY_ID.has(ask.id)) ASK_BY_ID.set(ask.id, entry)
+    }
+    for (const id of [...ASK_BY_ID.keys()]) {
+      if (!live.has(id) && !kept.some(a => a.id === id)) ASK_BY_ID.delete(id)
+    }
+    return kept
+  }, [feed, live])
 
   const [localMessages, setLocalMessages] = useState<ThreadMessageLike[]>([])
   const [draft, setDraft] = useState('')
@@ -383,11 +549,42 @@ function ApprovalThread({ pending, source }: {
   const draftRef = useRef(draft)
   draftRef.current = draft
 
+  /**
+   * The outcome of every ask the feed has settled, by ask id.
+   *
+   * Keyed on the id `approvals.ts` puts in its feed lines, so this is a lookup
+   * and not a guess. Bounded and self-clearing: an id is dropped as soon as the
+   * feed stops carrying it, so a long session cannot grow this without limit,
+   * and a settled ask the page answered itself never reaches the map (its own
+   * response removes it from `pending` first).
+   */
+  const [expired, setExpired] = useState<ReadonlyMap<string, BridgeOutcome>>(
+    () => new Map<string, BridgeOutcome>(),
+  )
+  useEffect(() => {
+    const seen = expiredOutcomeOf(feed)
+    if (seen.size === 0) return
+    setExpired(prev => {
+      // Drop ids the feed has rolled past, so the map tracks the feed's own
+      // retention rather than growing for the life of the page.
+      const next = new Map<string, BridgeOutcome>()
+      for (const [id, outcome] of seen) next.set(id, outcome)
+      return next.size === prev.size && [...next].every(([k, v]) => prev.get(k) === v)
+        ? prev
+        : next
+    })
+  }, [feed])
+
   const messages = useMemo(() => {
-    const asks = pending.map(askToMessage)
+    const asks = [
+      ...pending.map(ask => askToMessage(ask, expired.get(ask.id))),
+      // Settled asks that left the pending list: shown so their outcome is
+      // visible, newest last, and settled so they carry no buttons.
+      ...settledAsks.map(ask => askToMessage(ask, expired.get(ask.id))),
+    ]
     // User feedback bubbles after the live asks keep the thread chat-shaped.
     return [...asks, ...localMessages].slice(-48)
-  }, [pending, localMessages])
+  }, [pending, settledAsks, localMessages, expired])
 
   const commitLocal = useCallback(() => {
     const note = draftRef.current.trim()
@@ -907,6 +1104,7 @@ function ActivityFeed({
 
 export function DashboardApp({ source }: { source: DashboardSource }): React.ReactElement {
   const snapshot = useSnapshot(source)
+  const briefsOn = useBriefsEnabled(source)
   const [sessionFilter, setSessionFilter] = useState<SessionFilter>('all')
   usePendingBadge(snapshot?.pending.length ?? 0)
 
@@ -940,7 +1138,7 @@ export function DashboardApp({ source }: { source: DashboardSource }): React.Rea
             {snapshot.pending.length}
           </span>
         </div>
-        <ApprovalThread pending={snapshot.pending} source={source} />
+        <ApprovalThread pending={snapshot.pending} feed={snapshot.feed} source={source} briefsOn={briefsOn} />
       </section>
       <aside className="rail" aria-label="Grouped runs">
         <GroupedRunPanels snapshot={snapshot} filter={sessionFilter} />

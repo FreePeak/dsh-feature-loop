@@ -9,67 +9,67 @@ on purpose.
 
 ---
 
-## P0 — Not yet committed (do this first)
+## P0 — Nothing uncommitted
 
-**The approval + Docker work IS committed and pushed** (`04326cd`, `2f93906` on
-`feat/human-approval-and-docker`, **PR #9 open**, `origin/main` still `ea48b03`).
+The "not yet committed" warning below is a leftover from a session that ended
+in 2026-03; `origin/main` is `5dcad97` (v0.1.9) and every path that warning
+listed is in the history. Re-checked 2026-10-01, nothing pending.
 
-**The approval dashboard from this session is NOT.** 13 paths (9 modified + 4
-new) hold the whole feature — server, page, wiring, tests, deployment config,
-docs. If this machine is lost, so is it.
+Carry-over still true: Dependabot PRs #3-#7. #3 and #4 (Actions bumps) are low
+risk. #5, #6, #7 (tsdown, zod, typescript — all majors) are **not** proven safe
+by green CI, because `src/plugin.ts` is excluded from the CI typecheck job. The
+local `npx tsc --noEmit` covers it and runs on every commit here, but CI will
+not catch it.
+
+---
+
+## P2 — A person should judge the UI usable (was P0, then P1)
+
+**Mechanically closed 2026-10-01, on the current build.** The whole human path
+now runs as a script against a real model and asserts the disk, in both
+directions — `test/e2e-in-ui.mjs` (`make e2e-in-ui`), transcript in
+[`docs/VERIFY-E2E-APPROVAL.md`](docs/VERIFY-E2E-APPROVAL.md):
+
+| | Allow once | Reject |
+|---|---|---|
+| Card | `REVIEW REQUESTED (policy): write: irreversible is always approved by a human.` | same |
+| Thread after | `0` | `0` |
+| File | exists, `hello` | **absent** |
+
+Three things only that run found, none of which any earlier check could:
+
+- **The harness's Preview Notice covers the sidebar.** On a fresh instance a
+  click on `Feature Loop` does nothing and reads as a dead button.
+- **The card is not re-rendered under a click.** An earlier probe reported
+  `element was detached from the DOM`; measuring node identity directly gave
+  **0 replacements in 20s**. The symptom looks exactly like a race and is not.
+- **The target is the OPENED Workspace**, so a run started from a worktree
+  writes to the repo root — which is what the page says it will do, and is the
+  point of the note under the button.
+
+What is still not closed, and is not closable by a script: whether the page
+*reads* as usable to a person. Every proof here is written by the author of the
+thing being proven. If you open it and it confuses you, that outranks
+everything in `make verify`.
 
 ```bash
-cd dsh-feature-loop
-git log --oneline origin/main -1     # ea48b03
-git status --short | wc -l           # 13
+node ~/work/harvey/freepeak/deepseek-harness/apps/cli/lib/bin.js \
+  --profile feature-loop --port 4188 --no-open
+# then: the `dsh web:` URL → Feature Loop → type a task → Start loop → click.
 ```
 
-The uncommitted set:
+## P1 — A human should click the DASHBOARD's Allow once by hand (was P0)
 
-- **modified:** `.github/workflows/ci.yml`, `Makefile`, `README.md`,
-  `cordis.patch.yml`, `docker/docker-compose.yml`, `docker/profile.patch.yml`,
-  `src/index.ts`, `src/plugin.ts`, `test/integration/plugin-in-dsh.spec.ts`
-- **new:** `src/dashboard.ts`, `src/dashboard-page.ts`,
-  `test/dashboard.test.ts`, `docs/VERIFY-DASHBOARD.md`
+Same shape, for the standalone surface. **Mechanically closed 2026-10-01**:
+`make e2e-dashboard` drives the real page and both buttons resolve the
+server-side ask, and it now runs with no environment variables (it used to need
+`PLAYWRIGHT_CORE` and `CHROME_PATH` set by hand, and failed on a machine where
+neither was where it looked). Transcript in
+[`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md).
 
-Plan:
-
-1. Re-run the floor first: `make verify` (compose-check + 151 tests +
-   typecheck + the 9/9 integration spec) — already green this session, re-run
-   before committing.
-2. Commit on the SAME branch (`feat/human-approval-and-docker`) so PR #9 gains
-   the dashboard; push; wait for CI (both jobs on the self-hosted runner;
-   `gitStream.cm` shows `skipping` and is not a merge gate).
-3. In the PR body: the dashboard is a new opt-in surface (`dashboard:` config),
-   loopback + token; a tab-less deployment behaves byte-identically to the
-   composer-only path (4 new integration probes prove it). The one open item:
-   the rendered page's button click in a real browser
-   (`docs/VERIFY-DASHBOARD.md`) — record it as UNVERIFIED until someone does it.
-
-Older carry-overs, still true: Dependabot PRs #3-#7 are open. #3 and #4
-(Actions bumps) are low risk. #5, #6, #7 (tsdown, zod, typescript — all major)
-are **not** proven safe by green CI, because `src/plugin.ts` is excluded from
-the CI typecheck job.
-
-## P0 — A human should click the panel by hand
-
-Both buttons were exercised by an **automated browser script**
-(`docs/VERIFY-E2E-APPROVAL.md`). That proves the mechanism; it does not prove a
-person finds the UI usable — and reaching a usable composer takes three gates:
-the Internal Testing Notice, the "Add an API key" prompt, and the workspace
-chooser.
-
-Either click it yourself, or decide the automated proof is sufficient and record
-that decision here. If the UI confuses you, that confusion is a real finding.
-
-## P0 — A human should click the DASHBOARD's Allow once by hand
-
-Same shape as the section above, for the new surface: server, guard, auth,
-fail-closed paths, and the exact endpoint the buttons call are verified over
-real HTTP, but no browser has executed the page's own JavaScript. The
-two-minute script (bring-up + three checks) is in
-[`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md); record the outcome
-there.
+What is still missing is the human reading the page, not clicking it. Downgraded
+from P0 because the mechanism has now been proven twice — over HTTP and in a
+real browser — and what remains is a taste question, not a correctness one.
 
 ## P1 — Docker: isolated data mount (sessions, …)
 

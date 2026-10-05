@@ -13,3 +13,7 @@ hitl-dashboard-url.txt
 # (loop/task.txt, standalone-dashboard.md/.png) stay tracked; only the
 # timestamped run directories are ignored.
 docs/evidence/*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]/
+# Run history written by a live plugin under this working directory, plus the
+# demo harness. Both are evidence of a local run, not source.
+.feature-loop/
+.feature-loop-demo/

@@ -123,11 +123,11 @@ of failures that live in intermediate steps.
 
 | | |
 |---|---|
+| **Budget the loop** | Step and USD ceilings that stop the run — a limit, not an invoice |
+| **Cheap-first routing** | A model ladder resolved by evidence, not by vibes — onegw's `execution` role alias, the one route every shipped deployment and the demo run on |
 | **0→1 product loop** | research → PRD → implement → test → ship, each phase gated and budgeted |
 | **Bounded YOLO** | Never prompts; a worktree, a tested deny-list and a kill switch instead |
 | **Evidence per step** | A bundle per run; unverified writes can never render as a success |
-| **Budget the loop** | Step and USD ceilings — per run *and* per phase — checked before the call |
-| **Cheap-first routing** | Model ladder by step type (`onegw/cheap` → execution) |
 | **Loop hygiene** | Tool-cycle, error-cascade, budget trajectory, and related detectors |
 | **Fail-closed review gate** | Tiered by reversibility; low judge confidence → ask the human |
 | **HITL ops dashboard** | Phase rail, workspaces, activity, grouped runs, Allow / Reject |
@@ -237,17 +237,30 @@ even though the judge's score was itself wrong.
 
 ### Verified runs
 
-All three terminal paths, against the real model through onegw:
+All four terminal paths, re-run 2026-10-01 against the real model through
+onegw (the transcript above and `demo/TRANSCRIPT.txt` are from an earlier
+session; the shape is the same and the steps vary with the model):
 
 | Command | Outcome | Steps | Cost | Reviews |
 |---|---|---|---|---|
-| `bash demo/run.sh` | `goal-met` | 12 of 15 | $0.0066 | 1 (8%) |
-| `bash demo/run.sh --max-steps 5` | `budget-stop` (step ceiling) | 5 of 5 | $0.0039 | 1 (20%) |
-| `bash demo/run.sh --budget 0.00001` | `budget-stop` (cost ceiling) | 2 of 10 | $0.0002 | 0 |
+| `bash demo/run.sh` | `goal-met` | 6 of 15 | $0.0039 | 0 |
+| `bash demo/run.sh --max-steps 6` | `budget-stop` (step ceiling) | 6 of 6 | $0.0031 | 0 |
+| `bash demo/run.sh --budget 0.000001` | `budget-stop` (cost ceiling) | 2 of 15 | $0.0004 | 0 |
+| `bash demo/run.sh --judge none` | `goal-met` | 4 of 15 | $0.0024 | 0 |
 
-The step-ceiling run stops at 5 without spending a sixth call — the ceiling is a
-limit, not an invoice. The cost-ceiling run stops after 2 steps because the
-budget was $0.00001 and it had already spent $0.000232.
+The step-ceiling run stops at 6 without spending a seventh call — the ceiling is
+a limit, not an invoice. The cost-ceiling run stops after 2 steps because the
+budget was a millionth of a dollar and one call cost more than that.
+
+**These four commands did not run at all until 2026-10-01.** `demo/run.sh`
+pointed at `src/cli.ts`, which commit `633c1e2` deleted as a side effect of a
+change to something else entirely; every demo script — `npm run demo`,
+`demo:steps`, `demo:cost`, `demo:nojudge` — failed with
+`ERR_MODULE_NOT_FOUND` for six days' worth of commits, while this section
+described the loop reaching `goal-met` in one command. The entry point is back,
+in `demo/cli.ts` where it belongs (it is the demo's, not the published
+package's), and `scripts/check-typecheck-list.mjs` now fails if it goes missing
+again or if `run.sh` stops pointing at it.
 
 Repeat runs land between 9 and 12 steps and **8–20% review rate**, depending on
 whether an error cascade happens to trip. The book's target is <10%; critical
@@ -326,16 +339,27 @@ include this package by name: see [`docs/SETUP.md`](docs/SETUP.md).
 <details>
 <summary>Install by hand</summary>
 
-To run the plugin inside a local harness profile — including alongside Agent
-Teams — follow **[`docs/SETUP.md`](docs/SETUP.md)**. It covers the build, a
-scratch profile, the cordis patch, and a small task that makes the ceilings and
-the review gate visibly fire, plus the failure modes people actually hit.
+One command builds the profile, installs it, and proves it composed:
 
 ```bash
-pnpm build                                       # the harness loads built JS, not .ts
-dsh plugin --profile <name> add -w file:$PWD     # `-w` is required for a profile
-dsh --profile <name> --dump-config | grep -A8 feature-loop   # verify composition
+pnpm build                              # the harness loads built JS, not .ts
+bash scripts/make-profile.sh feature-loop
 ```
+
+It writes `~/.dsh/profiles/feature-loop/`, runs the install, checks that the
+plugin's **peers resolved**, and prints the resolved `feature-loop` row. Then:
+
+```bash
+node ~/work/harvey/freepeak/deepseek-harness/apps/cli/lib/bin.js \
+  --profile feature-loop --port 4188 --no-open
+```
+
+Two token lines come out of that boot: `dsh web:` (the harness UI — the plugin's
+page is the **Feature Loop** entry in its sidebar) and `feature-loop dashboard:`
+(the standalone approval surface, opt-in via `dashboard.standalone: true`).
+
+The full walkthrough, including doing it by hand and every failure mode, is
+**[`docs/SETUP.md`](docs/SETUP.md)**.
 
 **The profile must supply the plugin's runtime peers.** The built plugin imports
 `@deepseek-ai/dsh-llm` and `@deepseek-ai/dsh-typert-protocol`, both are
@@ -343,21 +367,32 @@ optional `peerDependencies`, and this repo's `.npmrc` sets
 `auto-install-peers: false` — so a profile that pulls in nothing else from the
 harness installs the plugin, composes it, shows it in the boot graph, and then
 does nothing at all: no gate, no review, no approval. Depend on a harness
-bundle (Agent Teams' profile bundle is the usual one) and the peers resolve.
-The one-second check is pnpm's virtual-store key — a `_@deepseek-ai+c_…`
-suffix means resolved, no suffix means the plugin is inert:
+bundle (Agent Teams' profile bundle is the usual one) and the peers resolve —
+`scripts/make-profile.sh` does all of this and prints the check, because the
+failure is the quietest one this plugin has: the row composes, the client bundle
+is in the boot graph, and nothing is gated.
 [`docs/KNOWN-ISSUES.md` §4](docs/KNOWN-ISSUES.md), and
 [`docs/SETUP.md`](docs/SETUP.md) §Step 2. `make install` performs this check for
 you and refuses to finish on an inert install.
 
 </details>
 
-Once it is running, a gated step **prompts you in the browser**: the composer
-shows the reason with **Reject** / **Allow once**, and your answer decides
-whether the tool runs. **This has been observed end to end** — a real browser
-rendered this plugin's own `REVIEW REQUESTED` reason, **Allow once** wrote the
-file, and **Reject** on the same prompt wrote nothing:
-[`docs/VERIFY-E2E-APPROVAL.md`](docs/VERIFY-E2E-APPROVAL.md). You are not writing that UI — it ships with DSH as
+Once it is running, a gated step **prompts you on the Feature Loop page**:
+the card shows the reason with **Reject** / **Allow once**, and your answer
+decides whether the tool runs. **Observed end to end on the current build**,
+against a real model, in a real browser, in both directions:
+
+```
+$ make e2e-in-ui DSH_URL='http://127.0.0.1:4188/?token=…'
+e2e-in-ui (allow): Allow once → the file exists at …/dsh-feature-loop/proof.txt
+e2e-in-ui (reject): Reject → no file at …/dsh-feature-loop/proof.txt
+```
+
+That script drives the path a person takes — dismiss the harness's Preview
+Notice, click **Feature Loop** in the sidebar, type a task, press **Start
+loop**, click the card's own button — and asserts the disk. Transcript and
+frames: [`docs/VERIFY-E2E-APPROVAL.md`](docs/VERIFY-E2E-APPROVAL.md). You are
+not writing that UI — it ships with DSH as
 `@deepseek-ai/dsh-client-ui-approval`; the plugin's job is to emit `ask` so it
 gets reached.
 
@@ -372,13 +407,23 @@ gets reached.
   five outcomes executed in a **real** DSH context (5/5 pass), plus the exact
   string the approval panel renders.
 - **[`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md)** — the approval
-  dashboard: 296 unit + 11 integration green, a live HTTP transcript (page 200,
+  dashboard: 405 unit + 11 integration green, a live HTTP transcript (page 200,
   token 401, approve → `allowed-once`, 409, 403), the browser click verified
   via `make e2e-dashboard`, and the model-authored review brief.
 - **[`docs/VERIFY-E2E-APPROVAL.md`](docs/VERIFY-E2E-APPROVAL.md)** — a real
   browser on the containerised deployment: the panel appears with this plugin's
   reason, **Allow once** writes the file, **Reject** blocks it.
 - **[`docker/README.md`](docker/README.md)** — the one-command container run.
+  The Docker path was verified on 2026-10-01 and had four silent breakages,
+  all fixed: a missing `git` in the build stage, `assets/` not copied into the
+  runtime image (so the plugin failed to import and the container booted clean,
+  served a UI, and gated nothing), no `standalone: true` on the dashboard, no
+  model route, and a ladder naming models the provider profile did not declare
+  (so every run died `UNKNOWN_MODEL` on step 1). All fixed, and the container is
+  now gated and answered by a clicked button in both directions — plus
+  `make e2e-container`, which drives a real model through the real gate INSIDE
+  the running container and asserts the disk and the durable session log.
+  Evidence: [`docs/evidence/docker-20261001.md`](docs/evidence/docker-20261001.md).
 
 ---
 
@@ -419,7 +464,7 @@ threshold with no provenance is a number someone liked.
 
 The policies are shared. Only transport and session state differ.
 
-| | Standalone runner (`src/runner.ts`, `src/cli.ts`) | DSH plugin (`src/plugin.ts`) |
+| | Standalone runner (`src/runner.ts`, `demo/cli.ts`) | DSH plugin (`src/plugin.ts`) |
 |---|---|---|
 | Transport | `src/llm.ts` → onegw | harness `llm` service |
 | Budget ceilings | ✅ wired | ✅ wired (`agent/pre-step`, `reject`) |
@@ -522,9 +567,9 @@ the field and the 3–10 band):
   config:
     optimize:
       loops: 3              # refinement passes, integer 3–10 (CLI `runRefined` only)
-      derive: true          # accepted; the CLI's `--derive` derives envelopes, the plugin records the history they come from
+      # derive: true         # accepted, READ BY NOTHING — see the note in src/plugin.ts
       history: .feature-loop/runs.jsonl   # run-history file: the plugin appends one line per closed turn and feeds Metrics from it
-      # judge: chat         # none | chat | laya — who scores across passes (CLI only)
+      # judge: chat         # none | chat | laya — cross-pass judge, read by nothing (CLI's runRefined takes it)
       # totalBudgetUSD: 3.00  # refinement budget; default derived × loops × 0.6 (CLI only)
 ```
 
@@ -634,8 +679,8 @@ src/
   runner.ts      spec → budget → route → judge → review → model → tools
   llm.ts         OpenAI-compatible client + scripted client for tests
   tools.ts       sandboxed read/write/edit/list/run_tests, path-confined
-  cli.ts         the demo entry point
 demo/
+  cli.ts         the demo entry point (not in src/: not part of the package)
   src/latency-window.ts   the planted bug (nearest-rank off-by-one)
   test/                  14 tests, 3 of which fail on the bug
   README.md              the bug report the loop is given
@@ -840,7 +885,7 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 - **Phase 1e — HITL approval dashboard** ✅ optional loopback web surface
   (`src/dashboard.ts` + `src/dashboard-page.ts`): pending cards, live run state
   over SSE, Allow/Reject over HTTP — guarded so a tab-less deployment behaves
-  byte-identically to the composer-only path. 296 unit + 11 integration tests;
+  byte-identically to the composer-only path. 405 unit + 11 integration tests;
   the browser click verified via `make e2e-dashboard`
   ([`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md)).
 - **Phase 1f — review briefs** ✅ model-authored brief per ask
@@ -866,18 +911,44 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 ### Verifying the whole thing
 
 ```bash
-node --experimental-strip-types --test test/*.test.ts   # 296 pass
-pnpm test:integration                                   # 9 pass, in the real harness
-tsc --noEmit                                            # clean
-bash demo/run.sh                                        # goal-met
-grep -rn "FORK-DELTA" src/ | wc -l                      # 0 — the fork is gone
+make verify          # compose + tests + typecheck + the six drift checks + integration
 ```
 
-`pnpm test:integration` is the one that matters for human approval: it mounts
-this plugin into a **real** cordis context — real tool runtime, real approval
-service, real session — and drives the actual dispatch path, asserting that
-approving runs the write and rejecting stops it. See
-[`docs/VERIFY-INTEGRATION.md`](docs/VERIFY-INTEGRATION.md).
+That is the whole of it. Spelled out, `make verify` is:
+
+```bash
+node --experimental-strip-types --test test/*.test.ts   # 406 pass
+npx tsc --noEmit                                       # clean, all of src/ incl. plugin.ts
+node scripts/check-ci-shape.mjs                        # CI runs every check
+node scripts/check-test-list.mjs                        # and every pure test
+node scripts/check-typecheck-list.mjs                   # and every harness-free module
+node scripts/check-ladder-models.mjs                    # and no rung names an undeclared model
+node scripts/check-dead-exports.mjs                     # and no export is unreachable
+node scripts/check-noop-config-keys.mjs                 # and no config key claims to work unwired
+bash test/integration/run.sh                            # 11 pass, in the real harness
+bash demo/run.sh                                        # goal-met
+```
+
+The six `check-*.mjs` scripts need no `node_modules`, no gateway and no
+harness — they read the tree. They exist because each of the failures they
+guard is one that passes silently: a module typechecked by nothing, a test run
+by nothing, a rung naming a model no deployment declares, a documented
+behaviour with no caller, a config key claiming to work when no hook reads it,
+and a check CI stopped running.
+
+The integration spec (`bash test/integration/run.sh`) is the one that matters
+for human approval: it mounts this plugin into a **real** cordis context — real
+tool runtime, real approval service, real session — and drives the actual
+dispatch path, asserting that approving runs the write and rejecting stops it.
+See [`docs/VERIFY-INTEGRATION.md`](docs/VERIFY-INTEGRATION.md).
+
+And the two browser checks, both opt-in because they need a browser and a
+running profile:
+
+```bash
+make e2e-dashboard DSH_URL='…'          # the standalone approval page
+make e2e-in-ui     DSH_URL='…'          # the Feature Loop page, end to end
+```
 
 ### Four gaps closed along the way
 
@@ -900,6 +971,14 @@ approving runs the write and rejecting stops it. See
   dispatched **ungated**. An agent-less call now gets a shared policy and is
   gated like any other; the refusal happens downstream, where the harness denies
   an agent-less `ask`. Caught by independent verification, not by CI.
+
+Each of these is a *wiring* defect, and that is the class worth naming: the
+policy each one broke is unit-tested, the wiring that connects it was not.
+`test/plugin-wiring.test.ts` drives the three extension points the harness does,
+in the harness's own payload shape, and asserts the consequences — the gate
+decides before dispatch, the agent-less path is still gated, a blocked call
+becomes an error observation, both ceilings stop the run, the ladder routes.
+It exists because a policy can be perfect and still never be consulted.
 
 ---
 

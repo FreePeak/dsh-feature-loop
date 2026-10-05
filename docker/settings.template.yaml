@@ -39,7 +39,20 @@ llm-pi-ai:
       apiKeyEnv: ONEGW_API_KEY
       api: openai-completions
       baseURL: ${ONEGW_BASE_URL}
+      # `execution` is onegw's EXECUTION role alias, and it is the route every
+      # shipped deployment in this repo runs on: cordis.patch.yml,
+      # docker/profile.patch.yml, scripts/make-profile.sh and the demo. It is
+      # declared HERE — and not merely used by those files — because llm-pi-ai
+      # resolves a ladder rung against this list rather than against the gateway,
+      # so a rung naming an id this list omits dies UNKNOWN_MODEL on step 1,
+      # after the dashboard has already recorded the route and the spend.
+      # scripts/check-ladder-models.mjs fails if that pairing ever breaks again.
+      #
+      # The concrete ids below stay declared on purpose: each is a real route the
+      # gateway serves and each is a working alternative for an operator who
+      # wants to pin a specific model instead of following the account's role.
       models:
+        - { id: execution, name: execution }
         - { id: opencode/deepseek-v4.1-flash, name: opencode/deepseek-v4.1-flash }
         - { id: opencode/deepseek-v4-flash, name: opencode/deepseek-v4-flash }
         - { id: xiaomi/mimo-v2.5, name: xiaomi/mimo-v2.5 }

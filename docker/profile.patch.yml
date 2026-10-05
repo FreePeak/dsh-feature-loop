@@ -19,6 +19,25 @@
 #    `auto-if-confident` has no evidence of confidence and the gate ASKS the
 #    human. That fail-closed ask is what produces the approval panel.
 
+# The route the loop actually uses. WITHOUT this row the loop runs on the
+# harness's own default — `provider: deepseek-official` — and every model call
+# in the container dies with:
+#
+#   llm-deepseek: no API key for provider route "deepseek-official"
+#
+# while the UI, the dashboard and the approval panel all look perfect. Verified
+# 2026-10-01 against harness 0.2.0-rc.2: the row was missing, the container
+# booted clean, and the first `dsh headless` run failed on a key nobody supplied
+# because nobody had asked for that provider.
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: onegw
+    # `execution` — onegw's EXECUTION role alias. Bare on the wire: a live
+    # `POST /v1/chat/completions {"model":"execution"}` returns 200, while
+    # `{"model":"onegw/execution"}` returns 404. Verified 2026-10-02.
+    model: execution
+
 - id: feature-loop
   config:
     reviewBudget: 0.10
@@ -32,13 +51,24 @@
       glob: auto
       grep: auto
       edit: auto-if-confident
-      write: auto-if-confident
+      # `always-approve`, matching the shipped `cordis.patch.yml`. With
+      # `auto-if-confident` and a judge that is confident, writes clear
+      # silently and a human watching sees no approval — see the note there.
+      write: always-approve
     # The HITL approval dashboard. Inside the container it binds 0.0.0.0 so the
     # published port can reach it — compose publishes 127.0.0.1:${DSH_DASHBOARD_PORT}
     # on the host, so the posture stays loopback-only end to end. The token is
     # generated at start; `make dashboard` rebuilds the URL from the log line.
+    #
+    # `standalone: true` is REQUIRED and its absence is silent. Without it the
+    # dashboard is a page INSIDE the DSH UI, reached over the host remote — so no
+    # server binds, nothing listens on 8100, no `feature-loop dashboard:` line is
+    # printed, and the published port in compose connects to nothing. Verified
+    # 2026-10-01: exactly this profile, `enabled: true` and no `standalone`, gave
+    # a clean boot with no dashboard and no error of any kind.
     dashboard:
       enabled: true
+      standalone: true
       host: 0.0.0.0
       port: 8100
       answers: true
@@ -46,14 +76,22 @@
       goal: "the failing test passes and no other test breaks"
       sensor: ["repo files", "test output"]
       controller:
-        # Two roles, not one rung: `execution` does the work (cheap-first),
-        # `planning` takes over when the cheap tier stalls. These are onegw
-        # role aliases (verified live against /v1/models), not provider/model
-        # pairs — the gateway resolves them. `stepsPerRung: 5` means the
-        # executor gets 5 steps before the ladder even considers climbing.
+        # Both rungs now name models declared in settings.template.yaml, which
+        # is the list llm-pi-ai actually routes from. Keep the three in step:
+        # a rung whose model is not in that list is not a cheap-first ladder,
+        # it is an UNKNOWN_MODEL on step 1.
+        # `execution` — onegw's EXECUTION role alias, declared in
+        # settings.template.yaml, which is the list llm-pi-ai actually routes
+        # from. It was not there once, and the run died
+        # `pi-ai provider "onegw" has no configured model "execution"` one step
+        # after the gate had already recorded the run on the dashboard.
+        #
+        # ONE rung. Two concrete ids shipped here so the ladder could escalate
+        # and neither could resolve; see cordis.patch.yml for the same note.
+        # Add a rung in the same edit that declares it in settings.template.yaml
+        # and prices it here, and `make check` names the one you missed.
         ladder:
           - { provider: onegw, model: execution }
-          - { provider: onegw, model: planning }
         stepsPerRung: 5
         escalateAfterFailures: 2
       actuator:
@@ -69,19 +107,29 @@
         guards: ["error-cascade", "tool-cycle"]
       maxSteps: 12
       costBudgetUSD: 1.00
-      # Prices keyed by the ladder's route keys (`provider/model`). Role
-      # aliases price identically — execution and planning are routing names
-      # for the same gateway account, so the marginal rates match until
-      # onegw publishes per-role pricing.
+      # Prices keyed by the ladder's route keys (`provider/model`), so they
+      # MUST match the ladder above. When they did not — when the ladder named
+      # role aliases and the price table named different aliases — the ceiling
+      # had no price for the route the loop actually took, and every run
+      # recorded `unpricedSteps: 1` against a ceiling that could therefore never
+      # stop anything.
+      #
+      # Estimates, and labelled as such: a gateway plan's marginal rate is not
+      # a published price. They exist so the cost ceiling has something to
+      # measure against; replace them with your account's rates.
       prices:
         onegw/execution:
           inputPerMTok: 0.14
           outputPerMTok: 0.28
           cacheReadPerMTok: 0.014
-        onegw/planning:
-          inputPerMTok: 0.14
-          outputPerMTok: 0.28
-          cacheReadPerMTok: 0.014
+      # The fallback prices a route the table above does not name. Without it
+      # an unpriced route is a hard error by design — the cost ceiling refuses
+      # to read $0.00 forever — so a ladder rung added without a price stops
+      # the run rather than quietly spending past the ceiling.
+      unpricedFallback:
+        inputPerMTok: 0.14
+        outputPerMTok: 0.28
+        cacheReadPerMTok: 0.014
     # Run history + Metrics, on by default. Every closed turn appends one
     # JSONL line; the dashboard's Metrics panel rolls the file up. Records
     # are evidence, never control — a failed append is a feed line, not a

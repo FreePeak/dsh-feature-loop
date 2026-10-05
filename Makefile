@@ -69,7 +69,7 @@ help: ## Show this help
 	@echo "dsh-feature-loop — make targets"
 	@echo
 	@echo "  containers (docker/docker-compose.yml, service '$(SERVICE)')"
-	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+	@grep -hE '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN {FS = ":.*?## "}; {printf "    \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 	@echo
 	@echo "  variables: PROFILE=$(PROFILE)  HOST_PORT=$(HOST_PORT)  DASHBOARD_PORT=$(DASHBOARD_PORT)"
@@ -142,7 +142,7 @@ image: ## Build the container image
 .PHONY: up
 up: ## Start the container detached, then print the URL and token
 	@$(export_key); \
-	  DSH_HOST_PORT=$(HOST_PORT) $(COMPOSE) up -d --build; \
+	  DSH_HOST_PORT=$(HOST_PORT) DSH_DASHBOARD_PORT=$(DASHBOARD_PORT) $(COMPOSE) up -d --build; \
 	  echo; \
 	  echo "waiting for the UI to answer on :$(HOST_PORT) ..."; \
 	  for i in $$(seq 1 45); do \
@@ -248,7 +248,12 @@ rmi: ## Remove the container image
 
 # ── checks (no container required) ─────────────────────────────────────────
 .PHONY: check
-check: test typecheck ## Run the test suite and the typecheck
+check: test typecheck ## Run the test suite, the typecheck, and the config drift checks
+	@node scripts/check-ci-shape.mjs
+	@node scripts/check-test-list.mjs
+	@node scripts/check-ladder-models.mjs
+	@node scripts/check-dead-exports.mjs
+	@node scripts/check-noop-config-keys.mjs
 	@echo "  check passed"
 
 .PHONY: test
@@ -256,55 +261,48 @@ test: ## Run the unit test suite (no network)
 	@node --experimental-strip-types --test test/*.test.ts 2>&1 | tail -8
 
 .PHONY: typecheck
-typecheck: ## Typecheck src/ (mirrors the CI file list)
-	@# Compiler selection first, so the reason is visible in the output.
-	@# Then the CI invocation. --ignoreConfig is required on TypeScript 6: a
-	@# tsconfig.json is present but files are named on the command line (TS5112),
-	@# and the explicit list is deliberate — it is the harness-free closure.
-	@tsc_bin=""; why=""; \
-	  if [ -x node_modules/.bin/tsc ]; then tsc_bin=node_modules/.bin/tsc; why="project tsconfig"; \
-	  elif [ -f "$(DSH_HARNESS)/node_modules/typescript/lib/tsc.js" ]; then \
-	    tsc_bin="node $(DSH_HARNESS)/node_modules/typescript/lib/tsc.js"; why="harness checkout"; \
-	  elif command -v tsc >/dev/null 2>&1; then tsc_bin=tsc; why="PATH"; fi; \
-	  if [ -z "$$tsc_bin" ]; then echo "  ! no TypeScript compiler found. Run: pnpm install"; exit 1; fi; \
-	  echo "  compiler: $$why"; \
-	  if [ "$$why" = "project tsconfig" ]; then \
-	    $$tsc_bin --noEmit && echo "  typecheck clean ($$why)"; \
-	  else \
-	    roots=""; \
-	    if [ -d "$(HOME)/node_modules/@types" ]; then \
-	      roots="--typeRoots $(HOME)/node_modules/@types --types node"; \
-	    fi; \
-	    $$tsc_bin --noEmit --ignoreConfig \
-	      --target ES2024 --module NodeNext --moduleResolution NodeNext \
-	      --strict --esModuleInterop --skipLibCheck --isolatedModules \
-	      --allowImportingTsExtensions $$roots \
-	      $(CI_FILES) && echo "  typecheck clean (CI file list)"; \
-	  fi
+typecheck: ## Typecheck src/ (whole src/ when the harness packages resolve, else CI's list)
+	@node scripts/check-typecheck-list.mjs
+	@bash scripts/typecheck.sh
 
-# The harness-free import closure, exactly as CI lists it.
-CI_FILES := src/agent-policy.ts src/budget.ts src/dashboard.ts \
-            src/dashboard-page.ts src/envelope.ts src/evidence.ts src/explainer.ts \
-            src/judge.ts src/laya.ts src/llm.ts src/messages.ts src/metrics.ts \
-            src/optimize.ts src/optimizer.ts src/phases.ts src/phase-budget.ts \
-            src/pipeline.ts src/sandbox.ts src/ship.ts src/yolo.ts \
-            src/observation.ts src/driver.ts \
-            src/brief.ts src/approval-bridge.ts src/prompts.ts src/questioner.ts \
-            src/refine.ts src/review.ts src/routing.ts src/runlog.ts \
-            src/runner.ts src/signals.ts src/spec.ts src/tools.ts
-
+# The harness-free import closure, exactly as CI lists it. Read from the
+# workflow rather than repeated here: this file is a COPY of that list, and a
+# copy is how it drifted — `approvals.ts`, `watcher-tl.ts` and `change-event.ts`
+# were in neither. One source, and `check-typecheck-list` fails when it stops
+# covering src/. The harness-coupled modules (plugin, index, remote, command,
+# change-event) are checked by the `project tsconfig` branch above.
+CI_FILES := $(shell sed -n '/- name: tsc --noEmit/,$$p' .github/workflows/ci.yml \
+             | grep -o 'src/[a-z0-9-]*\.ts' | tr '\n' ' ')
 .PHONY: integration
 integration: ## Run the real-DSH integration spec (needs the harness checkout)
 	@bash test/integration/run.sh "$(DSH_HARNESS)"
 
+
+.PHONY: profile
+profile: ## Create a DSH profile that actually runs the loop (NAME=… PORT=… DASH=… APP=headless)
+	@bash scripts/make-profile.sh $(or $(NAME),feature-loop) \
+	  $(if $(PORT),--port $(PORT)) $(if $(DASH),--dashboard-port $(DASH)) \
+	  $(if $(filter headless,$(APP)),--headless)
 .PHONY: dashboard-bundle
 dashboard-bundle: ## Rebuild the vendored assistant-ui bundle into assets/ (commit the result)
 	@node web/build.mjs
+
+.PHONY: e2e-container
+e2e-container: ## Probe the CONTAINER's own gate: refused without an answerer, allowed with one (needs a running `make up`)
+	@test -n "$$(docker ps -q --filter 'name=^$(SERVICE)$$')" || { \
+	  echo "  no container named $(SERVICE) — start it with: make up"; exit 2; }
+	@docker cp test/probe-container.mjs $(SERVICE):/tmp/probe-container.mjs
+	@docker exec $(SERVICE) sh -lc 'cd /tmp && node probe-container.mjs'
 
 .PHONY: e2e-dashboard
 e2e-dashboard: ## Click the real dashboard page in a real browser (needs Playwright + Chromium; opt-in, not part of verify)
 	@node --experimental-strip-types test/e2e-dashboard.mjs allow && \
 	 node --experimental-strip-types test/e2e-dashboard.mjs reject
+
+.PHONY: e2e-in-ui
+e2e-in-ui: ## Click Allow/Reject on the in-UI page against a RUNNING profile (DSH_URL=… PROOF_DIR=…)
+	@test -n "$(DSH_URL)" || { echo "DSH_URL is required: paste the 'dsh web:' line from the server log"; exit 2; }
+	@node test/e2e-in-ui.mjs allow && node test/e2e-in-ui.mjs reject
 
 .PHONY: compose-check
 compose-check: ## Validate the compose file

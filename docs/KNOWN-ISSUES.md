@@ -2,7 +2,8 @@
 
 Everything below was found by running the plugin in a live harness, not by
 reading code. Each entry says what you observe, why it happens, and what fixes
-it. Three are fixed; two are product warts that remain.
+it. Everything found by running it is now fixed; what remains below is the
+environment list, which is about the machine rather than the product.
 
 The headline: **an approval that appears not to work is usually not the gate.**
 In every case observed here the gate was either never loaded at all, or loaded
@@ -29,7 +30,47 @@ package to that array — idempotently, and touching only that one array so the 
 is the change rather than a reformat. Verified on the `web` profile: 191 → 194
 rows, all three `feature-loop*` rows composing, zero incompatible-row warnings.
 
+### 1a. Nothing in this repo ran on the model it was supposed to run on
 
+**Observed:** every deployment and the demo ran on concrete model ids —
+`opencode/deepseek-v4.1-flash`, then `xai/grok-4.7`, and `xiaomi/mimo-v2.5` in
+the demo — while onegw's own `execution` EXECUTION role alias sat declared in
+`/v1/models` and unused. Switching the default to `execution` then produced a
+run that died on step 1: `404 unknown provider onegw`.
+
+**Why, in two parts that had to be found separately:**
+
+1. *The alias was not running* because commit `d9464b9` fixed a real
+   `UNKNOWN_MODEL` bug — `execution` named in a ladder, absent from the
+   deployment's own `models:` list — by replacing the alias with concrete ids
+   everywhere, including the demo. The fix was correct for the bug and left the
+   repo on a model nobody here had ever run. "Resolves" and "tested" are
+   different questions, and only the first one had a check.
+2. *The alias could not run from the demo* because a route key is not a gateway
+   id. Every route here is `provider/model` — that is what a ladder rung names
+   and what the price table keys on — but onegw's role aliases sit at the top
+   level of its id space:
+
+   ```
+   POST /v1/chat/completions {"model":"execution"}        -> 200
+   POST /v1/chat/completions {"model":"onegw/execution"}  -> 404 unknown provider onegw
+   ```
+
+   The plugin path never hits this: `llm-pi-ai` resolves a rung through its own
+   catalog and puts `entry.id` on the wire. Only the standalone transport sent
+   the route key verbatim.
+
+**Fix:** one tested route, `onegw/execution`, in `cordis.patch.yml`,
+`docker/profile.patch.yml`, `docker/settings.template.yaml`,
+`scripts/make-profile.sh` and the demo — with `execution` declared in every
+`models:` list so the alias resolves, each price table rekeyed to match, and
+`TESTED_ROUTE` in `scripts/check-ladder-models.mjs` asserting that no shipped
+ladder names anything else. `createOnegwClient` drops the `onegw/` prefix at the
+transport, and `test/llm.test.ts` pins that.
+
+**Verified:** `bash demo/run.sh` -> `goal-met - 4 steps - $0.0039`, every step
+labelled `onegw/execution`, against the live gateway. Both new assertions were
+proven to FIRE by reverting each one and watching it fail, not merely to pass.
 
 ### 1. The stylesheet restyled the whole host UI
 
@@ -146,47 +187,923 @@ store key for a `_@deepseek-ai+…` suffix.
 
 ---
 
-## Open — product warts
+## Two dead branches in one module, found by asking a different question
 
-### 5. `POST /api/approvals/:id` ignores the query token
+Last round's finding came from asking *"is this documented behaviour actually
+wired"*. Asking it again over the whole policy surface — enumerate every
+exported function and method in `src/`, count call sites outside its own
+definition — found two more, and the second one is the better story.
+
+### 14. A rung change was recorded and never announced
+
+`escalationForStep` was exported from `src/plugin.ts` and documented as
+*"announce an escalation, if the ladder moved the route this step"*. No caller
+outside the export list. So a DSH deployment moved rungs without the **model**
+being told: the dashboard showed `ROUTE` changing, the transcript showed
+nothing, and a model handed a harder turn with no warning is a model reasoning
+from a conversation that has suddenly stopped making sense. The standalone
+runner has done this correctly all along.
+
+The channel is `agent/pre-step`, not `agent/request`, and getting that wrong is
+instructive: the first attempt put the notice in the `agent/request` handler
+and **typechecked cleanly**, because that hook returns an `LlmCallConfig`
+(`{provider, model}`) — it has no `messages` for a caller to splice, so a
+notice appended there is dropped without any error anywhere. A notice that
+disappears quietly is exactly the failure this branch existed to prevent, in a
+place nobody was looking.
+
+### 15. `budget.stopNotice` — deleted rather than wired
+
+`LoopBudget.stopNotice` was a second, shorter wording of the message
+`budgetStopText` in `messages.ts` already builds, and which both the runner and
+the plugin actually use. It had no caller. It is **deleted**, not wired: two
+wordings for one event is drift waiting to happen, and the one that reached a
+model was the one nobody had been reading.
+
+### 16. The settings page stored every value and applied none of them
+
+**Observed:** `~/.config/dshloop/config.yaml` was written with a header saying
+
+```
+# The dshloop CLI reads this same file, so a change here applies to both
+# surfaces at the next plugin load.
+```
+
+Neither half is true. There is no `dshloop` CLI — the package declares no
+`bin`, and the runner entry point is `demo/cli.ts`. And `apply()` builds its
+policy from the **patch row alone**: `grep -n 'readSettings\|config.yaml\|settingsPath' src/plugin.ts`
+returns nothing. The page's own confirmation read *"Saved. Values apply at the
+next reload of this plugin."*
+
+**Verified, not inferred.** Saving `gateMode: deny` and `read: always-approve`,
+then building the policy exactly the way `apply()` does:
+
+```
+settings file says        : {"confidenceThreshold":0.99,"gateMode":"deny","gatePolicies":{"read":"always-approve"}}
+policy.gateMode (from row): ask
+gate on `read`           : undefined     ← proceeds, no review
+```
+
+**Why it matters more than a stale comment:** a person sets
+`write: always-approve` on that page, sees it echoed back in the Status tab
+(`buildStatus` merges the file over the row, so the page faithfully displays a
+value nothing enforces), and watches a write sail through. The one file a
+person would think is the way to change this plugin's behaviour is a file that
+changes nothing about it.
+
+**Fixed by saying so, in the two places a person reads:**
+
+- the file's header now names what reads it (`buildStatus`) and what does not
+  (`apply()`), with the patch row as the only place a setting takes effect;
+- the page states it *before* the fields rather than in a dialog after a save —
+  the person who needs to know is the one about to type — and the save
+  confirmation says the same thing.
+
+The values are still stored and still validated. That is deliberate: they are a
+correct record of what the page showed, and wiring `apply()` to them is a small,
+well-scoped piece of work that this note now describes honestly.
+
+### It is now a check, and writing it took five wrong rules
+
+`scripts/check-noop-config-keys.mjs` walks `src/index.ts`, `README.md` and the
+two shipped YAML patches, takes the keys `parseOptimizeConfig` accepts and the
+ones `src/plugin.ts` consults, and fails when a key that is consulted by no hook
+is documented as doing something.
+
+It took five attempts, and every wrong one was a *false result*, which is the
+only kind worth recording because a false negative is invisible:
+
+| attempt | what it got wrong | how it showed |
+|---|---|---|
+| 1 | every `\b` written as a literal backslash-b inside a template | no word boundary matched, so **nothing** could fire |
+| 2 | `READ` matched only `reads\b` | `read for Metrics` — the phrase a real doc comment uses — missed |
+| 3 | `READ` tested before `NOOP` | `READ BY NOTHING` counted as a promise, so it passed the exact claim it was written to catch |
+| 4 | judged only *uncommented* setting lines | `# judge: chat   # who scores across passes` is commented out and still a claim, so the false claim passed again |
+| 5 | judged prose and vocabulary lines | `--judge laya` in a shell command read as a promise — a false *positive* |
+
+Attempt 5 is the one that decided the rule, and it is a judgement rather than a
+pattern, so it is worth stating as one: **a setting line is any line matching
+`key:`, commented or not.** A commented `# judge: chat` is documentation claiming
+the key does something; if the key does nothing, the claim is wrong whether or
+not it is a line someone would copy.
+
+Verified by re-introducing both shipped false claims, in the exact files and
+wording they shipped in:
+
+```
+README.md: a comment block sets 'judge' and says it does something,
+  but no hook reads it (src/plugin.ts has no optimize?.judge). the optimize example
+  promises behaviour that does not exist. Wire it, or say "read by nothing".
+```
+
+The seven matching cases are asserted inside the script, including both shipped
+false claims and both corrected labels — the defect class now has a test rather
+than a note.
+
+### A check CI stopped running is worse than no check — so CI's shape is checked too
+
+Five checks now each claim a place they run, and every one of those claims is a
+thing that can silently stop being true: a step gets deleted, a target gets
+narrowed, a job starts installing. The script still passes on every machine and
+protects nothing, and the failure is invisible because the script itself is
+fine.
+
+`scripts/check-ci-shape.mjs` closes that, and it is the FIRST step of the `test`
+job because every other check is a claim about that job:
+
+| claim | verified by |
+|---|---|
+| every `scripts/check-*.mjs` is invoked by `ci.yml` | deleting a step → fails, naming the script |
+| every one is also in `make check` | deleting a line → fails, "make check must not be quietly weaker than CI" |
+| every invocation names a file that exists | a typo in a step → fails, naming the missing file |
+| the `test` job installs nothing | adding `npm install` there → fails, with the reason that install is what the list is testing |
+
+The fourth one found its own bug on the first run. The job-extraction regex
+stopped at the first two-space `name:` line, and on this file that matched at a
+point past the end of the `test` job — so the check passed on a job that DID
+install. The job is now sliced by its own boundaries. That is the same lesson
+the other four checks taught, and it is the reason this one asserts the
+behaviour rather than the shape: a regex that silently examines nothing looks
+exactly like a regex that found nothing wrong.
+
+### And it is wired, because a check nothing runs is a comment
+
+It is a step in the `test` job and a line in `make check`, which is the same
+argument as the CI-list checks: four scripts in this repo are only worth having
+because something fails when they stop being true.
+
+### The check that found a fourth on its first run
+
+`scripts/check-dead-exports.mjs` walks `src/`, `test/`, `web/` and `demo/cli.ts`
+and fails when an exported symbol is referenced by nothing outside its own file.
+Its rules are stated in its header: the test suite counts (a test is a
+specification, and a symbol no test touches is a symbol nobody has checked),
+`src/index.ts` counts because it *is* the published entry point, and types are
+not checked because an unreferenced exported type is documentation, not dead
+code.
+
+Run on the tree as it stood it found a **fourth**: `answerLive` in
+`src/remote.ts`, which the committed version had been suppressing in a
+`BY_CONSTRUCTION` allowlist with a justification that read well and was not
+true — the remote class's `answer()` calls it one line away. The export was
+dropped rather than the suppression widened, because a helper with exactly one
+caller in its own file does not need to be part of anything's surface.
+
+That is the point of writing the check *after* the findings rather than
+instead of them: three rounds of noticing by hand, and the script that automates
+the noticing immediately found something I had already, wrongly, excused.
+
+The check is on a bare clone with no `node_modules` and passes, which matters
+because it is the only one of the four that needs no toolchain at all.
+
+### The method, since it now has four instances
+
+Counting call sites is mechanical and caught all three. A grep for a symbol
+finds its *definition*; it does not find the absence of a caller, and a
+definition with a doc comment above it reads exactly like a feature.
+
+### And the check that found them, run where CI runs it
+
+A check is worth exactly as much as the environment it survives, so this one
+was run on a **bare clone with only `npm install`** — no harness checkout, no
+`DSH_HOME`, and on a second pass with a `$HOME` that has no `.dsh` at all:
+
+| | Result |
+|---|---|
+| All three drift checks, `HOME=/tmp/empty-home` | pass, 0 local profiles |
+| CI's exact test list, 18 files | **277 pass, 0 fail** |
+| CI's exact typecheck command | exit 0 |
+| `make check` on the bare clone | green |
+| Does it write to a developer's machine? | **No** — scripts byte-identical after a run, and no `~/.dsh` created |
+| Summary line names its half? | now: `3 shipped specs + 18 local profile(s) under ~/.dsh/profiles` |
+
+That last row was a real fix and not a nicety. The script runs in CI *and* on a
+developer's machine, and it was printing `18 local profile(s)` into a CI log
+where there are none and the shipped configs are the whole claim. A number in
+a log that does not mean what the log is about is a small lie, and this script's
+whole value is that it is not one.
+
+## `escalateAfterFailures` was configured everywhere and driven by nothing
+
+**Observed:** every shipped profile sets `escalateAfterFailures: 2`, and the
+`ModelLadder` class documents `recordFailure()` as "driven by the loop's step
+outcome". `grep -rn recordFailure src/` returned **the definition and no caller** —
+not in `runner.ts`, not in `plugin.ts`, nowhere.
+
+**Why that is a real defect and not a missing nicety:** the ladder could
+therefore only ever climb on `stepsPerRung`. A run that failed fast and early —
+the exact case the failure signal exists for, and the one that is cheapest to
+fix when the model is too weak for the task — stayed on the cheap model for its
+entire life, and only moved up when it ran out of steps rather than when it ran
+out of capability. `escalateAfterFailures` was a config key that read as a
+feature and behaved as a comment.
+
+**Fixed in both paths, from the same reading of a failed step:**
+
+- `runner.ts` records the outcome after the tool loop: a tool that returned
+  `ok: false`, arguments that would not parse, an unknown tool, or an operator
+  abort. A step with *no* tool calls counts as a success — the model spoke and
+  asked nothing, which is a step that happened, not one that broke.
+- `plugin.ts` records it where it commits the previous step's observation, which
+  is the only place a DSH deployment knows the outcome of a step it did not run
+  itself. A denied call is the failure signal there.
+
+Both are pinned by a test that drives the real loop with `stepsPerRung: 99`, so
+the *only* thing that can move the ladder is the failure signal — and the exact
+sequence is asserted, because a ladder that climbed on the first failure would
+pass a weaker "the route changed" check. Both tests were verified to fail with
+the recording removed.
+
+And this is the second time in two rounds that a documented-but-uncalled
+behaviour turned out to be dead code. `grep -rn` for the method finds the
+definition; it does not find the absence of a caller.
+
+## The same class, in the DOCS this time: a key documented as read
+
+`check-dead-exports.mjs` catches a symbol nothing calls. It cannot catch a key
+nothing reads, because the key IS read — by the validator. `parseOptimizeConfig`
+validates all five keys of the `optimize:` block, so every one of them looks
+live to a reference search, to a reader, and to the dead-export check.
+
+Then the claim, in three places at once:
+
+> "`derive` and `history` drive the run-history recording and the dashboard's
+> Metrics payload"
+
+`grep -n 'optimize?.derive' src/plugin.ts` returns **no match**. `history` alone
+does all of that, and did before `derive` was ever written. The other three
+(`loops`, `judge`, `totalBudgetUSD`) were honestly labelled "accepted,
+intentionally not consumed"; `derive` was not, because the sentence above
+claimed otherwise.
+
+That is the expensive shape again, in the place documentation usually is
+trusted: a person reads that line, sets `derive: true`, watches nothing happen,
+and concludes the optimizer is broken rather than that a flag does nothing.
+
+Corrected in the three places it was claimed — `Config.optimize`'s doc comment,
+`OptimizePolicyOptions.derive`, and the example in `README.md` and
+`cordis.patch.yml` — each now saying plainly that it is read by nothing and
+where to look. The keys are kept, not deleted: a deployment that sets one
+should not start failing validation when it is eventually honoured.
+
+**A key that is validated and then ignored is a documented no-op. A key that is
+validated, ignored, and documented as read is a lie in the one file people
+trust without checking.**
+
+## Three rounds running: the same defect class, and a check for it
+
+Three separate findings in three rounds were the same shape — **a documented
+behaviour with no caller**:
+
+| Symbol | Documented as | Actually |
+|---|---|---|
+| `ModelLadder.recordFailure()` | driven by the loop's step outcome | called only by its own unit test |
+| `escalationForStep()` | announce an escalation | exported, never called |
+| `LoopBudget.stopNotice()` | the message for a ceiling stop | a second wording, never called |
+
+The first one is the expensive shape: `escalateAfterFailures: 2` is in **every
+shipped profile**, so a config key that reads as a feature and behaves as a
+comment is a thing people copy. The ladder could only climb on step count, so a
+run that failed fast and early — the cheapest case to fix by moving up a rung —
+stayed on the cheap model for its whole life.
+
+`grep -rn recordFailure src/` returns the definition. It does not return the
+**absence of a caller**, and nothing else in the tree is going to notice that.
+`scripts/check-dead-exports.mjs` does, on every run, in CI and in `make check`:
+it fails when `src/` exports a symbol nothing outside the defining file can
+reach, and names both.
+
+Five symbols were file-local and now say so (`BUGFIX_PHASE`, `FEATURE_PHASE`,
+`CHANGE_EMIT_INTERVAL_MS`, `DEFAULT_THRESHOLDS`, `DERIVED_MIN_STEPS`) — an
+`export` on a constant read once by its own file is a public surface with no
+user. Three are exported BY CONSTRUCTION and are named as such in the script:
+`FeatureLoopRemote` is found by `markRemote()` at module load and must not be
+imported, `answerLive` is the seam a socket-free caller drives, and
+`attachApprovalAnswerer` is what an embedding host mounts on a context it built.
+
+It is a regex over the tree, not an import graph, and it over-reports: a name
+mentioned in a comment counts as a caller. That is the safe direction — the cost
+of a miss here is a config key that lies, and the cost of a false positive is a
+line of `export` nobody needed anyway.
+
+## A config key that read as a feature and behaved as a comment
+
+**Observed:** `escalateAfterFailures: 2` is set in every shipped profile, and
+`ModelLadder.recordFailure()` is documented as *"driven by the loop's step
+outcome"*. `grep -rn recordFailure src/` returned the definition and **no
+caller** — not in `runner.ts`, not in `plugin.ts`, nowhere. `test/budget.test.ts`
+was the only thing that ever called it, and a test is not a loop.
+
+So the ladder could only climb on `stepsPerRung`. A run that failed **fast and
+early** — the exact case the failure signal exists for, and the cheapest one to
+fix when the model is too weak for the task — stayed on the cheap model for its
+entire life, and only moved up when it ran out of steps rather than when it ran
+out of capability. The key read as a feature and behaved as a comment.
+
+Fixed in both paths from the same reading of a failed step: a tool returning
+`ok: false`, unparseable arguments, an unknown tool, or an operator abort. **A
+step with no tool calls counts as a success** — the model spoke and asked
+nothing, which is a step that happened, not one that broke. In the plugin, the
+signal is a denied call, recorded where the previous step's observation is
+committed — the only place a DSH deployment knows the outcome of a step it did
+not run itself.
+
+Two tests drive the real loop with `stepsPerRung: 99`, so the failure signal is
+the only thing that can move it, and both assert the exact sequence: a ladder
+that climbed on the *first* failure would pass a weaker "the route changed"
+assertion.
+
+## The ladder check now reads your profiles too — and two of them are drifting
+
+`scripts/check-ladder-models.mjs` used to read only the three files this repo
+ships. It now reads **every profile under `$DSH_HOME/profiles`**, because a
+local profile is a directory someone copies and never touches again — and the
+two profiles this developer booted by hand still carried `execution`/`planning`
+long after the shipped configs were fixed.
+
+**And the severity was wrong when I first wrote it.** I reasoned that an
+undeclared *upper* rung is latent — step 1 always uses the first rung — so it
+warned and exited 0. That reasoning was wrong in the only way that matters, and
+it was wrong because nobody made the loop climb. `stepsPerRung: 1` on that very
+profile, one task, and the run died:
+
+```
+pi-ai provider "onegw" has no configured model "planning"     (UNKNOWN_MODEL)
+```
+
+**once a human had already approved a write.** `planning` is not a corner case;
+it is the ladder doing the one thing a ladder is for, on a run that had
+genuinely stalled. Two short tasks had reached step 1 and nothing else, which is
+exactly why the bug survived as long as it did. Both profiles are fixed, and an
+undeclared rung is now an **error** in a local profile as well as in the shipped
+configs — proven by deleting `planning` from a copy and watching the check exit
+1.
+
+Reported as:
+
+
+```
+profile feature-loop: ladder rung onegw/planning names a model this profile
+  does not declare.
+  declared in its llm-pi-ai row: execution
+  the first rung is what step 1 uses, so this hides until the loop climbs —
+  and then the run dies UNKNOWN_MODEL mid-run, after a human has already
+  approved work. Declare it or remove the rung.
+```
+
+**Latent is the word, and it was measured.** A short task on that profile
+answers fine — the model said `hello` — and a gated write hits the gate and
+stops there. The `planning` rung is only climbed to on evidence (steps spent,
+consecutive failures), and neither of those tasks produced it. So an undeclared
+*upper* rung is a real defect and **not** a reason to fail a check that has no
+evidence it was reached: it warns and exits 0. The shipped configs still exit 1
+(proven by breaking `cordis.patch.yml` and watching).
+
+Three other corrections the same pass forced, all of which had the check
+reporting nonsense on the first run:
+
+- `declaredModels` swept in the patch's own **entry ids** (`- id: llm-pi-ai`),
+  so every profile looked like it declared everything. It now reads a `models:`
+  list and its items, in both the block and the inline form.
+- A profile with no `prices:` at all was flagged for missing prices. One with no
+  table has no cost ceiling to honour; `unpricedSteps` is the honest reading.
+- A profile with no `llm-pi-ai` row at all resolves through the harness
+  default, where these rungs are unreachable for a reason the check cannot see.
+  It now says *skipped* rather than asserting a failure it has no evidence for.
+
+A check that cannot fail is worse than no check, and this one did.
+
+### 16. c57f2d8's fix silenced the noise and the news
+
+**Follows §15, and is the other half of the same fix.**
+
+§15 verified that a brief which is off by default no longer prints
+`unavailable` on every card. Reading the change rather than only running it
+shows it silenced one case too many:
+
+```diff
+-  if (ask.briefState === 'none') return null
++  if (ask.briefState === 'none' || ask.briefState === 'failed') return null
+```
+
+`failed` is not "briefs are off". It is "briefs were asked for and the call
+did not come back" — so the new version also silenced a **real** failure on
+every deployment that HAS enabled `dashboard.brief`, which is exactly the
+deployment whose operator needs to hear that the model call failed.
+
+**The distinction is in the config, not the card.** `dashboard.brief.enabled`
+is part of the `config` the status payload already carries
+(`buildStatus` → `DashboardSource.status()`), so the page can ask. It now does:
+
+- `briefsOn === false` → `failed` renders nothing. The noise is gone, for the
+  reason it was noise.
+- `briefsOn === true` → `failed` renders *"Review brief unavailable — the
+  approval itself is unaffected."* The news is back.
+- `status()` absent (the standalone loopback dashboard has none) → treated as
+  unknown and `failed` keeps rendering, which is the old behaviour: on a
+  surface that cannot tell us, silence for a feature that may be on is the
+  worse default.
+
+Verified live, both directions, against `~/.dsh/profiles/feature-loop`:
+
+| deployment | brief elements | says `unavailable` |
+|---|---|---|
+| briefs off (the shipped row) | 0 | no |
+| `brief.enabled: true`, model returns a brief | 1 (the brief text) | no |
+
+**The failed-brief branch is then asserted, not left to the reasoning that
+produced the bug.** Reasoning got this wrong once already, so it does not get
+to be the regression test: `test/assistant-ui.test.ts` pins the decision as a
+table of `(briefState, briefsOn) → rendered`, covering all four cases —
+including `briefsOn: undefined`, the standalone loopback dashboard where
+`DashboardSource.status()` does not exist and the page must therefore keep
+rendering a failure rather than assume briefs are off.
+
+Two of the three branches are observed in a browser; the third is a table.
+That is what is claimed.
+
+**All three are now observed.** The setup is two edits, not three: on the
+**web** profile, `dashboard.brief.enabled: true` with an unresolvable model id.
+The dead judge endpoint turned out to be unnecessary — `resolveBriefExplainer`
+needs a gateway *key*, which the profile has, not a reachable System One.
+
+Observed, in a browser, on `~/.dsh/profiles/feature-loop`:
+
+```
+briefStates=["failed"]   briefDOM=["brief-note error"]
+text: Review brief unavailable — the approval itself is unaffected.
+```
+
+Frame at [`evidence/brief-failed-20261002.png`](evidence/brief-failed-20261002.png).
+The live profile was restored afterwards (`brief:` count back to 0) and the proof
+file removed.
+
+**Getting there found a real gap in the fix itself.** The page asked
+`DashboardSource.status()` whether briefs were enabled, `web/app.tsx` declared
+it, and `useBriefsEnabled` called it — and `remoteSource()` in `web/entry.tsx`,
+which is what actually backs the in-UI page, **never forwarded `status()`**. So
+the answer was permanently "unknown" on the one surface where the question
+mattered, and `unknown` is defined to render the failure line... which is why
+this branch still renders correctly by accident rather than by wiring.
+
+The remote has had `status()` since the settings page shipped. `remoteSource`
+now forwards it. Had the observation not been made, the page would have shipped
+with a three-way branch whose middle case was dead on the only surface that has
+briefs at all — and the unit table would have kept passing.
+
+**The lesson, and it is the sibling of §14's.** A fix that stops a false
+positive will happily create a false negative, and this one was verified only
+in the direction that had been reported. Reading the diff found the other
+direction in the same three seconds it took to run the test that could not.
+
+### 15. The brief fix that the stale bundle had been hiding is now verified LIVE
+
+**Follows §14, and it closes the loop on that entry.**
+
+§14 established that `c57f2d8`'s fix — a brief that is off by default was
+rendering `unavailable` as a red line on **every approval card** — shipped
+without a rebuild, so the committed artefact never contained it. Re-running the
+in-UI check against a live profile AFTER the rebuild, twice, with the gate
+holding both times:
+
+```
+brief elements on the card: 0 (must be 0 — briefs are off by default)
+mentions "unavailable": false
+card: APPROVAL REQUIRED | asked 1:58:56 PM | write | RUN | session-7c3def3e-…
+allowed  → brief-proof.txt written
+```
+
+That is the assertion the code change was for, expressed the way the failure
+looked: **zero brief elements on a card whose deployment never enabled briefs.**
+The fix is not just committed, it is observed — which is the first time on this
+branch that a change I made to `web/app.tsx` has been verified in a browser
+rather than inferred from a green suite.
+
+It is also the second consecutive time the artefact, not the source, was the
+problem. Worth noting for whoever reads this file next: two of the fourteen
+entries here would not have been written at all if anyone had compared
+`assets/` against `web/` before writing a paragraph about it.
+
+### 14. The staleness check had a documented ceiling that a commit walked straight through
+
+**Found 2026-10-02.** `test/assistant-ui.test.ts` compared the bundle's
+recorded **size** against the file, and its comment said plainly that a one-line
+edit inside a 462 kB bundle could round to the same kB and slip through. That
+was documented, believed, and wrong.
+
+It was walked through in `c57f2d8` — a commit on this branch, three weeks after
+the check landed:
+
+```
++  if (ask.briefState === 'none' || ask.briefState === 'failed') return null
+```
+
+A brief that is off by default was rendering `unavailable` as a red line on
+**every approval card**, on every deployment that never enabled it. The fix
+shipped without a rebuild. `client.js` changed by two lines inside 462 kB, the
+size check passed, and the committed artefact did not contain the fix.
+
+**Fixed with the thing the ceiling said was needed.** `web/build.mjs` now
+records `sources-sha256:` — a hash over the five source inputs, in a fixed
+order — and the test recomputes it. Eight lines of `node:crypto`, no dependency,
+and it fails on the first character of any source change:
+
+```
+the bundle is stale: web/ has changed since it was built. Run
+`make dashboard-bundle` and commit the result — otherwise the page serves the
+old code while every other check passes.
+```
+
+The size check stays, as the other direction: an artefact edited or truncated
+without a rebuild. It fails differently ("does not match the size"), and both
+were proven to fire by doing exactly that.
+
+**The lesson, and it is the sharpest one in this file.** A ceiling you have
+written down is not a decision — it is a bet that the code around you will not
+change while it holds. This repository changed that line in the same week, in a
+commit whose subject line is about config keys lying to people. The comment was
+honest; the honest comment was still a gap, and the gap was the size of the
+thing the check exists to catch.
+
+### 13. A "skipped" profile is not a checked profile
+
+**Found 2026-10-02.** `scripts/check-ladder-models.mjs` reported four of the
+eighteen local profiles as `skipped — no models declared here` and moved on.
+Two of them (`flsdk`, `headless`) declare a ladder rung naming `onegw`, and
+**neither declares an `llm-pi-ai` row, and `~/.dsh` declares none either** — the
+composed `--dump-config` for `flsdk` shows the row with no `config:` at all.
+
+So those profiles carry exactly the defect this check was written to find — a
+rung whose provider is not configured — and the check called it *skipped*.
+
+**Why the earlier version was right to be silent, and why it is now wrong:**
+it could not read a profile's `settings.yaml`, so it could not know whether
+`onegw` was configured there. That is still true. What it CAN know is which
+PROVIDER the rungs name, and that `dsh-base` ships
+`agent-default-model: deepseek-official/deepseek-flash` — so a rung naming any
+*other* provider is unresolved unless something outside this file says
+otherwise. The check now names the rung, names the provider, and says the one
+sentence that matters:
+
+```
+profile flsdk: rung onegw/opencode/deepseek-v4.1-flash names provider onegw,
+and this profile declares no llm-pi-ai row of its own. Its model list lives
+in settings, which this check does not read — verify that provider is
+configured there, or the run dies UNKNOWN_MODEL.
+```
+
+Two profiles (`flheadless`, `flproof`) name `deepseek-official`, which IS the
+harness default, and are correctly silent. So the line distinguishes the two
+cases by arithmetic, not by a guess.
+
+**The lesson, which is now four deep in this file:** a check that cannot verify
+a thing must not be silent about it, because silence and a pass are
+indistinguishable in an exit code. Every previous instance here was a skip
+(`no models declared here`, `change-event.ts` in the typecheck list, an
+exclusion note that was never tested) read as "nothing to see".
+
+Not fixed in the profiles themselves — they are the developer's own machines and
+not this package's business. Fixed in the check, which is.
+
+## CLOSED 2026-10-02 — CI was running 138 of 277, and said so once asked
+
+**Found 2026-10-01. Cause never identified. Closed by measuring instead.**
+
+The `test` job now runs **one file per process in a shell loop** and sums the
+per-file `# pass` counts:
+
+```
+== 277 tests passed across 19 files          ← run 36971963637, SHA 144be86
+```
+
+277 in CI, 277 locally, 19 files either way. The batched form WAS the cause,
+whatever the mechanism — and CI no longer depends on knowing it.
+
+The loop earns its place for a reason unrelated to this puzzle: with 19 paths in
+one `node --test`, a file that fails to *load* takes the other eighteen with it.
+One file, one process, one line of output. Verified locally both ways: the loop
+totals 277, and a deliberately failing file stops it there with `# fail 1`.
+
+**The original report, kept because the measurement is the useful part:**
+
+`ci.yml`'s `test` job names 19 files and its own summary reports:
+
+```
+# tests 138   # pass 138   # fail 0   # suites 8
+```
+
+The same command, on the same tree (`79b07ef`), on the **same node version**
+(v22.23.3, downloaded and re-run to eliminate that), with no `node_modules`
+anywhere — reproduces exactly here at **277 tests, 0 fail**.
+
+What has been ruled out, one at a time:
+
+| hypothesis | how it was eliminated |
+|---|---|
+| CI is on an older node | CI logs `node: v22.23.3`; installed and ran locally — 277 |
+| the `test` job is on a stale SHA | the run's `headSha` is `79b07ef`, this branch's HEAD |
+| the tree differs | `git diff 79b07ef -- test/` is empty |
+| the step's multi-line continuations break | pasted verbatim into a shell; 277 |
+| a missing `node_modules` skips files | `/tmp` copy of the tree with no `node_modules`; 277 |
+| CI is failing and hiding it | `# fail 0`, `# cancelled 0` |
+| the checker's count is the wrong one | it counts list MEMBERS, and the list has 19 |
+
+The 139-test gap is exactly the tests of the eight files
+`agent-policy`, `approvals`, `budget`, `judge`, `metrics`, `policy`,
+`questioner`, `runner` — all present on ci.yml's run step, none of them
+appearing anywhere in the CI log. The other eleven files' tests are all
+there.
+
+The exact split, re-measured on run `36971045027` (SHA `a406b90`):
+
+| ran in CI | contributed nothing |
+|---|---|
+| approval-bridge, assistant-ui, brief, envelope, explainer, optimize, optimizer, refine, runlog, start-target, tools | agent-policy, approvals, budget, judge, metrics, policy, questioner, runner |
+
+The seven hypotheses eliminated, and how, are the durable part of this
+entry. Seven is a lot of wrong guesses, and each one is a shape the next
+person would otherwise try again:
+
+| hypothesis | how it was eliminated |
+|---|---|
+| CI is on an older node | CI logs `node: v22.23.3`; downloaded and ran it — 277 |
+| the job ran a stale SHA | the run's `headSha` is this branch's HEAD |
+| the tree differs | `git diff <sha> -- test/` is empty |
+| the multi-line continuations break | pasted verbatim into a shell; 277 |
+| a missing `node_modules` skips files | a `/tmp` copy with none; 277 |
+| CI is failing and hiding it | `# fail 0`, `# cancelled 0` |
+| the checker's count is the wrong one | it counts list MEMBERS; the list has 19 |
+
+And what made it visible at all: **reading the CI log instead of its exit
+code.** Every check in this repo reports through its exit status, so a job that
+runs half its list is a job that reports SUCCESS — and nothing else in the
+tree could ever have said so.
+
+The file list was never the problem: it is correct, and 19 of 19 files exist
+in the checked-out SHA.
+
+## Re-checked 2026-10-01 — the permission-preset trap, and what actually triggers it
+
+`docs/SETUP.md` and `docs/RUNBOOK-SERVER.md` both lead with the same warning:
+if `permission.defaultPreset` is `danger-full-access`, a feature-loop `ask` is
+refused with `Error: the user rejected tool "X"` before any UI is consulted, so
+no panel appears. Both describe it as the step that "trips everyone up".
+
+**Re-tested on a fresh profile** (DSH 0.2.0-rc.1, this machine, whose global
+`~/.dsh` has no `permission` section at all):
+
+| Surface | Result |
+|---|---|
+| Mode chip | **`Workspace Write`** — not Danger |
+| Feature Loop page card | `APPROVAL REQUIRED · write · REVIEW REQUESTED (policy): write: irreversible is always approved by a human.` |
+| **The harness's own composer panel**, on a plain conversation | `Waiting for approval · REVIEW REQUESTED (policy): write: irreversible is always approved by a human. · Reject · Allow once` |
+| Pending ask | the file was not written, correctly — still awaiting a human |
+
+So the trap is real, and it is **not** the property the docs implied — it is a
+property of the *settings*, not of a fresh profile or of this plugin. A new
+profile on a machine without a `permission` section comes up correct, and the
+harness's own composer panel does render the plugin's reason verbatim.
+
+The second row is the one worth having: this plugin's whole premise is that it
+hosts a gate on the harness's loop, and the claim that a human can approve a
+step **in the harness's own conversation UI** was previously only ever proven
+through a container with the preset pinned by its settings template. It holds
+without that.
+
+Two doc changes follow, both about not sending a reader after a problem they do
+not have: the warning is now a verified note rather than a lead, and the
+troubleshooting row tells you to read the mode chip first.
+
+### 13. A settled card lost the reason it was raised for
+
+**Observed:** with **two loops in flight at once**, the page rendered two
+approval cards; clicking Allow on the first settled it and left the second
+showing:
+
+```
+APPROVAL REQUIRED | asked 5:44:47 AM | write | RUN | session-43d540b8-…
+```
+
+and nothing else — where the live card beside it read the full
+`REVIEW REQUESTED (policy): write: irreversible is always approved by a
+human.` The run/call/tool were all still there. The **gate's reason** was the
+thing that vanished, and with it the only text that said what the human was
+actually being asked to agree to.
+
+**Why:** a card re-materialised from its feed line has no `PendingApproval`
+behind it — the ask left `pending` when it settled — so
+`toApprovalGate`'s fallback prompt took over. Worse, `ASK_BY_ID.clear()` ran on
+every render and only repopulated from `pending`, so after one more poll even
+the tool name and run id were gone and the card read `write needs approval`.
+
+The single-ask proofs could not see this: with one ask there is nothing to
+confuse it with, and the card under test was always the live one.
+
+**Fix:** `ASK_BY_ID` is now additive for the asks the thread is showing and
+evicted by the same slice that bounds the settled list — so a re-materialised
+ask keeps the tool, call, run and reason it had, and the gate text is the
+plugin's own again. Both were verified with two concurrent loops through the
+generated profile: one card live with buttons, the other settled with no
+buttons and its full reason intact, and `d1.txt` written while `d2.txt` was
+not — the click settled one ask, not whichever card happened to be first in
+the DOM.
+
+`test/assistant-ui.test.ts` pins the shape: a re-materialised ask keeps the
+reason verbatim, every outcome settles the card through the right field, and
+`expired` never renders as a refusal.
+
+### 12. An ask nobody answered disappeared instead of saying so
+
+**Observed:** with `dashboard.answerTimeoutMs: 20000` and a human who walked
+away, the card went blank after 20 seconds. No outcome, no explanation, and no
+buttons. The page's feed said `expired: write — no answer within 20000ms`; the
+card said nothing at all. Screenshot at
+[`evidence/expiry-20261001.png`](evidence/expiry-20261001.png).
+
+**Why:** the thread is built from `pending`, and an expired ask has left it.
+`ApprovalGate.resolution` and the card's own "Expired — no answer in time."
+text already existed — but the field was only ever set from the response the
+page itself sent, so the one path where nobody responded could not reach it.
+The code for the right answer was in the file and unreachable.
+
+**Why the feed could not carry it either:** `expired: write` names a TOOL. A
+run with two writes in flight cannot say which card just went blank, and
+attributing the expiry to the first live ask would put "Expired" on a card the
+operator is still holding — worse than saying nothing.
+
+**Fix, in three parts:**
+
+1. `approvals.ts` **and `dashboard.ts`** put the ask's **id** in every settle
+   line, on every path. The first attempt edited only the *default* text in one
+   module, and every other path — the timeout, the abort, the POST with
+   operator feedback, and the dashboard's own private registry — kept passing
+   its own text. `dashboard.ts` has a second copy of the registry (the one that
+   owns its asks, used when `startDashboard` is called with no shared registry)
+   and it drifted exactly the same way.
+
+   The shape of the mistake is the part worth keeping: **a default text and an
+   explicit argument are two paths, and only the one you read gets the fix.**
+   The test now asserts the id on all four settle paths, and it is in
+   `test/dashboard.test.ts` because `startDashboard`'s private registry is not
+   reachable through `createApprovalRegistry` at all.
+2. `expiredOutcomeOf` (`src/approval-bridge.ts`) reads those lines back into
+   ask-id → outcome. A line without an id is **ignored, not guessed at**, and
+   that is asserted.
+3. `web/app.tsx` re-materialises a settled ask from its feed line, with the
+   outcome attached, so the card stays on screen saying *Expired* instead of
+   vanishing. Bounded by the feed's retention (200 lines) and the last 12 asks.
+
+Verified end to end at 20s: the card appears, nobody clicks, at 20s the thread
+shows `Expired — no answer in time.`, the pending count returns to 0, and the
+file the run wanted to write does not exist. The expiry path is the fail-closed
+direction, so it is worth being explicit: **an unanswered ask writes nothing.**
+
+## Fixed (2026-10-01) — the environment set, plus the five it was hiding
+
+### 11. A stale checked-in bundle passed every test that claimed to check it
+
+**Observed:** `npm run dashboard-bundle` rewrote one line of
+`assets/assistant-ui/MANIFEST.txt` — the `built:` timestamp — and nothing else.
+The three assets and `client.js` were byte-identical to what was committed.
+
+**Why that is the finding, not the non-finding:** the manifest records the sizes
+the build measured, and the build rounds to whole kB. So a rebuild is
+*indistinguishable from a no-op*, and equally: **a stale artefact was
+indistinguishable from a fresh one.** `web/entry.tsx` is a source, `assets/` is
+build output, and the artefact is what the page actually serves — so editing a
+stylesheet and not rebuilding leaves the page serving yesterday's CSS while every
+assertion about the bundle passes, because the bundle is self-consistent.
+
+**Fix:** `test/assistant-ui.test.ts` compares the three files against the sizes
+MANIFEST.txt recorded, and names the fix in the failure message. Proven by
+appending 80 kB to `dashboard.css` without rebuilding — the test failed and
+named the file and the command.
+
+The ceiling is stated in the test rather than hidden: a SIZE check cannot see a
+one-line edit inside a 480 kB bundle that rounds to the same kB. It catches a
+stale artefact, which is the failure that happens. A hash would be strictly
+better and needs the builder to write hashes into a manifest nobody edits by
+hand.
+
+**And the exclusion it sat behind was wrong.** `test/assistant-ui.test.ts` was
+in `scripts/check-test-list.mjs`'s EXCLUDED set with the note *"asserts against
+the built client bundle, which is not in a bare checkout"* — but the bundle is
+CHECKED IN, so it runs with no install. Verified on a bare clone with only
+`npm install`, then moved into the CI list. Its 7 tests now run there (272 pure
+tests, was 265). An exclusion note that was never tested is a comment with
+authority, and it had removed the only test watching the artefact.
+
+## Fixed (2026-10-01) — the environment set, plus the four it was hiding
+
+### 10. Every demo command had been broken for six days of commits
+
+**Observed:** `bash demo/run.sh` — the command the README opens with, and the
+proof that the loop reaches `goal-met` in one command — failed with
+`ERR_MODULE_NOT_FOUND: …/src/cli.ts`.
+
+**Why:** commit `633c1e2` ("Fold the HITL dashboard into the DSH UI") deleted
+`src/cli.ts` as a side effect of a change to something else. `demo/run.sh` kept
+pointing at the deleted path, and so did all four npm scripts (`demo`,
+`demo:steps`, `demo:cost`, `demo:nojudge`). Nothing referenced it from a test,
+the typecheck list, or CI — because `src/` is a hand-listed set and the deletion
+was consistent with it.
+
+**Why it survived six days of commits:** the one thing that would have caught it
+is a run, and every run in that window was `npm test` or a profile check. A demo
+that cannot run is not a failing test; it is an absence of one.
+
+**Fix:** the entry point is back as `demo/cli.ts` — the demo's, not the
+published package's, since `src/` is the plugin's import closure and the CI
+typecheck list is derived from what is in it. All four commands re-run against
+the real model:
+
+| Command | Outcome | Steps | Cost |
+|---|---|---|---|
+| `bash demo/run.sh` | `goal-met` | 6 of 15 | $0.0039 |
+| `bash demo/run.sh --max-steps 6` | `budget-stop` (step ceiling) | 6 of 6 | $0.0031 |
+| `bash demo/run.sh --budget 0.000001` | `budget-stop` (cost ceiling) | 2 of 15 | $0.0004 |
+| `bash demo/run.sh --judge none` | `goal-met` | 4 of 15 | $0.0024 |
+
+`scripts/check-typecheck-list.mjs` now also fails if `demo/cli.ts` goes missing
+or if `run.sh` stops referencing it — the check that would have caught it,
+attached to the one job already responsible for "what is checked by what".
+
+## Fixed (2026-10-01) — the environment set, plus the three it was hiding
+
+### 8. A ladder rung naming an undeclared model is not a config smell — it is a dead run
+
+**Observed:** the container's loop started, the dashboard recorded the run
+(`route: onegw/execution`, `step: 1`, spend metered), and then:
+
+```
+pi-ai provider "onegw" has no configured model "execution"    (UNKNOWN_MODEL)
+```
+
+**Why:** `execution` **is** a gateway alias — `/v1/models` returns it. But
+**llm-pi-ai resolves a ladder rung against the provider profile's own `models:`
+list, not against the gateway.** A deployment that never declared that id makes
+the rung unreachable, and the run dies on step 1 with the dashboard already
+showing a healthy-looking run. Nothing errors at boot; nothing errors at config
+load; `validateSpec` is happy because the spec is internally consistent.
+
+**Why it is not one deployment's mistake:** the same rung was in the shipped
+`cordis.patch.yml` that every deployment inherits, and in the profile
+`scripts/make-profile.sh` generates. Fixing only the container would have left
+the local profile shipping the same dead rung.
+
+**Fix:** all three now name ids their own provider profile declares, and the
+`prices:` table keys the same `provider/model` strings the ladder uses — the
+second half mattered just as much, because a price keyed by anything else left
+the route the loop actually took unpriced (`unpricedSteps: 1` against a ceiling
+that can then never stop anything).
+
+`scripts/check-ladder-models.mjs` now fails on any shipped spec with a rung that
+is undeclared, unpriced, or priced-but-unused. It ran on the repository as it
+stood and fired on `cordis.patch.yml` immediately, which is the cheapest
+possible proof that the check earns its place.
+
+## Fixed (2026-10-01) — both open warts
+
+### 5. `POST /api/approvals/:id` ignored the query token — **fixed**
 
 **Observed:** a scripted approval using `?token=…` got
 `401 missing or invalid dashboard token` while every read route accepted the
 same query token.
 
-**Why:** the settle route calls `authorized(req, url, false)` — `allowQuery` is
-`false` — so it takes the token from the `x-dashboard-token` header only. The
-read routes pass `true`.
+**Why:** the settle route called `authorized(req, url, false)` — `allowQuery`
+was `false` — so it took the token from the `x-dashboard-token` header only.
+The read routes passed `true`. The two halves of one five-route API disagreed
+about how to authenticate, and the failure was a 401 that reads as "wrong
+token" when it means "wrong *mechanism*".
 
-**Why it matters:** the two halves of one tiny API disagree about how to
-authenticate, and the failure mode is a 401 that looks like a wrong token rather
-than a wrong *mechanism*. Any non-browser client has to know the difference.
+**Fix:** `authorized()` no longer takes the flag — every route accepts the
+query token, header first. What the flag bought was nothing: the header token
+sits in the same `curl`, and the real guard against a browser reaching across
+an origin is `sameOrigin`, which still runs on the settle route and is still
+asserted by a test with `origin: http://evil.example`. `test/dashboard.test.ts`
+pins both halves: a query-token POST settles the ask, a no-token POST is still
+401, and a query token from another origin is still 403.
 
-**Suggested fix:** accept the query token here too (the route is token-gated
-already, and `sameOrigin` still guards the state change), or document the header
-requirement in the runbook. Not changed here — it alters the security posture of
-a state-changing route and deserves its own review.
+### 6. Only an SSE client counted as a "watcher" — **fixed**
 
-### 6. Only an SSE client counts as a "watcher"
-
-**Observed:** polling `GET /api/state` every second never let the registry claim
-an ask, so in a headless run the gate's `ask` was refused with
+**Observed:** polling `GET /api/state` every second never let the registry
+claim an ask, so in a headless run the gate's `ask` was refused with
 `tool "write" requires approval, but no approval channel is available` — the
 page was right there, polling, and still invisible to the claim.
 
-**Why:** `noteWatcher()` is called only from the `/api/events` SSE handler
-(`src/dashboard.ts:833`). A `/api/state` poll is not a watcher.
+**Why:** `noteWatcher()` was called only from the `/api/events` SSE handler.
+A `/api/state` poll was not a watcher. The suggested fix was left undone with
+the note that widening the precedence rule "risks stranding asks" — which is
+true of the *silent* version and false of this one, because the client is now
+told.
 
-**Why it matters:** the in-UI page is safe (it calls the host remote's `live()`,
-which notes the watcher), but the standalone page and any scripted client must
-hold the stream. The source comment describes exactly this failure, which is
-good, but the behaviour is a trap: "I am polling the state endpoint, surely that
-counts."
-
-**Suggested fix:** have `/api/state` note the watcher too, or return an explicit
-`watching: true/false` so a client can tell whether it is eligible to answer.
-Not changed here — it is a deliberate precedence rule (claim only while a real
-surface is connected) and widening it risks stranding asks.
+**Fix, both halves:** `/api/state` registers the heartbeat (the same
+`noteWatcher()` the SSE route and the in-UI page's `live()` already call), and
+the response carries `watching`. A client can now ask "am I currently eligible
+to answer?" instead of discovering it when a gate refuses an ask minutes later.
+The stranding case is bounded exactly as before — the 15s `WATCHER_TTL_MS` and
+the `unavailable` settle — and `answers: false` still never registers a
+heartbeat, so observe-only stays observe-only.
 
 ---
 
@@ -260,13 +1177,15 @@ reviewing nothing. I hit this myself and lost a cycle to it. Override the whole
 row, or none of it.
 
 **`gatePolicies` is keyed by TOOL NAME, and `auto-if-confident` proceeds when
-the judge is confident.** The shipped default is `write: auto-if-confident`
-with a working local judge, so writes are routinely auto-approved and a human
-sees no approval at all. That is the intended production posture — a judge that
-clears confident steps is the feature, not a bug — but it means "the gate never
-asks" is the expected behaviour of the shipped config, and is a poor default for
-anyone expecting to see the loop work. `write: always-approve` makes it
-deterministic.
+the judge is confident.** This was the shipped default for `write`, with a
+working local judge, so writes were routinely auto-approved and a human saw no
+approval at all. The throughput posture is real — a judge that clears
+confident steps is the feature, not a bug — but as the *first* thing a new user
+ sees it reads as "the gate is broken", when it was working exactly as
+configured. **`write` is now `always-approve` in both shipped configs**
+(`cordis.patch.yml` and `docker/profile.patch.yml`); `edit` stays
+`auto-if-confident`. Put `write: auto-if-confident` back when you trust the
+judge; nothing else changes.
 
 ### The browser click path, and the page's own geometry (2026-09-29, live on :4100)
 

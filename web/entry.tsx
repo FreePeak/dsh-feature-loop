@@ -105,6 +105,19 @@ function remoteSource(host: Host): DashboardSource {
       // card with live buttons. See assertSettleAccepted.
       assertSettleAccepted(await svc.answer(id, outcome, feedback))
     },
+    // Added with `DashboardSource.status?()` in mind, and it is what makes the
+    // `failed` brief state renderable at all on THIS surface: the page asks
+    // whether `dashboard.brief.enabled` is set, and without this method the
+    // answer is always "unknown", so a deployment that turned briefs on and
+    // whose model call failed saw nothing. The remote has had `status()` since
+    // the settings page shipped; `remoteSource` simply never forwarded it.
+    async status() {
+      const svc = host.get('remote.featureLoop')
+      if (svc === undefined) throw new Error('feature-loop host remote is not mounted')
+      const answer = await svc.status()
+      if (!answer.ok) throw new Error(answer.error.message)
+      return { config: answer.value.config }
+    },
   }
 }
 
@@ -174,7 +187,17 @@ function SettingsPanel({ host }: { host: Host }): React.ReactElement {
       if (svc === undefined) return
       const answer = await svc.save(draft)
       if (!answer.ok) { setNotice({ kind: 'error', text: `save: ${answer.error.message}` }); return }
-      setNotice({ kind: 'ok', text: 'Saved. Values apply at the next reload of this plugin.' })
+      // What is true, verified 2026-10-01: this file is read back by the
+      // STATUS page, and by nothing that decides. `apply()` builds the policy
+      // from the profile patch row alone, so a value saved here does not
+      // change the gate — and saying "applies at the next reload" sent the
+      // next person looking for a reload that would never do it.
+      setNotice({
+        kind: 'ok',
+        text: 'Saved to config.yaml. The running gate is built from the profile '
+          + 'patch row, so this takes effect only after the plugin is wired to '
+          + 'read it — the Status tab shows what is stored.',
+      })
       await load()
     } catch (error) {
       setNotice({ kind: 'error', text: `save failed: ${(error as Error).message}` })
@@ -193,6 +216,21 @@ function SettingsPanel({ host }: { host: Host }): React.ReactElement {
   return (
     <div className="fl-panel">
       {notice === null ? null : <div className="fl-notice" data-kind={notice.kind}>{notice.text}</div>}
+
+      {/*
+        Stated before the fields, not in a dialog: everything below is stored,
+        and the one thing that decides is the profile patch row. A person who
+        sets `write: always-approve` here and then watches a write sail
+        through needs to know WHICH file to edit, and the page is the only
+        place they are looking. Verified 2026-10-01 — `apply()` reads the patch
+        row and nothing else.
+      */}
+      <div className="fl-notice" data-kind="info" role="note">
+        These fields are <strong>stored, not applied</strong>. The gate is built
+        from your profile&rsquo;s <code>cordis.patch.yml</code> row, which is the
+        only place a setting changes behaviour today. The Status section below
+        shows what is stored and which of it the row overrides.
+      </div>
 
       <div className="fl-section">
         <h3 className="fl-section-title">Status</h3>
