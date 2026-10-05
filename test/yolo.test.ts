@@ -529,8 +529,17 @@ describe('a policy denial is not a loop error', () => {
   // A guard that fires because the loop was correctly told no three times is the
   // guard preventing the behaviour it exists to protect.
   it('does not mark a denied step as an error', () => {
+    // NOT "the assignment is absent from the file". A call that RAN and exited
+    // non-zero must mark its step, or the ladder climbs only when the gate stops
+    // the loop (§1q) — so `tools/post-execute` writes exactly this line.
+    //
+    // What must hold is the narrower thing: a REFUSAL is not an error. The gate
+    // records it as `#denied` and leaves `error: false`, and that is what the
+    // cascade guard must not count. Asserting the string's absence forbade the
+    // fix as thoroughly as it forbade the bug.
     const source = readFileSync(new URL('../src/plugin.ts', import.meta.url), 'utf8')
-    assert.doesNotMatch(source, /policy\.pending\.error = true/, 'a gate denial must not set error')
+    const gateArmsError = /tools\/pre-execute[\s\S]*?policy\.pending\.error = true[\s\S]*?tools\/post-execute/
+    assert.doesNotMatch(source, gateArmsError, 'a gate denial must not set error')
   })
 
   it('keeps the refused call in the step record, so tool-cycle still sees a loop hammering one', () => {

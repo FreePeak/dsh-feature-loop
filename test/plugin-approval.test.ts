@@ -26,12 +26,13 @@
  */
 
 import { strict as assert } from 'node:assert'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
 import { apply, isTurnEnd } from '../src/plugin.ts'
+import { clearWatcher, noteWatcher } from '../src/approvals.ts'
 import type { CreatePolicyOptions } from '../src/plugin.ts'
 
 /** The decision the plugin hands back, narrowed to what this file reads. */
@@ -52,15 +53,34 @@ function fakeCtx(): {
   ctx: unknown
   handler: (event: string) => Handler
   registered: () => string[]
+  /**
+   * Stand-in services the fake context exposes through `reflect.get`, which is
+   * how Cordis resolves a service a plugin depends on optionally.
+   *
+   * The gate reads `typertGateway.hasLiveClient()` this way (§1be): a hoisted
+   * read of an absent service throws, which would turn a gate DECISION into an
+   * error for every gated call. Tests put a gateway here when the case is about
+   * the composer, and leave it empty otherwise — the fail-closed default.
+   */
+  extras: Record<string, unknown>
 } {
   const handlers = new Map<string, Handler>()
+  const extras: Record<string, unknown> = {}
   return {
     ctx: {
       on(event: string, fn: Handler): () => void {
         handlers.set(event, fn)
         return () => { handlers.delete(event) }
       },
+      reflect: {
+        get(name: string, strict?: boolean): unknown {
+          if (strict === false) return extras[name]
+          if (name in extras) return extras[name]
+          throw new Error(`fakeCtx: no service "${name}"`)
+        },
+      },
     },
+    extras,
     handler(event: string): Handler {
       const fn = handlers.get(event)
       assert.ok(fn !== undefined, `no handler registered for "${event}"`)
@@ -114,11 +134,24 @@ const ALLOW: Decision = { kind: 'allow' }
 async function call(
   options: CreatePolicyOptions,
   exec: { agent?: unknown, name: string, arguments?: unknown } = { agent: AGENT, name: 'write_file' },
+  watched: boolean = true,
+  /** A live UI client stream, as the gateway would report it (§1be's other half). */
+  liveClient: boolean = false,
 ): Promise<{ decision: Decision, delegated: boolean }> {
-  const { ctx, handler } = fakeCtx()
+  const { ctx, handler, extras } = fakeCtx()
   // The dashboard is on by default and binds 127.0.0.1:8100 — one live server
   // per `apply`. The gate tests never read the page, so disable it here and
   // keep the one shared port for the tests that actually need a socket.
+  //
+  // `watched` is the DEFAULT every gate test needs: `gateMode: ask` now
+  // refuses up front when no front end is watching (see gateForTool), which is
+  // the point of the change — so a test asserting an `ask` has to be a test
+  // where somebody could answer it.
+  if (watched) noteWatcher()
+  else clearWatcher()
+  // The composer's channel. A fake ctx with no gateway reports no live client,
+  // which is the fail-closed default every existing assertion keeps.
+  extras['typertGateway'] = { hasLiveClient: () => liveClient }
   const dispose = apply(ctx as never, { ...options, dashboard: { enabled: false } })
   let delegated = false
   const decision = await handler('tools/pre-execute')(
@@ -129,7 +162,10 @@ async function call(
   return { decision, delegated }
 }
 
-test('a gate-raised review is returned as an ask, not a deny', async () => {
+// The watcher is process-global state with a TTL, so it leaks between tests
+// unless each one states what it means. `clearWatcher` first, always.
+test('a gate-raised review is returned as an ask when a front end is watching', async () => {
+  clearWatcher()
   const { decision } = await call({ spec: SPEC })
   assert.equal(decision.kind, 'ask')
 })
@@ -193,6 +229,11 @@ test('the handler is registered on the harness tool-boundary event', async () =>
   // listener there can queue the next phase's instructions. It must come after
   // `agent/pre-step` — the hot path — and before `tools/pre-execute`, which
   // answers a different event entirely and so has no ordering relationship.
+  // `tools/post-execute` is the SECOND tool hook and not an extra feature: it is
+  // the only event that reports whether a call that RAN succeeded, and without
+  // it a failed command is indistinguishable from a successful one at the step
+  // boundary (§1q). So a list of tool events that names only `pre-execute` is a
+  // statement about a plugin that cannot see a failure.
   assert.deepEqual(registered(), [
     'approval/request',
     'session/event',
@@ -200,6 +241,7 @@ test('the handler is registered on the harness tool-boundary event', async () =>
     'agent/request',
     'agent/turn-stopping',
     'tools/pre-execute',
+    'tools/post-execute',
   ])
   dispose()
 })
@@ -314,14 +356,314 @@ test('a closed turn appends exactly one run record with metered numbers', async 
   assert.equal(record.costUSD, 0)
   assert.equal(record.maxSteps, 8)
   assert.equal(record.budgetUSD, 1)
-  // `completed` with no ceiling hit reads as goal-met in the harness sense.
-  assert.equal(record.outcome, 'goal-met')
+  // From the router, so a run that asked for reviews reports them. This was a
+  // literal `0`, which meant the Metrics "Human escalation rate > 15%" alert
+  // could never fire on any harness-path record however many reviews happened.
+  assert.equal(record.reviewFraction, 0, 'no reviews were requested, so the fraction is zero')
+  // A turn that took no step is NOT goal-met, whatever the transport called it.
+  // `completed` means the transport closed; it does not mean the loop worked.
+  // Measured 2026-10-04: 13 of 15 records in the committed history were
+  // zero-step turns, 12 of them `goal-met`, which made `summarize` report an
+  // 87% goal-met rate over runs that had touched nothing.
+  assert.equal(record.outcome, 'model-stop')
   // Honestly absent, never guessed: no route priced, no latency timed.
   assert.deepEqual(record.byRoute, {})
   assert.deepEqual(record.stepLatencyMs, [])
-  assert.equal(record.latencyKind, 'round-trip')
+  // Absent, not `'round-trip'`: this path has no seam that times a step, so the
+  // old value declared a MEASUREMENT KIND for a measurement never taken, and
+  // the panel rendered it as though it had been (§1bt).
+  assert.equal(record.wallMs, undefined)
+  assert.equal(record.latencyKind, undefined)
   assert.equal(typeof record.taskKey, 'string')
   assert.equal(typeof record.specFingerprint, 'string')
+})
+
+test('a closed turn records the reviews its router counted', async () => {
+  // `recordTurn` wrote a literal `reviewFraction: 0`, so every harness-path
+  // record claimed a zero human-escalation rate and the Metrics "> 15%"
+  // alert could never fire — however many reviews the loop had requested.
+  // Measured 2026-10-04 on the committed history: 14 of 15 records said 0 and
+  // the 15th said 0.1 — and the 15th came from the CLI runner, not this path.
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-hist-rev-'))
+  const historyPath = join(dir, 'runs.jsonl')
+  // `agents` BEFORE `apply`: `recordTurn` resolves the session's agent through
+  // `ctx.agents`, and without it the turn is recorded against the AGENT-LESS
+  // policy — a different policy, whose router never saw my reviews. That is not
+  // a test artefact; it is the same fallback a real fiber takes.
+  const { ctx, handler } = fakeCtx()
+  const agent = {
+    id: 'sess-rev',
+    session: { id: 'sess-rev', snapshotEvents: () => [] },
+  }
+  Object.assign(ctx as object, {
+    agents: { get: () => agent },
+    // cordis's own lookup — the shape the production code reads. The router's
+    // count reaches the record ONLY through the resolved agent, so a fixture
+    // without this is the agent-less policy reporting 0.
+    reflect: { get: (name: string, strict?: boolean) => (name === 'agents' && strict !== true ? { get: () => agent } : undefined) },
+  })
+  const dispose = apply(ctx as never, {
+    spec: { ...SPEC, maxSteps: 99 } as NonNullable<CreatePolicyOptions['spec']>,
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+    router: { checkpointAtStep: 1 },
+  })
+
+  // Two steps, and the checkpoint at step 1 — the review an operator configures.
+  const pre = handler('agent/pre-step') as unknown as (
+    p: unknown, n: () => Promise<unknown>,
+  ) => Promise<unknown>
+  for (const step of [1, 2]) {
+    await pre(
+      { agent, messages: [], turn: 1, step, signal: new AbortController().signal },
+      async () => ({ kind: 'enter', messages: [] }),
+    )
+  }
+
+  const fn = handler('session/event') as unknown as (s: unknown, e: unknown) => unknown
+  fn(agent, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline && !existsSync(historyPath)) {
+    await new Promise(resolve => { setTimeout(resolve, 10) })
+  }
+  assert.ok(existsSync(historyPath), 'the turn must be recorded at all')
+  const [line] = readFileSync(historyPath, 'utf8').trim().split('\n')
+  const record = JSON.parse(line!) as Record<string, unknown>
+  assert.equal(record.reviewFraction, 1, 'the checkpoint review, over the steps the router saw')
+  dispose()
+})
+
+test('a closed turn records the judge\'s answers, not an empty list', async () => {
+  // `recordTurn` wrote `judgeScores: []` on every harness-path record while the
+  // feed printed "the local judge scored this step 1.1/3" — so `meanJudge` and
+  // every optimizer battery question about the judge were answered from
+  // nothing. Measured 2026-10-04: 0 of 7 live records carried a score.
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-hist-judge-'))
+  const historyPath = join(dir, 'runs.jsonl')
+  const { ctx, handler } = fakeCtx()
+  const agent = { id: 'sess-judge', session: { id: 'sess-judge', snapshotEvents: () => [] } }
+  Object.assign(ctx as object, {
+    agents: { get: () => agent },
+    reflect: { get: (name: string, strict?: boolean) => (name === 'agents' && strict !== true ? { get: () => agent } : undefined) },
+  })
+  const dispose = apply(ctx as never, {
+    spec: { ...SPEC, maxSteps: 99 } as NonNullable<CreatePolicyOptions['spec']>,
+    // A judge that answers on every step, so the record must carry every score
+    // rather than only the last one.
+    judge: { score: async () => ({ score: 1.1 }) },
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+  } as never)
+
+  const pre = handler('agent/pre-step') as unknown as (
+    p: unknown, n: () => Promise<unknown>,
+  ) => Promise<unknown>
+  for (const step of [1, 2, 3]) {
+    await pre(
+      { agent, messages: [], turn: 1, step, signal: new AbortController().signal },
+      async () => ({ kind: 'enter', messages: [] }),
+    )
+  }
+  const fn = handler('session/event') as unknown as (s: unknown, e: unknown) => unknown
+  fn(agent, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline && !existsSync(historyPath)) {
+    await new Promise(resolve => { setTimeout(resolve, 10) })
+  }
+  const [line] = readFileSync(historyPath, 'utf8').trim().split('\n')
+  const record = JSON.parse(line!) as Record<string, unknown>
+  assert.deepEqual(record.judgeScores, [1.1, 1.1, 1.1], 'every score the turn collected')
+
+  // A SECOND turn on the same agent must not carry the first turn's scores.
+  // The policy is keyed by agent and an agent outlives a turn, so the drain in
+  // `recordTurn` is what keeps one turn's evidence out of the next record.
+  const second = handler('agent/pre-step') as unknown as (
+    p: unknown, n: () => Promise<unknown>,
+  ) => Promise<unknown>
+  await second(
+    { agent, messages: [], turn: 2, step: 1, signal: new AbortController().signal },
+    async () => ({ kind: 'enter', messages: [] }),
+  )
+  fn(agent, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } })
+  const until = Date.now() + 5000
+  while (Date.now() < until && readFileSync(historyPath, 'utf8').trim().split('\n').length < 2) {
+    await new Promise(resolve => { setTimeout(resolve, 10) })
+  }
+  const lines = readFileSync(historyPath, 'utf8').trim().split('\n')
+  assert.equal(lines.length, 2, 'both turns are recorded')
+  const [second_] = lines.slice(1).map(line => JSON.parse(line) as Record<string, unknown>)
+  assert.deepEqual(second_.judgeScores, [1.1], 'the second turn scored once, not four times')
+  dispose()
+})
+
+test('a closed turn reports the wall clock the harness logged', async () => {
+  // §1bt made `wallMs` optional because the plugin path had no clock. It has
+  // one: every `SessionEvent` carries `time`, and the turn's own `turn/start`
+  // and `turn/end` are both logged — so the difference is the run's duration,
+  // measured by the harness rather than invented here (§1bu gave the runner a
+  // `performance.now()` span; this is the same measurement for this path).
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-wall-'))
+  const historyPath = join(dir, 'runs.jsonl')
+  const opened = 1_700_000_000_000
+  const closed = opened + 62_314
+  const events = [
+    { seq: 0, type: 'turn/start', time: opened, data: { turn: 1 } },
+    { seq: 1, type: 'turn/end', time: closed, data: { turn: 1, reason: { kind: 'completed' } } },
+  ]
+  const session = {
+    id: 'sess-wall',
+    seq: events.length,
+    eventAt: (seq: unknown) => events.find(event => event.seq === seq),
+  }
+  const { ctx, handler } = fakeCtx()
+  Object.assign(ctx as object, { agents: { get: () => session } })
+  const dispose = apply(ctx as never, {
+    spec: { ...SPEC, maxSteps: 99 },
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+  })
+  const fn = handler('session/event') as unknown as (s: unknown, e: unknown) => unknown
+  fn(session, events[1])
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline && !existsSync(historyPath)) {
+    await new Promise(resolve => { setTimeout(resolve, 10) })
+  }
+  const [line] = readFileSync(historyPath, 'utf8').trim().split('\n')
+  const record = JSON.parse(line!) as Record<string, unknown>
+  assert.equal(record.startedAt, opened, 'the turn\'s own start, not the moment of writing')
+  assert.equal(record.endedAt, closed)
+  assert.equal(record.wallMs, 62_314, 'the measured run, not an absence and not zero')
+  dispose()
+})
+
+test('a turn whose start is not in the log reports no wall clock at all', async () => {
+  // The other half: an absent start must read as absent. `0` is what §1bt
+  // removed, and reporting it again would be the same defect wearing a fix.
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-nowall-'))
+  const historyPath = join(dir, 'runs.jsonl')
+  const session = { id: 'sess-nowall', seq: 0, eventAt: () => undefined }
+  await emitSessionEvent({ spec: SPEC }, historyPath, {
+    type: 'turn/end',
+    time: 1_700_000_000_000,
+    data: { turn: 1, reason: { kind: 'completed' } },
+  }, session)
+  const [line] = readFileSync(historyPath, 'utf8').trim().split('\n')
+  const record = JSON.parse(line!) as Record<string, unknown>
+  assert.equal(record.wallMs, undefined, 'no start time means no wall clock, not zero')
+})
+
+test('the history listener is reachable from a SCOPED session event', async () => {
+  // The largest defect in this file's history of them, and the test that would
+  // have caught it.
+  //
+  // The harness emits `session/event` with `this` bound to a per-session SCOPE
+  // CARRIER, and cordis filters hooks by `filter.call(thisArg, hook.ctx)` — so a
+  // listener registered on the root context is unreachable from a scoped carrier
+  // unless it passes `global: true`. Measured 2026-10-04 on a real headless run:
+  // the listener WAS registered (the feed carried the "run history recording to"
+  // note, printed by the same branch) and NOT ONE record was written.
+  //
+  // This context models the filter rather than assuming it: an `on` WITHOUT
+  // `global` is unreachable from a scoped emitter, which is exactly what the
+  // harness does. A stub that ignored the option would have passed the bug.
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-scoped-'))
+  const historyPath = join(dir, 'runs.jsonl')
+  const opened = 1_700_000_000_000
+  const closed = opened + 1_500
+  const events = [
+    { seq: 0, type: 'turn/start', time: opened, data: { turn: 1 } },
+    { seq: 1, type: 'turn/end', time: closed, data: { turn: 1, reason: { kind: 'completed' } } },
+  ]
+  const session = {
+    id: 'sess-scoped',
+    seq: events.length,
+    eventAt: (seq: unknown) => events.find(event => event.seq === seq),
+  }
+
+  // What a scoped emitter can actually reach: only the global hooks.
+  const reachable = new Map<string, Handler>()
+  const ctx = {
+    on(event: string, fn: Handler, options?: { global?: boolean }): () => void {
+      if (options?.global !== true) return () => { /* scope-filtered out */ }
+      reachable.set(event, fn)
+      return () => { reachable.delete(event) }
+    },
+  }
+  Object.assign(ctx as object, { agents: { get: () => session } })
+
+  const dispose = apply(ctx as never, {
+    spec: { ...SPEC, maxSteps: 99 },
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+  })
+
+  const handler = reachable.get('session/event')
+  assert.ok(handler !== undefined, 'session/event must be registered in a way a scope carrier can reach')
+
+  handler(session, events[1])
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline && !existsSync(historyPath)) {
+    await new Promise(resolve => { setTimeout(resolve, 10) })
+  }
+  assert.ok(existsSync(historyPath), 'a scoped turn still produces a record')
+  const [line] = readFileSync(historyPath, 'utf8').trim().split('\n')
+  const record = JSON.parse(line!) as Record<string, unknown>
+  assert.equal(record.wallMs, 1_500, 'the harness clock, read through the scoped path')
+  dispose()
+})
+
+test('a session whose eventAt needs its `this` still yields a wall clock', async () => {
+  // The regression test for §1bw. `Session.eventAt` reads `this.log`, so a
+  // detached reference throws
+  //   Cannot read properties of undefined (reading 'log')
+  // on every call — which is exactly the string measured live, thrown on every
+  // closed turn inside the listener where the harness contained it and logged it
+  // below the level the web app surfaces. No harness-path run record has ever
+  // been written as a result.
+  //
+  // The fixture below uses a CLASS rather than an object literal precisely so a
+  // detached call fails here: a literal with a `log` property would not.
+  class LoggedSession {
+    readonly id: string
+    seq: number
+    private readonly log: { type: string, time: number, data: unknown }[]
+    constructor(id: string, log: { type: string, time: number, data: unknown }[]) {
+      this.id = id
+      this.log = log
+      this.seq = log.length
+    }
+    eventAt(seq: number): { type: string, time: number, data: unknown } | undefined {
+      return this.log[seq]
+    }
+  }
+
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-bound-'))
+  const historyPath = join(dir, 'runs.jsonl')
+  const opened = 1_700_000_000_000
+  const closed = opened + 4_125
+  const session = new LoggedSession('sess-bound', [
+    { type: 'turn/start', time: opened, data: { turn: 1 } },
+    { type: 'turn/end', time: closed, data: { turn: 1, reason: { kind: 'completed' } } },
+  ])
+  const { ctx, handler } = fakeCtx()
+  const dispose = apply(ctx as never, {
+    spec: { ...SPEC, maxSteps: 99 },
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+  })
+  const fn = handler('session/event') as unknown as (s: unknown, e: unknown) => unknown
+  fn(session, { type: 'turn/end', time: closed, data: { turn: 1, reason: { kind: 'completed' } } })
+
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline && !existsSync(historyPath)) {
+    await new Promise(resolve => { setTimeout(resolve, 10) })
+  }
+  assert.ok(existsSync(historyPath), 'the record must land')
+  const [line] = readFileSync(historyPath, 'utf8').trim().split('\n')
+  const record = JSON.parse(line!) as Record<string, unknown>
+  assert.equal(record.wallMs, 4_125, 'read through a bound eventAt, so the log was reachable')
+  assert.equal(record.startedAt, opened)
+  dispose()
 })
 
 test('a re-delivered turn closer never double-records', async () => {
@@ -359,6 +701,94 @@ test('a re-delivered turn closer never double-records', async () => {
     }
     await new Promise(resolve => setTimeout(resolve, 10))
   }
+})
+
+test("a turn's records land in its OWN workspace, not the process's", async () => {
+  // The defect. The default history path is RELATIVE, and `appendRecord` /
+  // `readRecords` resolve a relative path against the PROCESS cwd. In a
+  // `dsh web` deployment that is the directory the server was launched from,
+  // never the workspace a task runs in — measured 2026-10-04: 15 records under
+  // the server's cwd, none under the workspace, so the optimizer read a
+  // history the operator could not find and the proposals panel said the
+  // battery had never run beside a page full of runs.
+  //
+  // Two workspaces, one process, one `apply`: the check that matters is not
+  // "does a file appear" (it always did, in the wrong place) but "does each
+  // session's record land under ITS OWN cwd". `process.cwd()` is asserted on
+  // so a harness run from an unrelated directory still fails the test rather
+  // than passing by coincidence.
+  const cwd = process.cwd()
+  const processDir = mkdtempSync(join(tmpdir(), 'dsh-procdir-'))
+  const alpha = mkdtempSync(join(tmpdir(), 'dsh-ws-alpha-'))
+  const beta = mkdtempSync(join(tmpdir(), 'dsh-ws-beta-'))
+
+  const { ctx, handler } = fakeCtx()
+  const dispose = apply(ctx as never, {
+    spec: SPEC,
+    dashboard: { enabled: false },
+    // The DEFAULT, unconfigured — the case that was broken.
+  })
+  const fn = handler('session/event') as unknown as (s: unknown, e: unknown) => unknown
+  const end = (turn: number) => ({
+    type: 'turn/end',
+    data: { turn, reason: { kind: 'completed' } },
+  })
+  fn({ id: 'sess-alpha', header: { cwd: alpha } }, end(1))
+  fn({ id: 'sess-beta', header: { cwd: beta } }, end(1))
+
+  const want = [join(alpha, '.feature-loop/runs.jsonl'), join(beta, '.feature-loop/runs.jsonl')]
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline && want.some(p => !existsSync(p))) {
+    await new Promise(resolve => { setTimeout(resolve, 10) })
+  }
+  dispose()
+
+  assert.ok(existsSync(want[0]!), `alpha's record is missing under its own workspace: ${want[0]}`)
+  assert.ok(existsSync(want[1]!), `beta's record is missing under its own workspace: ${want[1]}`)
+  // No collision: each workspace holds exactly ITS OWN run.
+  assert.equal(readFileSync(want[0]!, 'utf8').trim().split('\n').length, 1, 'alpha sees only alpha')
+  const betaLine = JSON.parse(readFileSync(want[1]!, 'utf8').trim()) as { runId?: unknown }
+  assert.equal(betaLine.runId, 'sess-beta', "beta's record is beta's")
+  // And nothing leaked into the process's own tree — the defect, stated as a
+  // negative so it cannot pass by a workspace that happens to be the cwd.
+  assert.equal(
+    existsSync(join(processDir, '.feature-loop/runs.jsonl')),
+    false,
+    'no record may be written beside the process',
+  )
+  assert.notEqual(alpha, cwd, 'the fixture workspace must not be the process cwd')
+  assert.notEqual(beta, cwd, 'the fixture workspace must not be the process cwd')
+})
+
+test('an explicit absolute history path is the operator\'s, verbatim', async () => {
+  // The counter-case, so the fix above cannot become "we always moved the
+  // file": collecting many workspaces into one file on purpose is a supported
+  // shape (the CLI's `--history` is exactly it), and resolving it against a
+  // session cwd would silently split it back apart.
+  const shared = mkdtempSync(join(tmpdir(), 'dsh-shared-'))
+  const historyPath = join(shared, 'all-runs.jsonl')
+  const alpha = mkdtempSync(join(tmpdir(), 'dsh-ws-alpha2-'))
+
+  const { ctx, handler } = fakeCtx()
+  const dispose = apply(ctx as never, {
+    spec: SPEC,
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+  })
+  const fn = handler('session/event') as unknown as (s: unknown, e: unknown) => unknown
+  fn({ id: 'sess-one', header: { cwd: alpha } }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline && !existsSync(historyPath)) {
+    await new Promise(resolve => { setTimeout(resolve, 10) })
+  }
+  dispose()
+  assert.ok(existsSync(historyPath), 'the configured absolute path is where the record goes')
+  assert.equal(
+    existsSync(join(alpha, '.feature-loop/runs.jsonl')),
+    false,
+    'a configured absolute path must not be re-resolved into the workspace',
+  )
 })
 
 test('a non-turn event records nothing', async () => {

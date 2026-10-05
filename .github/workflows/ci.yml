@@ -81,10 +81,6 @@ jobs:
       # same way the typecheck job lists its `src/` inputs — and a test that
       # gains a harness import (`test/plugin-approval.test.ts` already has one,
       # through `src/plugin.ts`) or a dependency import must leave this list,
-      # exactly as `src/plugin.ts` leaves the typecheck list. `test/dashboard.test.ts`,
-      # `test/assistant-ui.test.ts` and `test/explainer.test.ts` run locally via
-      # `make test`; `test/approval-bridge.test.ts`, `test/brief.test.ts`, and
-      # `test/questioner.test.ts` are pure and run here.
       # exactly as `src/plugin.ts` leaves the typecheck list. `test/dashboard.test.ts`
       # and the CSS pair run locally via `make test` — they import
       # `src/plugin.ts`, which the harness-free job cannot load.
@@ -136,6 +132,21 @@ jobs:
       - name: Every accepted-but-unconsulted config key is labelled a no-op
         run: node scripts/check-noop-config-keys.mjs
 
+      # The actuator table decides what a person is asked about, and it ships in
+      # three hand-edited files. They HAD diverged — the container copy was
+      # missing `task`, so one deployment enforced two policies.
+      - name: The three shipped actuator tables are the same table
+        run: node scripts/check-actuator-tables.mjs
+
+      # KNOWN-ISSUES is a record of what was wrong, corrected as each was found,
+      # and two of its entries were both numbered 1i until a cross-reference
+      # pointed at the wrong one. A cross-reference that resolves to the wrong
+      # section is worse than no cross-reference, because the reader does not
+      # know to distrust it — and this file has to be a plain `.md` for the same
+      # reason `README.md` is.
+      - name: KNOWN-ISSUES' sections, index and cross-references agree
+        run: node scripts/check-known-issues.mjs
+
       # One file per process, in a loop, and the list is the SAME list
       # `scripts/check-test-list.mjs` reads. Two reasons, and the second is the
       # reason this changed at all:
@@ -156,43 +167,18 @@ jobs:
       #
       # KNOWN-ISSUES records the measurement and what was ruled out.
       - name: Run the test suite
-        run: node --experimental-strip-types --test \
-          test/agent-policy.test.ts test/approval-bridge.test.ts test/approvals.test.ts test/brief.test.ts \
-          test/budget.test.ts test/driver.test.ts test/envelope.test.ts test/evidence.test.ts \
-          test/explainer.test.ts test/judge.test.ts test/metrics.test.ts test/optimize.test.ts \
-          test/optimizer.test.ts test/patch-config.test.ts test/phase-budget.test.ts test/phases.test.ts \
-          test/pipeline-guard.test.ts test/pipeline.test.ts test/policy.test.ts test/questioner.test.ts \
-          test/refine.test.ts test/runlog.test.ts test/runner.test.ts test/sandbox.test.ts \
-          test/ship.test.ts test/start-target.test.ts test/tools.test.ts test/yolo.test.ts
-
-          test/agent-policy.test.ts test/approval-bridge.test.ts \
-          test/approvals.test.ts test/assistant-ui.test.ts test/brief.test.ts \
-          test/budget.test.ts test/envelope.test.ts test/explainer.test.ts \
-          test/judge.test.ts \
-          test/metrics.test.ts test/optimize.test.ts test/optimizer.test.ts \
-          test/questioner.test.ts \
-          test/policy.test.ts test/refine.test.ts test/runlog.test.ts \
-          test/runner.test.ts test/start-target.test.ts test/tools.test.ts
         run: |
           total=0
-          for f in \
-            test/agent-policy.test.ts test/approval-bridge.test.ts \
-            test/approvals.test.ts test/assistant-ui.test.ts test/brief.test.ts \
-            test/budget.test.ts test/envelope.test.ts test/explainer.test.ts \
-            test/judge.test.ts test/llm.test.ts test/metrics.test.ts \
-            test/optimize.test.ts \
-            test/optimizer.test.ts test/questioner.test.ts test/policy.test.ts \
-            test/refine.test.ts test/runlog.test.ts test/runner.test.ts \
-            test/start-target.test.ts test/tools.test.ts ; do
-            test/agent-policy.test.ts             test/approval-bridge.test.ts             test/approvals.test.ts \
-            test/assistant-ui.test.ts             test/brief.test.ts             test/budget.test.ts \
-            test/envelope.test.ts             test/evidence.test.ts             test/explainer.test.ts \
-            test/judge.test.ts             test/llm.test.ts             test/metrics.test.ts \
-            test/optimize.test.ts             test/optimizer.test.ts             test/phase-budget.test.ts \
-            test/phases.test.ts             test/pipeline.test.ts             test/policy.test.ts \
-            test/questioner.test.ts             test/refine.test.ts             test/runlog.test.ts \
-            test/runner.test.ts             test/sandbox.test.ts             test/ship.test.ts \
-            test/start-target.test.ts             test/tools.test.ts             test/yolo.test.ts ; do
+            demo/test/latency-window.test.ts test/agent-policy.test.ts test/approval-bridge.test.ts test/approvals.test.ts \
+            test/assistant-ui.test.ts test/brief.test.ts test/budget.test.ts test/dashboard.test.ts \
+            test/driver.test.ts test/envelope.test.ts test/evidence.test.ts test/explainer.test.ts \
+            test/judge-config.test.ts test/judge.test.ts test/llm.test.ts test/messages.test.ts \
+            test/metrics.test.ts test/optimize.test.ts test/optimizer.test.ts test/phase-budget.test.ts \
+            test/phases.test.ts test/pipeline.test.ts test/plugin-approval.test.ts test/policy.test.ts \
+            test/questioner.test.ts test/refine.test.ts test/runlog.test.ts test/runner.test.ts \
+            test/sandbox.test.ts test/ship.test.ts test/start-target.test.ts test/tools.test.ts \
+            test/yolo.test.ts ; do
+            demo/test/latency-window.test.ts ; do
             echo "::group::$f"
             out=$(node --experimental-strip-types --test "$f" 2>&1) || {
               echo "$out"
@@ -244,6 +230,13 @@ jobs:
       # the two harness-coupled modules are typechecked locally instead, against
       # the prebuilt packages from a harness checkout. Add a new pure module to
       # this list; a module that gains a harness import must leave it.
+      # `src/change-event.ts` looks harness-free — it imports nothing at all —
+      # but it is two `declare module` AUGMENTATIONS of `@deepseek-ai/cordis`
+      # and `@deepseek-ai/dsh-typert-protocol`, and a `tsc` run that has not
+      # installed those packages rejects an augmentation of a module it cannot
+      # resolve (TS2664). It is typechecked with `src/plugin.ts`, which imports
+      # the same two. A first draft of this change listed it anyway and CI went
+      # red on exactly that error.
       # src/brief.ts, src/approval-bridge.ts and src/explainer.ts are the pure
       # additions: `brief.ts` and `approval-bridge.ts` import nothing at all
       # (which is why their tests run in the no-install job above), and
@@ -257,25 +250,14 @@ jobs:
             --strict --esModuleInterop --skipLibCheck --isolatedModules \
             --allowImportingTsExtensions \
             src/agent-policy.ts src/approval-bridge.ts src/approvals.ts src/brief.ts src/budget.ts \
-            src/dashboard-page.ts src/dashboard.ts src/driver.ts src/envelope.ts src/evidence.ts \
-            src/explainer.ts src/judge.ts src/laya.ts src/llm.ts src/messages.ts \
-            src/metrics.ts src/observation.ts src/optimize.ts src/optimizer.ts src/phase-budget.ts \
-            src/phase-notice.ts src/phases.ts src/pipeline.ts src/prompts.ts src/questioner.ts \
-            src/refine.ts src/review.ts src/routing.ts src/runlog.ts src/runner.ts \
-            src/sandbox.ts src/ship.ts src/signals.ts src/spec.ts src/tools.ts \
-            src/watcher-ttl.ts src/yolo.ts
-            src/agent-policy.ts             src/approval-bridge.ts             src/approvals.ts \
-            src/brief.ts             src/budget.ts             src/dashboard-page.ts \
-            src/dashboard.ts             src/envelope.ts             src/evidence.ts \
-            src/explainer.ts             src/judge.ts             src/laya.ts \
-            src/llm.ts             src/messages.ts             src/metrics.ts \
-            src/optimize.ts             src/optimizer.ts             src/phase-budget.ts \
-            src/phases.ts             src/pipeline.ts             src/prompts.ts \
-            src/questioner.ts             src/refine.ts             src/review.ts \
-            src/routing.ts             src/runlog.ts             src/runner.ts \
-            src/sandbox.ts             src/ship.ts             src/signals.ts \
-            src/spec.ts             src/tools.ts             src/watcher-ttl.ts \
-            src/yolo.ts
+            src/change-event.ts src/dashboard-page.ts src/dashboard.ts src/driver.ts src/envelope.ts \
+            src/evidence.ts src/explainer.ts src/index.ts src/judge.ts src/laya.ts \
+            src/llm.ts src/messages.ts src/metrics.ts src/observation.ts src/optimize.ts \
+            src/optimizer.ts src/phase-budget.ts src/phase-notice.ts src/phases.ts src/pipeline.ts \
+            src/plugin.ts src/prompts.ts src/questioner.ts src/refine.ts src/review.ts \
+            src/routing.ts src/runlog.ts src/runner.ts src/sandbox.ts src/ship.ts \
+            src/signals.ts src/spec.ts src/tools.ts src/watcher-ttl.ts src/yolo.ts
+
       # The list is hand-maintained and has already drifted twice — see the
       # `change-event` note above — so this step recomputes it and fails on a
       # module that has fallen off. Rule: a module belongs in the list unless it

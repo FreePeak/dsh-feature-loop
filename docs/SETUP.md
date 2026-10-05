@@ -255,6 +255,72 @@ Pointing both at one port is a specific and confusing failure: the second boot
 logs `EADDRINUSE`, the gate fails closed with `no approval channel is
 available`, and a perfectly good dashboard sits open on the *other* port.
 
+**And `gateMode` follows the app, because `ask` only works with a page.**
+`make-profile.sh` stamps `ask` for `--web` and `deny` for `--headless`.
+Measured 2026-10-03 against the hand-built `feature-loop-headless` profile with
+`ask`: `dsh --profile feature-loop-headless headless "write a file"` returned
+
+```
+Error: tool "write" requires approval, but no approval channel is available
+```
+
+and the run produced no work at all — the model spent its remaining budget
+reasoning about whether `Bash` was a legitimate alternative and then stopped.
+Nothing is watching in `dsh headless`: no dashboard page is opened, no browser
+polls `/api/state`, and `ask` fails closed by design. So the headless twin is
+`deny`, which refuses the step at once and says why.
+
+This also bites a WEB profile whose dashboard port is taken: the page on the
+other port is the one answering, and the port you are looking at is dead. If
+you hand-edit a row, `grep gateMode` it after any `EADDRINUSE`.
+
+### Driving the STANDALONE dashboard by hand (the one surface no script covers)
+
+The in-UI page is inside the harness, on the harness's origin. The standalone
+dashboard is a **second origin on its own port with its own token**, and it is
+the only surface where a wiring bug can hide — a click there reaches a different
+server than the one the harness is serving. Nothing automates it yet, so here is
+the procedure, verified 2026-10-03 against the generated `webring` profile.
+
+**Order matters, and it is not a race.** KNOWN-ISSUES §1be: `gateMode: ask` is
+refused *by the plugin* when no front end is watching, so an ask raised before the
+dashboard is open never becomes a card. Open the dashboard **first** and confirm
+it is watching — otherwise you will wait for a card that was never going to
+appear, and the run will report a refusal with no page to click.
+
+```bash
+# 1. the server is already up; copy BOTH token lines out of its log
+#    feature-loop dashboard: http://127.0.0.1:8100/?token=…
+#    dsh web: http://127.0.0.1:4188/?token=…
+
+# 2. open the dashboard in a browser and leave the tab open. Confirm:
+curl -s "http://127.0.0.1:8100/api/state?token=$TOK" | grep -o '"watching":[a-z]*'
+#    -> "watching":true
+
+# 3. in the harness page: Feature Loop -> type the task -> Start loop
+
+# 4. the card appears on the dashboard tab. Read the card's CALL id before
+#    clicking — the thread keeps every ask this dashboard has seen, and an allow
+#    is granted PER CALL, so clicking a stale card settles a different one.
+```
+
+Verified both directions on a live run:
+
+```
+APPROVAL REQUIRED | asked … | write | … | REVIEW REQUESTED (policy): write:
+  irreversible is always approved by a human.
+Allow once  -> the file exists, containing hello
+Reject      -> no file
+```
+
+**Why this is not a script yet.** Writing one took seven attempts and three of
+the failures were mine, not the plugin's: a stale `bash` card clicked instead of
+the write, a Reject half that passed because the Allow half's file was still on
+disk, and an argument off-by-one that read the dashboard URL as a tool filter.
+Each was fixable and each was instructive, but a check that needs that much
+care to aim is a check whose green result means less than its red one. It is
+left as a procedure until it can be written once and trusted.
+
 ### Doing it by hand instead
 
 If you would rather build it manually, the files are:
@@ -359,9 +425,20 @@ $EDITOR cordis.patch.yml
       sensor: ["repo files", "test output"]
 
       controller:
+        # Two rungs, so `MODEL ESCALATION` below is reachable at all: with one
+        # rung the ladder cannot move and the notice never prints, which is why
+        # this block shows two where the shipped `cordis.patch.yml` shows one.
+        #
+        # The ids are onegw's, and they must exist in your provider's `models:`
+        # list — llm-pi-ai resolves a rung against that list, not against the
+        # gateway, so an id it serves but nobody declared dies UNKNOWN_MODEL on
+        # step 1 (verified 2026-10-02: `deepseek-flash` and `deepseek-v4-pro`
+        # are 404 on this account's gateway AND absent from `/v1/models`, so
+        # the pair below was a copy from an older harness build and could not
+        # have run here).
         ladder:
-          - { provider: deepseek-official, model: deepseek-flash }     # cheap
-          - { provider: deepseek-official, model: deepseek-v4-pro }    # escalated
+          - { provider: onegw, model: execution }      # cheap
+          - { provider: onegw, model: planning }       # escalated
         stepsPerRung: 5
         escalateAfterFailures: 2
 
@@ -518,9 +595,14 @@ solve a hard problem. Use the bundled demo bug, which is a real one-line
 off-by-one with a failing test suite:
 
 ```bash
+rm -rf /tmp/fl-demo                       # a second `cp -r` nests demo/ inside it
 cp -r ~/work/harvey/freepeak/dsh-feature-loop/demo /tmp/fl-demo
 cd /tmp/fl-demo && bash reset.sh      # re-plant the bug
 ```
+
+`/tmp/fl-demo` is a throwaway copy with no `.git`, and it **keeps** the agent's
+fix afterwards — which is the point here, because the next step diffs it. Run the
+three commands again to start over.
 
 Now paste this into the DSH session:
 
@@ -541,7 +623,7 @@ This is the whole payoff — the policies are visible in the transcript:
 | `[review] ASK HUMAN via policy — edit: reversible-write needs a confidence estimate and none was available — asking rather than guessing` | Why it asked. This is **fail-closed**: no judge ⇒ no evidence of confidence ⇒ ask. (The tail is part of the real message; shortened versions in older notes were wrong.) |
 | `[review] ASK HUMAN via signal` | A critical detector fired (`error-cascade`, `tool-cycle`). Critical signals are never rate-limited. |
 | A step count that stops at your ceiling | `maxSteps` fired as a **limit, not an invoice** — it stops *before* the expensive call. |
-| `MODEL ESCALATION` in a notice | The ladder moved up a rung on evidence. |
+| `MODEL ESCALATION` in a notice | The ladder moved up a rung on evidence. It needs **two consecutive failed steps** (`escalateAfterFailures: 2`) on a two-rung ladder — with the shipped one-rung `cordis.patch.yml` this notice cannot appear, so a run that never shows it is not misconfigured. |
 | `spawn_teammate`, `send_message`, `team_task_*` | Agent Teams is live. |
 
 ### Before you expect a prompt: pick the `workspace-write` preset
@@ -706,7 +788,7 @@ These are real and documented in [`docs/PRD.md`](PRD.md). Setup does not fix the
    signals are deliberately not rate-limited — safety is not subject to an
    attention budget — so a run with an error cascade exceeds the target by
    design.
-4. **The price table is illustrative.** `mimo-v2.5` runs on a subscription, so
+4. **The price table is illustrative.** the gateway runs on a subscription, so
    marginal cost is near zero; the rates exist so a ceiling has something to
    measure against.
 5. **`run_tests` timeouts kill the direct child, not grandchildren.**

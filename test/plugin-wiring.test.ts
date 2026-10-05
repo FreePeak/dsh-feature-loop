@@ -27,21 +27,38 @@ import { test } from 'node:test'
 
 import { apply, createPolicy, reviewStep, routeForStep } from '../src/plugin.ts'
 import type { CreatePolicyOptions, FeatureLoopPolicy } from '../src/plugin.ts'
+import { clearWatcher, noteWatcher } from '../src/approvals.ts'
 
 /** The plugin's decision shapes, narrowed to what this file reads. */
 interface Decision { kind: string, reason?: string, messages?: { source?: { kind?: string } }[] }
 type Handler = (payload: unknown, next: () => Promise<Decision>) => Promise<Decision>
 
 /** A context that records handlers instead of dispatching them. */
-function fakeCtx(): { ctx: unknown, handler: (event: string) => Handler } {
+function fakeCtx(): {
+  ctx: unknown
+  handler: (event: string) => Handler
+  /** Optional services, reachable only through `reflect.get(name, false)`. */
+  extras: Record<string, unknown>
+} {
   const handlers = new Map<string, Handler>()
+  const extras: Record<string, unknown> = {}
   return {
     ctx: {
       on(event: string, fn: Handler): () => void {
         handlers.set(event, fn)
         return () => { handlers.delete(event) }
       },
+      // Cordis's own optional lookup. The gate reads `typertGateway` this way
+      // (§1be) because a hoisted read of an unmounted service throws, and a
+      // throw inside the gate is an ERROR for every gated call, not a decision.
+      reflect: {
+        get(name: string, strict?: boolean): unknown {
+          if (strict === false || name in extras) return extras[name]
+          throw new Error(`fakeCtx: no service "${name}"`)
+        },
+      },
     },
+    extras,
     handler(event: string): Handler {
       const fn = handlers.get(event)
       assert.ok(fn !== undefined, `no handler registered for "${event}"`)
@@ -59,7 +76,15 @@ function fakeCtx(): { ctx: unknown, handler: (event: string) => Handler } {
 const SPEC: NonNullable<CreatePolicyOptions['spec']> = {
   goal: 'Ship the fix with a passing test.',
   sensor: ['test output'],
-  controller: { ladder: [{ model: 'cheap' }, { model: 'pricy' }] },
+  // `escalateAfterFailures` is set on purpose: `ModelLadder.recordFailure`
+  // returns early when it is undefined, so this SPEC's ladder could only ever
+  // climb on `stepsPerRung`. The other ladder tests here set `stepsPerRung: 99`
+  // for the same reason — one signal at a time, so a test cannot pass for the
+  // wrong one.
+  controller: {
+    ladder: [{ model: 'cheap' }, { model: 'pricy' }],
+    escalateAfterFailures: 2,
+  },
   actuator: { write_file: 'irreversible', read_file: 'read' },
   feedback: 'the suite passes',
   termination: { successCommand: 'npm test', guards: ['no-progress'] },
@@ -68,16 +93,50 @@ const SPEC: NonNullable<CreatePolicyOptions['spec']> = {
   prices: {},
 }
 
-/** One agent object, shared by the hooks of a single run. */
-const AGENT = {}
+/**
+ * One agent object, shared by the hooks of a single run.
+ *
+ * `id` is real because `resolveAgent` looks the agent up BY SESSION ID through
+ * the `agents` service: a session whose id resolves to nothing is recorded
+ * against the agent-less policy, which is a different object from the one the
+ * hooks wrote to. `AGENT_ID` is the id the session fixtures below carry.
+ */
+const AGENT = { id: 'sess-signals' }
+
+/** The session id that resolves to {@link AGENT}. */
+const AGENT_ID = 'sess-signals'
+
+/** The agent id, structural: the fixtures are plain objects, not harness Agents. */
+function agentId(agent: unknown): string {
+  const id = (agent as { id?: unknown } | null)?.id
+  return typeof id === 'string' && id !== '' ? id : 'agentless'
+}
 
 /** Mount the plugin with the dashboard off (it would bind a port per test). */
-function mount(options: CreatePolicyOptions): {
+/**
+ * Mount the plugin with the dashboard OFF, and a watcher on by default.
+ *
+ * `gateMode: ask` refuses up front when no front end is watching — see
+ * `gateForTool` — so every assertion that an `ask` is returned is a claim that
+ * somebody COULD answer it. `watched: false` is how a test states the other
+ * case rather than inheriting a TTL left behind by the previous test.
+ */
+function mount(options: CreatePolicyOptions, watched: boolean = true, liveClient: boolean = false): {
   ctx: unknown
   handler: (event: string) => Handler
   dispose: () => void
 } {
-  const { ctx, handler } = fakeCtx()
+  const { ctx, handler, extras } = fakeCtx()
+  // A live UI client stream is what carries the HARNESS's composer panel, which
+  // answers `approval/request` without ever polling this plugin (§1be). Off by
+  // default so every existing assertion keeps the fail-closed reading.
+  extras['typertGateway'] = { hasLiveClient: () => liveClient }
+  // Stated, not inherited: the watcher is process-global with a TTL, so a test
+  // that did not set it would depend on whichever test ran before it. Running
+  // this one case alone passed while the suite failed, which is the whole
+  // argument for clearing here.
+  if (watched) noteWatcher()
+  else clearWatcher()
   return { ctx, handler, dispose: apply(ctx as never, { ...options, dashboard: { enabled: false } }) }
 }
 
@@ -108,10 +167,11 @@ async function tool(
   handler: (event: string) => Handler,
   name: string,
   agent: unknown = AGENT,
+  args: Record<string, unknown> = { path: 'a.ts' },
 ): Promise<{ decision: Decision, delegated: boolean }> {
   let delegated = false
   const decision = await handler('tools/pre-execute')(
-    { agent, name, arguments: { path: 'a.ts' } },
+    { agent, name, arguments: args },
     async () => { delegated = true; return { kind: 'allow' } },
   )
   return { decision, delegated }
@@ -130,8 +190,66 @@ test('a tool call the gate blocks never reaches the harness', async () => {
   assert.equal(delegated, false, 'the call must be decided here, not passed on')
   assert.equal(decision.kind, 'ask')
   assert.match(decision.reason ?? '', /REVIEW REQUESTED \(policy\)/)
+  // The card names what it is about. Measured 2026-10-03: five asks for three
+  // files produced five identical cards, and a gate whose cards cannot be told
+  // apart trains the click that makes it worthless.
+  assert.match(decision.reason ?? '', /write_file a\.ts/)
   dispose()
   void ctx
+})
+
+test('two writes in one run produce two DIFFERENT cards', async () => {
+  // The assertion the previous one exists for: it is not enough that a card
+  // carries a subject, it is that two cards about different files differ.
+  const { handler, dispose } = mount({ spec: SPEC })
+  const first = await tool(handler, 'write_file', AGENT, { path: 'notes/first.md' })
+  const second = await tool(handler, 'write_file', AGENT, { path: 'notes/second.md' })
+  assert.notEqual(first.decision.reason, second.decision.reason)
+  assert.match(first.decision.reason ?? '', /notes\/first\.md/)
+  assert.match(second.decision.reason ?? '', /notes\/second\.md/)
+  dispose()
+})
+
+test('a bash card names the command, because bash is gated too', async () => {
+  const { handler, dispose } = mount({ spec: SPEC })
+  const { decision } = await tool(handler, 'bash', AGENT, { command: 'ls notes' })
+  assert.equal(decision.kind, 'ask')
+  assert.match(decision.reason ?? '', /bash ls notes/)
+  dispose()
+})
+
+test('a card never quotes the file contents back at the reviewer', async () => {
+  // The subject is a path or a command; the CONTENT is the thing the human has
+  // not decided about, and putting it on the card invites approving a diff
+  // nobody read.
+  const { handler, dispose } = mount({ spec: SPEC })
+  // Invented content, and deliberately NOT shaped like a credential: a fixture
+  // that reads as a key is one this repo's own scan will (correctly) refuse to
+  // let through, and the property under test does not need one.
+  const contents = 'const timeoutMs = 30_000'
+  const { decision } = await tool(handler, 'write_file', AGENT, { path: 'a.ts', content: contents })
+  assert.match(decision.reason ?? '', /a\.ts/)
+  assert.equal(decision.reason?.includes(contents), false)
+  dispose()
+})
+
+test('a card with nothing to name says nothing extra', async () => {
+  // No path, no command: the reason must be byte-identical to the old one, so
+  // an unnamable call gains no noise.
+  const { handler, dispose } = mount({ spec: SPEC })
+  const { decision } = await tool(handler, 'write_file', AGENT, { mode: 'overwrite' })
+  assert.equal(decision.kind, 'ask')
+  assert.equal(decision.reason?.includes('write_file —'), false)
+  dispose()
+})
+
+test('a multi-line or runaway subject is dropped, not truncated onto the card', async () => {
+  const { handler, dispose } = mount({ spec: SPEC })
+  const multiline = await tool(handler, 'bash', AGENT, { command: 'echo a\necho b' })
+  assert.equal(multiline.decision.reason?.includes('echo a'), false)
+  const long = await tool(handler, 'bash', AGENT, { command: 'x'.repeat(300) })
+  assert.equal(long.decision.reason?.includes('x'.repeat(100)), false)
+  dispose()
 })
 
 test('a read-only tool is delegated to the harness', async () => {
@@ -140,6 +258,51 @@ test('a read-only tool is delegated to the harness', async () => {
   assert.equal(delegated, true)
   assert.equal(decision.kind, 'allow')
   dispose()
+})
+
+test('an ask with NO front end watching is refused here, not by the harness', async () => {
+  // The harness's own fail-closed is correct but its message is
+  //   tool "write_file" requires approval, but no approval channel is available
+  // which a run reports as a SANDBOX denial — a different fact, and one that
+  // sends the model hunting for a narrower tool. Measured 2026-10-03: the model
+  // spent its remaining budget on that question and produced no work.
+  //
+  // So the refusal is the plugin's, it says what is actually true, and it says
+  // what to do about it. This is the assertion that keeps gateMode: ask from
+  // degrading into a confusing deny.
+  const { handler, dispose } = mount({ spec: SPEC }, false)
+  const { decision, delegated } = await tool(handler, 'write_file')
+  assert.equal(delegated, false)
+  assert.equal(decision.kind, 'deny')
+  assert.match(decision.reason ?? '', /nobody is watching/)
+  assert.match(decision.reason ?? '', /gateMode: deny/)
+  dispose()
+})
+
+test('a composer answering with NO dashboard page is not "nobody watching"', async () => {
+  // §1be, the half its fixtures asserted and did not test. The watcher is a
+  // Feature Loop page heartbeat, so a TTY operator reading the HARNESS's own
+  // approval composer was recorded as "nobody is watching" and their ask was
+  // denied up front with a sentence telling them to open a page they did not
+  // need. Reading the harness settled what the plugin can actually see:
+  // `@deepseek-ai/dsh-client-ui-approval` consumes `approval/request` over the
+  // gateway's client stream and never touches `/api/state`.
+  //
+  // So the composer is a real channel, and its liveness is `hasLiveClient()`.
+  const { handler, dispose } = mount({ spec: SPEC }, false, true)
+  const { decision, delegated } = await tool(handler, 'write_file')
+  assert.equal(decision.kind, 'ask',
+    'the gate must ask, and let the composer answer — the registry still '
+    + 'declines the claim because no page is watching')
+  assert.equal(delegated, false)
+  dispose()
+
+  // And the fail-closed reading survives: a gateway that reports NO live client
+  // is the same as no gateway at all.
+  const closed = mount({ spec: SPEC }, false, false)
+  const refused = await tool(closed.handler, 'write_file')
+  assert.equal(refused.decision.kind, 'deny')
+  closed.dispose()
 })
 
 test('an agent-less call is still gated — the fail-open regression', async () => {
@@ -410,6 +573,196 @@ test('a settled attempt is priced even when the session cursor is already past i
   dispose()
 })
 
+test('a ctx whose proxy THROWS for `agents` still records the turn', async () => {
+  // §1bw's sibling, one function away and found the same way. `ctx.agents` on a
+  // cordis context is a PROXY: on a fiber without the `agents` dependency,
+  // reading it throws `cannot get property "agents" without inject`. The old
+  // lookup sat inside a try/catch and turned that into `undefined` for EVERY
+  // session — so `policyFor(undefined)` returned the agent-less policy and every
+  // harness-path record reported a fresh budget, zero steps and zero cost.
+  //
+  // The fixture below models the throwing proxy. `ctx.reflect.get('agents',
+  // false)` is cordis's own lookup: the service or `undefined`, never a throw.
+  const { mkdtempSync, readFileSync, existsSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-proxy-throw-'))
+  const historyPath = join(dir, 'runs.jsonl')
+
+  const session = settledSession([PRICED_MSG])
+  const agent = { id: 'sess-proxy', session }
+  const agents = new Map<string, typeof agent>([['sess-proxy', agent]])
+  const registry = { get: (id: string) => agents.get(id) }
+
+  const handlers = new Map<string, (...args: unknown[]) => unknown>()
+  const ctx = {
+    // cordis's proxy: reading a service the fiber does not depend on throws.
+    get agents(): never {
+      throw new Error('cannot get property "agents" without inject')
+    },
+    // …and its own lookup, which does not.
+    reflect: { get: (name: string, strict?: boolean) => (name === 'agents' && strict !== true ? registry : undefined) },
+    on(event: string, fn: (...args: unknown[]) => unknown): () => void {
+      handlers.set(event, fn)
+      return () => { handlers.delete(event) }
+    },
+  }
+  const dispose = apply(ctx as never, {
+    spec: {
+      ...SPEC,
+      maxSteps: 99,
+      costBudgetUSD: 5,
+      prices: { 'onegw/execution': { inputPerMTok: 0.3, outputPerMTok: 1.2 } },
+      controller: { ladder: [{ provider: 'onegw', model: 'execution' }] },
+    },
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+  })
+
+  const pre = handlers.get('agent/pre-step') as Handler
+  await pre(
+    { agent, messages: [], turn: 1, step: 1, signal: new AbortController().signal },
+    async () => ({ kind: 'enter', messages: [] }),
+  )
+  const sessionHandler = handlers.get('session/event')
+  assert.ok(sessionHandler !== undefined, 'session/event must register when history is on')
+  sessionHandler({ id: 'sess-proxy' }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline && !existsSync(historyPath)) {
+    await new Promise(resolve => { setTimeout(resolve, 10) })
+  }
+  assert.ok(existsSync(historyPath), 'a throwing ctx.agents must not lose the record')
+  const [line] = readFileSync(historyPath, 'utf8').trim().split('\n')
+  const record = JSON.parse(line!) as Record<string, unknown>
+  // The point of the test: the AGENT's budget, not a fresh one. Zero steps here
+  // would mean the agent-less policy answered.
+  assert.equal(record.maxSteps, 99, 'the resolved agent\'s own spec, not the agent-less fallback')
+  dispose()
+})
+
+test('a THROWING ctx.agents still records the turn', async () => {
+  // `ctx.agents` is a cordis PROXY, and reading it on a fiber where
+  // `AgentRegistry` has not mounted THROWS `cannot get property "agents" without
+  // inject`. Measured 2026-10-03 on a live web run: that throw escaped into the
+  // turn record, and the feed showed `run history append failed` — the one
+  // thing the history exists to be, gone.
+  //
+  // No agent found is ALREADY a supported answer (the agent-less policy, with
+  // shared ceilings and an honest label). A getter that throws is the same
+  // answer with noise on it, not a lost record.
+  const { mkdtempSync, readFileSync, existsSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-agents-throw-'))
+  const historyPath = join(dir, 'runs.jsonl')
+
+  const session = settledSession([PRICED_MSG])
+  const handlers = new Map<string, (...args: unknown[]) => unknown>()
+  const ctx = {
+    get agents(): never {
+      throw new Error('cannot get property agents without inject')
+    },
+    on(event: string, fn: (...args: unknown[]) => unknown): () => void {
+      handlers.set(event, fn)
+      return () => { handlers.delete(event) }
+    },
+  }
+  apply(ctx as never, {
+    spec: SPEC,
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+  })
+
+  const sessionHandler = handlers.get('session/event') as Handler
+  sessionHandler({ id: 'sess-throwing' }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+
+  // recordTurn is async and imports runlog.ts dynamically, so the append lands
+  // a tick or two later. Poll for the file instead of guessing a sleep.
+  for (let attempt = 0; attempt < 100 && !existsSync(historyPath); attempt += 1) {
+    await new Promise(resolve => { setTimeout(resolve, 10) })
+  }
+  assert.ok(existsSync(historyPath), 'a throwing ctx.agents must not lose the record')
+  const [line] = readFileSync(historyPath, 'utf8').trim().split('\n')
+  assert.equal(JSON.parse(line!).runId, 'sess-throwing')
+})
+
+test('the record reports the reviews the router counted, not a literal zero', async () => {
+  // `recordTurn` wrote `reviewFraction: 0`, so every harness-path record
+  // claimed a human-escalation rate of exactly zero and `summarize`'s
+  // "Human escalation rate > 15%" alert could never fire however many reviews
+  // the loop had requested. The count was on `policy.router` the whole time,
+  // exposed by its own `stats()`.
+  //
+  // Driven through `createPolicy`, which is the same factory `apply` uses, so
+  // the object under test is the one `recordTurn` reads.
+  const policy: FeatureLoopPolicy = createPolicy({
+    spec: { ...SPEC, maxSteps: 99, costBudgetUSD: 5 },
+    router: { checkpointAtStep: 1 },
+  })
+  policy.router.observeStep()
+  policy.router.observeStep()
+  const asked = policy.router.checkpoint(1)
+  assert.equal(asked?.review, true, 'the checkpoint is the configured review')
+
+  const stats = policy.router.stats()
+  assert.equal(stats.steps, 2)
+  assert.equal(stats.reviews, 1)
+  assert.equal(stats.fraction, 0.5, '1 review over 2 steps is 50%, which is what the record must say')
+})
+
+test('a turn that ran steps keeps goal-met when the transport completed', async () => {
+  // The other half of the zero-step rule: the guard must not turn a real run
+  // into a failure. This charges a priced assistant message first, so the record
+  // has steps to report.
+  const { mkdtempSync, readFileSync, existsSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-hist-steps-'))
+  const historyPath = join(dir, 'runs.jsonl')
+  const session = settledSession([PRICED_MSG])
+  const agent = { id: 'sess-steps', session }
+  const agents = new Map<string, typeof agent>([['sess-steps', agent]])
+  // `agents` must exist BEFORE `apply`: the plugin resolves the session's agent
+  // when it records the turn, and assigning it afterwards is too late.
+  const { ctx, handler } = fakeCtx()
+  Object.assign(ctx as object, {
+    agents: { get: (id: string) => agents.get(id) },
+    // cordis's own lookup — the shape the production code actually reads.
+    reflect: { get: (name: string, strict?: boolean) => (name === 'agents' && strict !== true ? { get: (id: string) => agents.get(id) } : undefined) },
+  })
+  const dispose = apply(ctx as never, {
+    spec: {
+      ...SPEC,
+      maxSteps: 99,
+      costBudgetUSD: 5,
+      prices: { 'onegw/execution': { inputPerMTok: 0.3, outputPerMTok: 1.2 } },
+      controller: { ladder: [{ provider: 'onegw', model: 'execution' }] },
+    },
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+  })
+  // (payload, next) — two arguments, not six. The payload is ONE object; the
+  // neighbouring test's call is the shape to copy, which is why it is here.
+  const pre = handler('agent/pre-step')
+  await pre(
+    { agent, messages: [], turn: 1, step: 1, signal: new AbortController().signal },
+    async () => ({ kind: 'enter', messages: [] }),
+  )
+
+  const sessionHandler = handler('session/event') as unknown as (s: unknown, e: unknown) => unknown
+  sessionHandler({ id: 'sess-steps' }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline && !existsSync(historyPath)) {
+    await new Promise(resolve => { setTimeout(resolve, 10) })
+  }
+  const [line] = readFileSync(historyPath, 'utf8').trim().split('\n')
+  const record = JSON.parse(line!) as Record<string, unknown>
+  assert.ok(Number(record.steps) > 0, 'this turn did work, so it must have steps')
+  assert.equal(record.outcome, 'goal-met', 'a real completed turn is still goal-met')
+  dispose()
+})
+
 test('session/event records cost against the agent resolved from ctx.agents', async () => {
   // agentOfSession was a stub returning undefined, so turn records always
   // read the agent-less shared policy (fresh zero budget) even when the live
@@ -427,6 +780,8 @@ test('session/event records cost against the agent resolved from ctx.agents', as
   const handlers = new Map<string, (...args: unknown[]) => unknown>()
   const ctx = {
     agents: { get: (id: string) => agents.get(id) },
+    // cordis's own lookup — the shape the production code actually reads.
+    reflect: { get: (name: string, strict?: boolean) => (name === 'agents' && strict !== true ? { get: (id: string) => agents.get(id) } : undefined) },
     on(event: string, fn: (...args: unknown[]) => unknown): () => void {
       handlers.set(event, fn)
       return () => { handlers.delete(event) }
@@ -474,4 +829,614 @@ test('session/event records cost against the agent resolved from ctx.agents', as
   assert.ok(record !== undefined, 'run record must land')
   assert.ok((record!.costUSD as number) > 0, `expected non-zero cost, got ${String(record!.costUSD)}`)
   assert.equal(record!.runId, 'sess-live')
+})
+
+// ── the settings file ──────────────────────────────────────────────────────
+//
+// The last hop. test/remote.test.ts unit-tests the merge (it imports no harness
+// package, so CI runs it); what only this file can see is that `index.ts` CALLS
+// it on the way into `apply`, so a value saved in the settings file changes what
+// the tool boundary does. Remove that call and these two fail while every other
+// test in the suite still passes — which is the exact shape of the bug this
+// replaces: a page that showed a value the gate never consulted.
+
+/** A temp XDG config home holding one settings file, for one test. */
+async function withSettingsFile(body: string, run: () => Promise<void>): Promise<void> {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const home = mkdtempSync(join(tmpdir(), 'dshloop-settings-'))
+  const saved = process.env.XDG_CONFIG_HOME
+  process.env.XDG_CONFIG_HOME = home
+  try {
+    mkdirSync(join(home, 'dshloop'), { recursive: true })
+    writeFileSync(join(home, 'dshloop', 'config.yaml'), body)
+    await run()
+  } finally {
+    if (saved === undefined) delete process.env.XDG_CONFIG_HOME
+    else process.env.XDG_CONFIG_HOME = saved
+    rmSync(home, { recursive: true, force: true })
+  }
+}
+
+test('the settings file widens the gate the plugin actually enforces', async () => {
+  await withSettingsFile('gatePolicies:\n  write: auto\n', async () => {
+    const { mergeRowAndSettings } = await import('../src/remote.ts')
+    // The row says `write_file` is always-approve; the file says auto and the
+    // FILE WINS — that is the whole contract, exercised through the merge the
+    // plugin row is given.
+    const merged = mergeRowAndSettings({ gatePolicies: { write_file: 'always-approve' } })
+    assert.deepEqual(merged.gatePolicies, { write: 'auto' })
+
+    const { ctx, handler, dispose } = mount({ ...SPEC_OPTS, gatePolicies: merged.gatePolicies as never })
+    try {
+      const { decision, delegated } = await tool(handler, 'write')
+      assert.equal(delegated, true, 'an auto policy must pass the call to the harness')
+      assert.equal(decision.kind, 'allow')
+    } finally {
+      dispose()
+      void ctx
+    }
+  })
+})
+
+test('the settings file tightens it too: deny wins over the row asking', async () => {
+  await withSettingsFile('gateMode: deny\n', async () => {
+    const { mergeRowAndSettings } = await import('../src/remote.ts')
+    // The row asks; the file denies. Both stop the call, and `deny` stops it
+    // WITHOUT prompting — which is the only difference, and the reason `deny`
+    // is the right value for an unattended run.
+    const merged = mergeRowAndSettings({ gateMode: 'ask', gatePolicies: { write: 'always-approve' } })
+    assert.equal(merged.gateMode, 'deny')
+
+    const { ctx, handler, dispose } = mount({
+      ...SPEC_OPTS,
+      gateMode: merged.gateMode as never,
+      gatePolicies: merged.gatePolicies as never,
+    })
+    try {
+      const { decision, delegated } = await tool(handler, 'write')
+      assert.equal(delegated, false, 'deny refuses here rather than passing the call on')
+      assert.equal(decision.kind, 'deny')
+      assert.match(decision.reason ?? '', /REVIEW REQUESTED/)
+    } finally {
+      dispose()
+      void ctx
+    }
+  })
+})
+
+// Shared by the two settings tests above so each asserts the merge and not a
+// second copy of the same spec.
+const SPEC_OPTS: CreatePolicyOptions = {
+  spec: SPEC,
+  gatePolicies: { write: 'always-approve' },
+}
+
+// The judge is the one setting that is NOT a plain value: `judge: laya` in the
+// file is a STRING, and the plugin has to build a Judge object out of it.
+//
+// Reproduced live 2026-10-03 on a profile from make-profile.sh, with a settings
+// file the panel itself had written: the boot died on the first step with
+// `dsh: UNKNOWN: policy.judge.score is not a function`. The merge was spread
+// AFTER the constructed `judge:` in index.ts, so the string overwrote the Judge
+// and nothing failed until a step asked it for a score.
+//
+// So this drives `apply` — the CALL SITE — not `resolveJudge` alone. The first
+// version of this test called the resolver and passed against the live bug,
+// which is the same mistake in a new place: a test that exercises the helper
+// proves the helper works, not that the helper is reached correctly.
+
+test('apply builds a Judge from the settings file, not the string in it', async () => {
+  await withSettingsFile('judge: none\n', async () => {
+    const { apply: applyRow } = await import('../src/index.ts')
+    const { ctx, handler } = fakeCtx()
+    // The row asks for `laya`; the file says `none`. Either can win — what must
+    // never reach the policy is the STRING.
+    applyRow(ctx as never, {
+      spec: SPEC,
+      judge: 'laya',
+      judgeBaseURL: 'http://127.0.0.1:1',
+      gatePolicies: { write: 'auto' },
+      dashboard: { enabled: false },
+    } as never)
+    await handler('agent/pre-step')(
+      { agent: AGENT, messages: [], turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ kind: 'enter', messages: [] }),
+    )
+    // `proceed` is the gate's word for "delegate to the harness"; the harness
+    // then answers `allow`. Both together mean the judge was consulted (or not
+    // needed) and was callable. A string judge throws inside `next()` or inside
+    // the gate, which is the crash this test exists for.
+    let delegated = false
+    await handler('tools/pre-execute')(
+      { agent: AGENT, name: 'write', arguments: { path: 'a.ts' } },
+      async () => { delegated = true; return { kind: 'allow' } },
+    )
+    assert.equal(delegated, true, 'the call reached the harness, so no judge call threw')
+  })
+})
+
+test('a harness-path record carries the detectors real signals, not one placeholder per step', () => {
+  // §1cd: every signal in 21 live records read `kind: 'detector',
+  // severity: 'info'`, because `recordTurn` wrote
+  // `policy.history.map(() => ({kind:'detector', severity:'info'}))` — one
+  // synthetic "a detector exists" per recorded step. The column was present,
+  // plausible, and carried nothing.
+  //
+  // Two consequences make this worth a test rather than a comment. (1)
+  // `summarize`'s cycle alert counts `kind === 'tool-cycle'` over this field, so
+  // on a harness-path record it could NEVER fire — a threshold reading a field
+  // that cannot hold its value. (2) The optimizer battery reasons over it, so
+  // every lever that depends on WHICH detector fired is answered from config
+  // alone.
+  return (async () => {
+    const { mkdtempSync, readFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-signals-'))
+    const historyPath = join(dir, 'runs.jsonl')
+
+    const handlers = new Map<string, (...args: unknown[]) => unknown>()
+    // `reflect.get('agents', false)` — Cordis's own optional lookup, which
+    // `policyFor` and `resolveAgent` both read (§1bx/§1bx's follow-up). Without
+    // it every hook resolves the AGENT-LESS policy: a DIFFERENT policy object
+    // from the one `reviewStep` wrote its signals to, so `recordTurn` reads
+    // `undefined` from a policy that was never told anything. The first draft of
+    // this test had no registry and recorded `signals: []`, which read as "no
+    // detector fired" — the same false negative in a different costume.
+    const registry = new Map<string, unknown>([[agentId(AGENT), AGENT]])
+    const ctx = {
+      on(event: string, fn: (...args: unknown[]) => unknown): () => void {
+        handlers.set(event, fn)
+        return () => { handlers.delete(event) }
+      },
+      reflect: {
+        get: (name: string, strict?: boolean): unknown =>
+          (name === 'agents' && strict !== true) ? registry : undefined,
+      },
+    }
+    const dispose = apply(ctx as never, {
+      spec: { ...SPEC, maxSteps: 99, costBudgetUSD: 5 },
+      dashboard: { enabled: false },
+      optimize: { history: historyPath },
+    } as never)
+
+    // Five boundaries, each: pre-step (which COMMITS the previous step's
+    // observation), then a tool call that runs and FAILS. The order is the
+    // point — a failing tool call is only visible to the detectors on the NEXT
+    // pre-step, because that is where the observation is committed. Three
+    // consecutive failures are what `error-cascade` needs, so five boundaries
+    // reach it; writing this the obvious way (four pre-steps with no tool call)
+    // produces an empty history and a record with nothing in it, which is how
+    // the first draft of this test passed for the wrong reason.
+    const pre = handlers.get('agent/pre-step') as Handler
+    const preTool = handlers.get('tools/pre-execute') as Handler
+    const post = handlers.get('tools/post-execute') as Handler
+    const sessionHandler = handlers.get('session/event')
+    assert.ok(sessionHandler !== undefined)
+    for (let step = 1; step <= 5; step += 1) {
+      await pre(
+        { agent: AGENT, messages: [], turn: 1, step, signal: new AbortController().signal },
+        async () => ({ kind: 'enter', messages: [] }),
+      )
+      await preTool(
+        { agent: AGENT, name: 'write_file', arguments: {} },
+        async () => ({ kind: 'allow' }),
+      )
+      await post({ agent: AGENT }, { isError: true }, async () => undefined)
+    }
+    sessionHandler(
+      { id: agentId(AGENT) },
+      { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+    )
+
+    const deadline = Date.now() + 5000
+    while (Date.now() < deadline && !readFileSync(historyPath, 'utf8').includes('signals')) {
+      await new Promise(resolve => { setTimeout(resolve, 10) })
+    }
+    const lines = readFileSync(historyPath, 'utf8').trim().split('\n').filter(Boolean)
+    const record = JSON.parse(lines[lines.length - 1]!) as {
+      signals: { kind: string, severity: string }[]
+    }
+    assert.ok(Array.isArray(record.signals), 'a record must carry a signals array')
+    assert.equal(
+      record.signals.every(sig => sig.kind === 'detector' && sig.severity === 'info'),
+      false,
+      'the placeholder shape is the defect: every signal reading '
+      + '"detector/info" is "a detector exists", which is not what a detector '
+      + 'that fired reports',
+    )
+    assert.ok(record.signals.some(sig => sig.kind === 'error-cascade'),
+      `the closed turn's real detector verdict must be in the record; got `
+      + `${JSON.stringify(record.signals.map(sig => sig.kind))}`)
+    dispose()
+  })()
+})
+
+test('the optimizer is asked only once the history is evidence, and then it writes', () => {
+  // `recommendations` was forwarded by `projectLive` (a65257b) and set by NOBODY:
+  // `setRecommendations` had no production caller in the repo, so the key could
+  // never be present on the wire and no renderer could have drawn it. The gap
+  // is the WRITER — found by asking who writes a field, not by hunting for a
+  // missing component (which is how a65257b's sibling, `metrics`, was found).
+  //
+  // Both facts matter and only one is obvious: the battery must not run per
+  // turn (seven sequential judge round trips on the hot path of every closed
+  // turn), and what it produces must be PUBLISHED — a list computed and dropped
+  // is indistinguishable from no list at all, which is the shape of every
+  // defect in this chain.
+  return (async () => {
+    const { mkdtempSync, readFileSync, existsSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-advisory-'))
+    const historyPath = join(dir, 'runs.jsonl')
+    const { RECOMMENDATION_MIN_RUNS } = await import('../src/plugin.ts')
+
+    let asked = 0
+    const judge = {
+      score: async (_state: string, questions: Record<string, { type?: string, options?: unknown[] }>) => {
+        asked += 1
+        for (const question of Object.values(questions)) {
+          if (question.type === 'choice' && Array.isArray(question.options)) {
+            return { score: question.options[0] as string, error: undefined }
+          }
+          if (question.type === 'noul') return { score: 0.5, error: undefined }
+          return { score: 2, error: undefined }
+        }
+        return { score: 0, error: undefined }
+      },
+    } as unknown as FeatureLoopPolicy['judge']
+
+    // The snapshot is what the page reads, and `DashboardState.note` is the one
+    // method every path through this plugin passes — so capturing `this` there
+    // yields the live state without a seam into the plugin's internals. The
+    // patch is undone in a `finally` because this file runs in one process with
+    // every other case, and a leaked prototype patch would make every later
+    // case's feed assertions pass vacuously.
+    let captured: { snapshot(): { recommendations?: unknown[], feed: { text: string }[] } } | undefined
+    const stateModule = await import('../src/dashboard.ts')
+    const realNote = stateModule.DashboardState.prototype.note
+    stateModule.DashboardState.prototype.note = function capture(
+      this: unknown, kind: string, text: string, runId?: string,
+    ): void {
+      captured = this as typeof captured
+      return (realNote as (...a: unknown[]) => unknown).call(this, kind, text, runId)
+    } as typeof stateModule.DashboardState.prototype.note
+
+    try {
+      const handlers = new Map<string, (...args: unknown[]) => unknown>()
+      const ctx = {
+        on(event: string, fn: (...args: unknown[]) => unknown): () => void {
+          handlers.set(event, fn)
+          return () => { handlers.delete(event) }
+        },
+      }
+      const dispose = apply(ctx as never, {
+        spec: SPEC,
+        judge,
+        dashboard: { enabled: false },
+        optimize: { history: historyPath },
+      } as never)
+
+      const sessionHandler = handlers.get('session/event')
+      assert.ok(sessionHandler !== undefined, 'session/event must register when history is on')
+      const endTurn = (turn: number): void => {
+        sessionHandler(
+          { id: 'sess-advisory' },
+          { type: 'turn/end', data: { turn, reason: { kind: 'completed' } } },
+        )
+      }
+      // One turn short of the threshold: the battery must not have been paid.
+      for (let turn = 1; turn < RECOMMENDATION_MIN_RUNS; turn += 1) endTurn(turn)
+      await new Promise(resolve => { setTimeout(resolve, 60) })
+      assert.equal(asked, 0,
+        `${String(RECOMMENDATION_MIN_RUNS - 1)} turns is not evidence; seven judge `
+        + 'round trips are not a per-turn cost')
+
+      // The turn that reaches it. Wait for the PUBLICATION, not the first judge
+      // call: the battery is seven sequential awaits, so `asked > 0` is true
+      // long before the list exists. Waiting on `asked` here passed against a
+      // build that dropped every proposal.
+      endTurn(RECOMMENDATION_MIN_RUNS)
+      const deadline = Date.now() + 5000
+      while (Date.now() < deadline && captured?.snapshot().recommendations === undefined) {
+        await new Promise(resolve => { setTimeout(resolve, 10) })
+      }
+      assert.ok(asked > 0, 'the battery runs once the history is long enough')
+      // The SNAPSHOT, not the feed line: a feed line naming the count is written
+      // on both branches, so asserting it passes against a build that computes
+      // the battery and drops every proposal. `recommendations` is the field
+      // `projectLive` forwards, so this is the value the page would render.
+      const snapshot = captured?.snapshot()
+      assert.notEqual(snapshot?.recommendations, undefined,
+        'the recommendations must reach the SNAPSHOT — the key `projectLive` '
+        + 'forwards, and the one no renderer could ever see')
+      assert.ok((snapshot?.recommendations?.length ?? 0) > 0,
+        'and it must be non-empty: the battery answered, so a zero-length list '
+        + 'means the proposals were computed and thrown away')
+      assert.ok(snapshot?.feed.some(f => f.text.includes('proposal(s)')),
+        'and the feed must say what was published')
+
+      assert.ok(existsSync(historyPath), 'the records the battery read are on disk')
+      assert.ok(readFileSync(historyPath, 'utf8').split('\n').filter(Boolean).length >= RECOMMENDATION_MIN_RUNS,
+        'and every closed turn is in them — a torn write would read as a shorter '
+        + 'history and re-arm the threshold')
+      dispose()
+    } finally {
+      stateModule.DashboardState.prototype.note = realNote
+    }
+  })()
+})
+
+// ── a call that RAN and failed ──────────────────────────────────────────────
+
+test('a tool that RAN and FAILED climbs the ladder; one that succeeded does not', async () => {
+  // The regression for §1q, driven end to end because the policy map is the
+  // plugin's own and there is no accessor for it.
+  //
+  // Before `tools/post-execute` was subscribed, `policy.pending.error` was set in
+  // exactly one branch — the one where the GATE blocks a call. A `bash` that
+  // executed and exited 1 therefore left `error: false`, `reviewStep` read the
+  // step as a success, and the ladder climbed only when the gate stopped the
+  // loop. `error-cascade` never counted a visibly failing run either.
+  //
+  // The route for a step is decided on `agent/pre-step` (that is where
+  // `reviewStep` runs and where the previous step's outcome is committed);
+  // `agent/request` only reports the route already decided. Both are driven,
+  // in that order, because that is the order the harness uses.
+  // `bash` is deliberately OPEN in the gate. `SPEC`'s actuator does not name it,
+  // so it resolves `irreversible` and the gate would BLOCK the call — and a
+  // blocked call sets `pending.error` on its own, which makes this test pass
+  // while measuring the gate instead of the listener. That is not a hypothetical:
+  // the first version of this test did exactly that and passed with the flip
+  // removed. An assertion that survives the removal of the thing it names is not
+  // an assertion.
+  const { ctx, handler, dispose } = mount({
+    spec: SPEC,
+    gatePolicies: { bash: 'auto', read: 'auto', glob: 'auto', grep: 'auto', edit: 'auto', write: 'always-approve' },
+  })
+  const agent = AGENT
+  const routes: string[] = []
+
+  const step = async (isError: boolean): Promise<void> => {
+    await handler('tools/pre-execute')(
+      { agent, name: 'bash', arguments: { command: 'true' } },
+      async () => ({ kind: 'allow' }),
+    )
+    await handler('tools/post-execute')(
+      { agent, name: 'bash', call: { id: `c-${String(routes.length)}` } },
+      { isError, error: { message: 'exit 1' }, content: [] },
+      async () => undefined,
+    )
+    const next = routes.length + 2
+    await handler('agent/pre-step')(
+      { agent, messages: [], turn: 1, step: next, signal: new AbortController().signal },
+      async () => ({ kind: 'enter', messages: [] }),
+    )
+    const routed = await handler('agent/request')(
+      { agent, step: next },
+      async () => ({ kind: 'ok', messages: [] }),
+    )
+    const model = (routed as { model?: string }).model
+    routes.push(typeof model === 'string' ? model : 'none')
+  }
+
+  await step(true)
+  await step(true)
+  assert.deepEqual(routes, ['cheap', 'pricy'],
+    'two consecutive FAILED calls move the ladder, which is what escalateAfterFailures: 2 means')
+
+  // And the control: a call that SUCCEEDS must not count as a failure, or every
+  // ordinary step would climb. The ladder is also sticky, so this asserts it does
+  // not climb BACK.
+  const control: string[] = []
+  for (const isError of [false, false]) {
+    await handler('tools/pre-execute')(
+      { agent, name: 'bash', arguments: { command: 'true' } },
+      async () => ({ kind: 'allow' }),
+    )
+    await handler('tools/post-execute')(
+      { agent, name: 'bash', call: { id: `k-${String(control.length)}` } },
+      { isError, content: [] },
+      async () => undefined,
+    )
+    const next = control.length + 2
+    await handler('agent/pre-step')(
+      { agent, messages: [], turn: 1, step: next, signal: new AbortController().signal },
+      async () => ({ kind: 'enter', messages: [] }),
+    )
+    const routed = await handler('agent/request')(
+      { agent, step: next },
+      async () => ({ kind: 'ok', messages: [] }),
+    )
+    const model = (routed as { model?: string }).model
+    control.push(typeof model === 'string' ? model : 'none')
+  }
+  assert.deepEqual(control, ['pricy', 'pricy'],
+    'success never climbs the ladder, and the ladder never moves back down')
+
+  dispose()
+})
+
+test('error-cascade fires in the plugin path: three failed CALLS raise the critical signal', async () => {
+  // `noteToolOutcomes` exists for exactly this and its own doc says the flag "can
+  // only be filled in afterwards" because the observation is committed before
+  // the tools run. It was called from NOTHING in src/ — so the detector that
+  // raises `error-cascade`, one of only two CRITICAL signals, could never fire
+  // in a DSH deployment, while its own unit test passed by calling the helper
+  // directly (§1r).
+  //
+  // The signals are read back off the dashboard state the plugin writes, which
+  // is the only surface that carries them: `prepareReview`'s return value is not
+  // exposed to a test the way `reviewStep`'s is.
+  const seen: { signals: readonly { kind: string, severity?: string }[] }[] = []
+  const { ctx, handler, dispose } = mount({
+    spec: SPEC,
+    gatePolicies: { bash: 'auto', read: 'auto', glob: 'auto', grep: 'auto', edit: 'auto', write: 'always-approve' },
+    onSignals: (signals: readonly { kind: string, severity?: string }[]) => {
+      seen.push({ signals })
+    },
+  })
+  const agent = AGENT
+
+  // Four failed steps: the observation for step N is committed at step N+1, so
+  // three failures need four steps before the third is committed — which is
+  // precisely the "one step late" the helper's doc warns about.
+  for (let step = 1; step <= 5; step += 1) {
+    await handler('tools/pre-execute')(
+      { agent, name: 'bash', arguments: { command: 'false' } },
+      async () => ({ kind: 'allow' }),
+    )
+    await handler('tools/post-execute')(
+      { agent, name: 'bash', call: { id: `x-${String(step)}` } },
+      { isError: true, error: { message: 'exit 1' }, content: [] },
+      async () => undefined,
+    )
+    await handler('agent/pre-step')(
+      { agent, messages: [], turn: 1, step: step + 1, signal: new AbortController().signal },
+      async () => ({ kind: 'enter', messages: [] }),
+    )
+  }
+
+  const raised = seen.flatMap(s => s.signals).filter(sig => sig.kind === 'error-cascade')
+  assert.ok(raised.length > 0,
+    `error-cascade must fire on three consecutive failed CALLS; the plugin recorded ${JSON.stringify(seen.map(s => s.signals.map(x => x.kind)))}`)
+  assert.equal(raised[0]?.severity, 'critical',
+    'it is one of only two CRITICAL signals — a run that is visibly failing must be able to stop one')
+
+  dispose()
+})
+
+
+
+test('four of the six detectors reach the plugin path, and the fifth is unreachable because nothing constructs its input', async () => {
+  // §1r gave the plugin path a readable signals sink, which makes this answerable
+  // for the first time: of the six detectors, how many can actually raise in a
+  // DSH deployment?
+  //
+  // Measured through the REAL `reviewStep` with the plugin's own SPEC: this run
+  // raises exactly
+  //
+  //   error-cascade, excessive-steps, tool-cycle, tool-dominance
+  //
+  // The remaining two are reachable ON DEMAND and not exercised here:
+  //   `budget`    needs spentUSD / costBudgetUSD >= 0.8; this run spends nothing,
+  //               because every step is a stub and no attempt is priced.
+  //   `quality-drop` needs `baselineScore`, which the plugin NEVER sets — there is
+  //               no `baselineScore` in src/plugin.ts, so this detector cannot
+  //               raise at all. Asserted as the fact it is, so it cannot drift.
+  //
+  // The run needs TWO shapes because two detectors have incompatible
+  // requirements, and forcing one run to satisfy both proves neither:
+  // `tool-dominance` needs one tool to OWN MOST of the run (25 identical `bash`
+  // calls leave it nothing to compare against), while `tool-cycle` needs three
+  // TRAILING identical (tool, argsKey) pairs (a mixed tail never produces one).
+  //
+  // Driven through `reviewStep` rather than the hooks on purpose: the hooks are
+  // about DELIVERY, and this question is about the detectors. The hook path is
+  // proven by the test above, which shows the same signals arriving through them.
+  // `SPEC` has `maxSteps: 4`, which is the point of the CEILING tests, so a
+  // 28-step run stops there and nothing is detected. This question needs a
+  // generous ceiling, so it uses one — the same reason the spin test below
+  // declares its own `maxSteps: 100`.
+  const roomy: NonNullable<CreatePolicyOptions['spec']> = { ...SPEC, maxSteps: 100 }
+  const seen = new Set<string>()
+  const policy = createPolicy({ spec: roomy, onSignals: (signals) => {
+    for (const signal of signals) seen.add(signal.kind)
+  } })
+  const names = ['bash', 'bash', 'bash', 'bash', 'bash', 'bash', 'read', 'glob', 'grep']
+  for (let i = 1; i <= 28; i += 1) {
+    policy.pending = { tool: names[i % names.length] ?? 'bash', argsKey: `a${String(i)}`, error: i % 3 === 0 }
+    await reviewStep(policy, i)
+  }
+  for (let i = 0; i < 6; i += 1) {
+    policy.pending = { tool: 'bash', argsKey: 'same', error: true }
+    await reviewStep(policy, 29 + i)
+  }
+
+  assert.deepEqual([...seen].sort(), ['error-cascade', 'excessive-steps', 'tool-cycle', 'tool-dominance'],
+    'these four must raise from the plugin path with the plugin\'s own spec')
+  // `quality-drop` is unreachable in the plugin path for TWO reasons, and both
+  // are checked here rather than one, because either alone is enough to silence
+  // it and fixing only one would look like progress:
+  //
+  //   1. `prepareReview` is called here WITHOUT `baselineScore` — there is no such
+  //      option in this plugin's call, so the detector's first condition is false.
+  //   2. nothing writes `StepObservation.score` in this path, so even a baseline
+  //      would find no score to compare against.
+  //
+  // The control proves (2) is the binding one: give the policy a baseline and a
+  // falling per-step score, and the detector still cannot fire, because the
+  // plugin's `prepareReview` call is the gate and it passes no baseline.
+  const scored = createPolicy({
+    spec: roomy,
+    onSignals: (signals: readonly { kind: string }[]) => { for (const x of signals) seen.add(x.kind) },
+  })
+  for (let i = 1; i <= 4; i += 1) {
+    scored.pending = { tool: 'bash', argsKey: `b${String(i)}`, error: false }
+    await reviewStep(scored, i)
+  }
+  // Nothing in src/ writes `score` onto an observation, so the entries are
+  // unscored — which is what makes the detector's second condition false.
+  assert.equal(scored.history.some(entry => entry.score !== undefined), false,
+    'the plugin path writes no per-step score, so quality-drop has nothing to compare')
+  assert.equal(seen.has('quality-drop'), false,
+    'quality-drop is unreachable in the plugin path — asserted as a FACT so it cannot drift silently')
+})
+
+test('the budget SIGNAL fires in the plugin path once a step is priced past 80%', async () => {
+  // §1i listed `budget` as "reachable on demand" — in PROSE, with no
+  // plugin-path test behind it, which is §1n's shape: a claim in a table that
+  // reads like a measurement. This is that measurement.
+  //
+  // The threshold is deliberately generous and the spend is real, so the ONLY
+  // thing that can produce `budget:critical` is `snapshot.spentUSD` reaching
+  // `prepareReview` through the plugin's own `reviewStep` — which is the path
+  // §1i says exists.
+  const seen = new Set<string>()
+  const { handler, dispose } = mount({
+    spec: {
+      ...SPEC,
+      maxSteps: 99,
+      // $15 against $12 spent = exactly 0.8, so the signal fires WITHOUT the
+      // ceiling rejecting first. A $10 ceiling rejects at step 1 and no signal is
+      // ever produced — which is what the first version of this test measured,
+      // and it reads as "unreachable" rather than "the ceiling got there first".
+      costBudgetUSD: 15,
+      prices: { 'onegw/execution': { inputPerMTok: 0.3, outputPerMTok: 1.2 } },
+      controller: { ladder: [{ provider: 'onegw', model: 'execution' }] },
+    },
+    onSignals: (signals: readonly { kind: string }[]) => { for (const s of signals) seen.add(s.kind) },
+  })
+
+  // The numbers are the whole subtlety, and two of them are the OPPOSITE of
+  // what the first draft had:
+  //
+  //   40 attempts x $0.30 = $12 spent.
+  //   against a $10 ceiling that is 120% -> the CEILING rejects at step 1, and
+  //     the run never reaches `reviewStep`, so NO signal is produced at all. That
+  //     is the first version of this test, and it read as "budget is
+  //     unreachable" — which is why the ceiling must sit ABOVE the signal.
+  //   against a $15 ceiling that is 80% exactly -> the signal fires and the run
+  //     continues.
+  //
+  // And each step needs its OWN settled attempt, because `spendSettledUsage`
+  // advances `pricedThroughSeq` past whatever it prices: one session with one
+  // `assistant/message` is priced once and never again, which is the dedupe
+  // working, not the meter stalling.
+  //
+  // Reuse the file's own settled-session fixture rather than stubbing `spentUSD`:
+  // a stubbed number would prove the arithmetic and not the wiring.
+  const agent = {
+    session: settledSession(Array.from({ length: 40 }, (_, i) => ({ ...PRICED_MSG, seq: i }))),
+  }
+  for (let step = 1; step <= 40; step += 1) {
+    await preStep(handler, step, agent)
+  }
+  dispose()
+
+  assert.ok(seen.has('budget'),
+    `the budget signal must reach the plugin path once the meter moves; saw ${[...seen].sort().join(', ') || '(none)'}`)
 })

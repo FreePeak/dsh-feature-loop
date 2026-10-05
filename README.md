@@ -13,7 +13,7 @@
   <a href="https://github.com/FreePeak/dsh-feature-loop/actions/workflows/ci.yml"><img src="https://github.com/FreePeak/dsh-feature-loop/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <a href=".nvmrc"><img src="https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg" alt="Node >= 22"></a>
-  <a href="#quick-start"><img src="https://img.shields.io/badge/tests-296%20passing-brightgreen.svg" alt="296 tests passing"></a>
+  <a href="#quick-start"><img src="https://img.shields.io/badge/tests-412%20passing-brightgreen.svg" alt="412 tests passing"></a>
   <a href="https://www.npmjs.com/package/@freepeak/dsh-feature-loop"><img src="https://img.shields.io/npm/v/@freepeak/dsh-feature-loop.svg?color=cb3837" alt="npm"></a>
   <a href="https://github.com/FreePeak/dsh-feature-loop/stargazers"><img src="https://img.shields.io/github/stars/FreePeak/dsh-feature-loop?style=social" alt="GitHub stars"></a>
 </p>
@@ -162,11 +162,24 @@ rather than carrying its own:
   <img src="docs/screenshots/A4-dashboard-dark.png" alt="The same page in dark theme" width="100%">
 </p>
 
-Configuration lives in the same place:
+Configuration lives in the same place, and it **changes the gate**:
 
 <p align="center">
   <img src="docs/screenshots/A3-settings.png" alt="The Settings tab: status, judge, attention and gate mode" width="100%">
 </p>
+
+The Settings tab writes `~/.config/dshloop/config.yaml`, which is applied **over**
+your profile's `cordis.patch.yml` row — so the file wins wherever the two
+disagree, and the patch row keeps its comments and its role as shared deployment
+configuration. It takes effect at the next **plugin load** (restart the harness),
+because the running gate is built when it boots. `spec`, `dashboard` and
+`optimize` stay in the row: the page offers no control for them.
+
+Verified by clicking it: `make e2e-settings` saves, reads the notice and the
+file; `make e2e-settings-gate` additionally boots a profile after the save and
+requires the refusal. Two defects came out of writing those, both of which had
+been invisible to every unit test — see
+[`docs/KNOWN-ISSUES.md`](docs/KNOWN-ISSUES.md) §1d.
 
 ### It responds to the page, not the window
 
@@ -208,38 +221,30 @@ on `127.0.0.1` with its own token. Details:
 ```
 $ bash demo/run.sh
 ...
-── step 10 · xiaomi/mimo-v2.5 · spent $0.0044
-[signal:critical] error-cascade — 3 consecutive failing steps — the first failure is the one to read
-[review] ASK HUMAN via signal — 3 consecutive failing steps — the first failure is the one to read
+── step 3 · onegw/execution · spent $0.0008
+[signal:info] tool-dominance — read_file is 83% of all steps — it may be stuck on it
+[judge] review-worthiness 2/3
+[review] ASK HUMAN via judge — the local judge scored this step 2.0/3 — worth a look
 
-── step 12 · xiaomi/mimo-v2.5 · spent $0.0047
-[judge] review-worthiness 0/3
-[model] 3 failures, all in the `percentile` method. The doc comment says nearest-rank uses
-        `ceil(p/100*n) - 1`, but the code uses `Math.floor((p/100) * n)`. These differ when
-        `p/100*n` is an integer — `floor` gives that index, but `ceil(n)-1` gives one before.
-[review] ASK HUMAN via policy — edit_file: reversible-write below the confidence bar (0.00 < 0.70)
+── step 4 · onegw/execution · spent $0.0023
+[model] Three failures, one root cause: the rank formula uses `Math.floor((p/100)*n)` instead of the documented
+        `max(0, ceil(p/100*n) - 1)`. The existing tests already reproduce it, so the fix is that one line.
 [tool] edit_file (reversible-write) ok — Replaced 1 occurrence in src/latency-window.ts at line 88
 [check] GOAL MET
+[run-end] goal-met · 4 steps · $0.0030 · 1 review(s) (25% of steps)
 
-[run-end] goal-met · 12 steps · $0.0066 · 1 review(s) (8% of steps)
 ```
 
-The loop read the bug report, found the root cause in the source, was stopped for
-review twice (once by a critical signal, once by the write gate), made a one-line
-fix, and proved it with the test suite. Full transcript in `demo/TRANSCRIPT.txt`.
-
-Two details worth noticing. The loop **diagnosed the bug precisely** — it read
-the module's doc comment, compared the stated formula against the code, and
-identified the exact condition under which they diverge. And the gate held it at
-the write: the judge scored the step `0/3`, which is below the confidence bar, so
-the gate asked instead of assuming. That is the fail-closed direction working,
-even though the judge's score was itself wrong.
+The transcript is a **capture**, not current output: taken 2026-10-02 from a
+live run on this branch's route (`onegw/execution`). The steps and the cost vary
+with the model; the shape — a signal, a review, a one-line fix, `goal-met` — does
+not. [`demo/TRANSCRIPT.txt`](demo/TRANSCRIPT.txt) is the same run in full.
 
 ### Verified runs
 
 All four terminal paths, re-run 2026-10-01 against the real model through
-onegw (the transcript above and `demo/TRANSCRIPT.txt` are from an earlier
-session; the shape is the same and the steps vary with the model):
+onegw. The excerpt above and `demo/TRANSCRIPT.txt` are that run's capture; the
+table is a re-run, and the steps vary with the model:
 
 | Command | Outcome | Steps | Cost | Reviews |
 |---|---|---|---|---|
@@ -272,10 +277,10 @@ and that is the intended behaviour, not a miss.
 ## Quick start
 
 ```bash
-# 600 tests, no network, no model call — the policy layer is pure
-node --experimental-strip-types --test test/*.test.ts
+# the tests that run with no harness, no network and no model call
+make ci-tests                       # exactly what CI runs; green on a clean clone
 
-# the end-to-end demo (needs onegw on :8080 and xiaomi/mimo-v2.5)
+# the end-to-end demo (needs onegw on :8080; it runs on onegw/execution)
 bash demo/run.sh
 
 # watch the ceilings actually fire
@@ -283,6 +288,20 @@ bash demo/run.sh --max-steps 6        # step ceiling
 bash demo/run.sh --budget 0.000001    # cost ceiling
 bash demo/run.sh --judge none         # detectors only, no judge
 ```
+
+**Not `node --test test/*.test.ts`.** That glob includes the six suites that
+import `src/plugin.ts`, which reaches four `@deepseek-ai/*` packages the plugin
+declares as OPTIONAL peers — so on a clean clone it reports
+
+```
+# fail 6
+```
+
+and the six failures are `ERR_MODULE_NOT_FOUND: Cannot find package
+'@deepseek-ai/dsh-llm'`, which reads like a broken repo and is a missing
+toolchain. `make ci-tests` runs the twenty-one files that need none of it. The
+rest run with `make verify` against a harness checkout. Measured 2026-10-03 on a
+fresh `git clone`: the glob 373 tests / 6 failing, `make ci-tests` green.
 
 `demo/run.sh` resets the planted bug first, so every run has real work to do.
 
@@ -407,7 +426,7 @@ gets reached.
   five outcomes executed in a **real** DSH context (5/5 pass), plus the exact
   string the approval panel renders.
 - **[`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md)** — the approval
-  dashboard: 405 unit + 11 integration green, a live HTTP transcript (page 200,
+  dashboard: 412 unit + 11 integration green, a live HTTP transcript (page 200,
   token 401, approve → `allowed-once`, 409, 403), the browser click verified
   via `make e2e-dashboard`, and the model-authored review brief.
 - **[`docs/VERIFY-E2E-APPROVAL.md`](docs/VERIFY-E2E-APPROVAL.md)** — a real
@@ -547,7 +566,7 @@ and style and nothing else.
       # answerTimeoutMs: 600000   # a pending ask fails closed after this
       # brief:                 # model-authored review brief, off by default
       #   enabled: false
-      #   model: xiaomi/mimo-v2.5   # required when enabled
+      #   model: execution          # required when enabled
       #   maxTokens: 1024
       #   timeoutMs: 15000
 ```
@@ -568,7 +587,9 @@ the field and the 3–10 band):
     optimize:
       loops: 3              # refinement passes, integer 3–10 (CLI `runRefined` only)
       # derive: true         # accepted, READ BY NOTHING — see the note in src/plugin.ts
-      history: .feature-loop/runs.jsonl   # run-history file: the plugin appends one line per closed turn and feeds Metrics from it
+      history: .feature-loop/runs.jsonl   # run-history file: the plugin appends one line per closed turn and feeds Metrics from it.
+                                       # RELATIVE resolves against the TASK's workspace (not the server's cwd);
+                                       # an absolute path is used verbatim
       # judge: chat         # none | chat | laya — cross-pass judge, read by nothing (CLI's runRefined takes it)
       # totalBudgetUSD: 3.00  # refinement budget; default derived × loops × 0.6 (CLI only)
 ```
@@ -718,13 +739,14 @@ with `--judge-base-url` / `SYSTEMONE_BASE_URL`). The actor still talks to onegw;
 only the judge URL splits. Score criteria go as ordered arrays so Laya keeps
 the human labels; `noul` answers map onto `probability`.
 
-The demo uses `ChatJudge` with `xiaomi/mimo-v2.5` because no `systemone` provider
-is configured in `~/.onegw/onegw.toml`. Two measured facts argue for Laya beyond
+The demo uses `ChatJudge` on the same `onegw/execution` route the actor runs on,
+because no `systemone` provider is configured in `~/.onegw/onegw.toml`. Two measured facts argue for Laya beyond
 cost:
 
-1. **A reasoning model is a poor judge.** `mimo-v2.5` always thinks; at
+1. **A reasoning model is a poor judge.** the demo's model always thinks; at
    `max_tokens: 256` it returns `finish_reason: "length"` with empty content, and
-   it needs ~859 thinking tokens before emitting one digit. The default is now
+   it needs ~859 thinking tokens before emitting one digit (measured on
+   `mimo-v2.5`, the model this note was written against). The default is now
    2048, and the error message names the cause instead of saying "no digit".
 2. **It is miscalibrated.** Asked about a routine `read_file` with no detector
    fired, it answered `SCORE=3` — the top of the scale. A purpose-built decision
@@ -856,7 +878,7 @@ Two genuine bugs were found in the fork while it existed, both now moot:
   judge-driven reviews only.
 - **`run_tests` timeouts kill the direct child, not grandchildren** (marked
   `ponytail:` in `tools.ts`; upgrade path is detached spawn + `kill(-pid)`).
-- **The price table is an estimate.** `mimo-v2.5` runs on a subscription plan,
+- **The price table is an estimate.** the gateway runs on a subscription plan,
   so marginal cost is near zero; the rates in `cli.ts` are illustrative and
   exist so the ceiling has something to measure against.
 - **The dashboard's rendered page click is verified via `make e2e-dashboard`**
@@ -885,7 +907,7 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 - **Phase 1e — HITL approval dashboard** ✅ optional loopback web surface
   (`src/dashboard.ts` + `src/dashboard-page.ts`): pending cards, live run state
   over SSE, Allow/Reject over HTTP — guarded so a tab-less deployment behaves
-  byte-identically to the composer-only path. 405 unit + 11 integration tests;
+  byte-identically to the composer-only path. 412 unit + 11 integration tests;
   the browser click verified via `make e2e-dashboard`
   ([`docs/VERIFY-DASHBOARD.md`](docs/VERIFY-DASHBOARD.md)).
 - **Phase 1f — review briefs** ✅ model-authored brief per ask
@@ -911,23 +933,33 @@ Two genuine bugs were found in the fork while it existed, both now moot:
 ### Verifying the whole thing
 
 ```bash
-make verify          # compose + tests + typecheck + the six drift checks + integration
+make verify          # compose + tests + typecheck + the seven drift checks + integration
 ```
 
 That is the whole of it. Spelled out, `make verify` is:
 
 ```bash
-node --experimental-strip-types --test test/*.test.ts   # 406 pass
-npx tsc --noEmit                                       # clean, all of src/ incl. plugin.ts
+make ci-tests    # exactly the 21 files CI runs: 298 pass, no harness needed
+make test        # every suite, incl. six needing the harness: 443 pass
+npx tsc --noEmit # CI's file list: clean. plugin.ts needs dsh-llm's types,
+                  # which only a profile's node_modules carries, so it is not
+                  # typechecked here — see scripts/typecheck.sh and §1g
 node scripts/check-ci-shape.mjs                        # CI runs every check
 node scripts/check-test-list.mjs                        # and every pure test
 node scripts/check-typecheck-list.mjs                   # and every harness-free module
 node scripts/check-ladder-models.mjs                    # and no rung names an undeclared model
 node scripts/check-dead-exports.mjs                     # and no export is unreachable
 node scripts/check-noop-config-keys.mjs                 # and no config key claims to work unwired
+node scripts/check-known-issues.mjs                    # and KNOWN-ISSUES' sections, index and
+                                                           #   cross-references all agree
 bash test/integration/run.sh                            # 11 pass, in the real harness
 bash demo/run.sh                                        # goal-met
 ```
+
+`make check` is the one that runs anywhere: it uses CI's list, so a fresh clone
+with only `npm install` gets the tests, the typecheck and all six drift checks
+without a harness checkout. `make test` needs one — six suites import
+`src/plugin.ts`. Both were true only from 2026-10-03; see KNOWN-ISSUES §1f.
 
 The six `check-*.mjs` scripts need no `node_modules`, no gateway and no
 harness — they read the tree. They exist because each of the failures they
@@ -948,6 +980,7 @@ running profile:
 ```bash
 make e2e-dashboard DSH_URL='…'          # the standalone approval page
 make e2e-in-ui     DSH_URL='…'          # the Feature Loop page, end to end
+make e2e-settings  DSH_URL='…'          # the Settings tab saves, and the file holds it
 ```
 
 ### Four gaps closed along the way

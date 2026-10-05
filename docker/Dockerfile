@@ -63,6 +63,22 @@ FROM node:22-slim AS plugin-build
 
 WORKDIR /build
 
+# A registry mirror for a FILTERED network, opt-in and uncommented by whoever
+# needs it. Set it as a build arg so the default build is byte-identical to the
+# one that has always worked:
+#
+#   docker compose build --build-arg NPM_REGISTRY=https://registry.npmmirror.com
+#
+# Why an ARG rather than a checked-in `.npmrc` line: every install in this image
+# needs it, including the `pnpm install` that provisions the plugin into the
+# baked profile and the two global installs below, and a mirror baked into a
+# layer is a supply-chain decision nobody asked for. Measured 2026-10-03 behind
+# SNI filtering: the TLS handshake to Cloudflare's edge succeeded for
+# `example.com` and stalled for `registry.npmjs.org`, so `nc 443` succeeds and
+# every npm command hangs instead of failing — which is what this arg is for.
+ARG NPM_REGISTRY=
+ENV npm_config_registry=${NPM_REGISTRY}
+
 COPY package.json package-lock.json* .npmrc ./
 # No telemetry opt-out needed: the OpenUI dependency that shipped an
 # install-time ping is gone from the manifest.
@@ -88,8 +104,13 @@ RUN npm run build && test -f lib/index.mjs \
 # ---------------------------------------------------------------------------
 FROM node:22-slim AS runtime
 
+# The same mirror arg, and the same reason: this stage installs pnpm, the
+# harness CLI, and provisions the plugin with `pnpm install`. Both stages need
+# it and neither should hardcode it.
+ARG NPM_REGISTRY=
 ENV DEBIAN_FRONTEND=noninteractive \
-    NODE_ENV=production
+    NODE_ENV=production \
+    npm_config_registry=${NPM_REGISTRY}
 
 # `dsh plugin ...` forwards its arguments to pnpm, so pnpm must exist. The
 # profile is provisioned at BUILD time (below), which means the running

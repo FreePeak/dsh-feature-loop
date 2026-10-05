@@ -18,6 +18,17 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      # A registry mirror for a FILTERED network — opt-in, and empty by default
+      # so the ordinary build is unchanged:
+      #
+      #   NPM_REGISTRY=https://registry.npmmirror.com docker compose … build
+      #
+      # Every install in the image needs it (npm in the plugin-build stage; pnpm,
+      # the harness CLI and the plugin provisioning in the runtime stage), and a
+      # mirror baked into a committed file would silently change where every
+      # package on a developer's machine comes from. See docker/README.md.
+      args:
+        NPM_REGISTRY: "${NPM_REGISTRY:-}"
     image: dsh-feature-loop:local
     container_name: dsh-feature-loop
 

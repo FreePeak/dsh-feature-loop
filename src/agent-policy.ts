@@ -187,9 +187,24 @@ export function gateDecisionFor(
  * run — because that is the only once-per-settled-step hook the agent has. So
  * the error flag can only be filled in afterwards, here.
  *
- * Without this, `error-cascade` — three consecutive failing steps, one of the
- * two *critical* signals — could never fire in the plugin path, and the gate
- * would silently run on four detectors instead of six.
+ * Without this, a caller that cannot reach its observation after the fact has
+ * no way to record a failure — and `error-cascade` (three consecutive failing
+ * steps, one of the two *critical* signals) goes unfired.
+ *
+ * **Measured 2026-10-03, and the plugin path does NOT need this.** The flag
+ * that reaches `error-cascade` there is `policy.pending.error`, written by the
+ * `tools/post-execute` listener and carried into the observation when the next
+ * `agent/pre-step` commits it — so both consumers get it from one place, and this
+ * helper has no caller in `src/`. Two claims are therefore corrected rather than
+ * repeated: `error-cascade` could fire in the plugin path before §1q, and this
+ * helper is not what made it possible. It stays exported and tested because a
+ * caller that DOES hold the history can use it; it is not wired in, because
+ * doing so changed nothing (verified: removing both the helper call and the
+ * `pending` flip fails the cascade test, and with only the flip it passes).
+ *
+ * The companion question — which of the six detectors can raise in a DSH
+ * deployment at all — is answered in `docs/KNOWN-ISSUES` §1i: **five** of six,
+ * and `quality-drop` is the one that cannot, for two independent reasons.
  *
  * Mutates the last observation in place, and returns whether it changed.
  *

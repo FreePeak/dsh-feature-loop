@@ -73,8 +73,15 @@ export class LatencyWindow {
   /**
    * Nearest-rank percentile of the current window.
    *
+   * The rank is `max(0, ceil(p / 100 * n) - 1)`, evaluated as
+   * `ceil(p * n / 100)` rather than `ceil(p / 100 * n)`. The two differ and the
+   * difference is invisible: `28 / 100 * 25` is 7.000000000000001 in IEEE
+   * doubles, so the float form rounds the rank UP by one and skips the sample
+   * nearest-rank is defined to return. Multiplying first keeps the numerator and
+   * denominator exact for every window under 2^53 samples.
+   *
    * @param p Probability in [0, 100]; 0 is the fastest sample, 100 the slowest.
-   * @returns The observed sample at rank `max(0, ceil(p / 100 * n) - 1)`, or
+   * @returns The observed sample at rank `max(0, ceil(p * n / 100) - 1)`, or
    *   `undefined` when the window is empty.
    * @throws {RangeError} When `p` is not a finite number within [0, 100].
    */
@@ -85,7 +92,7 @@ export class LatencyWindow {
     if (this.#samples.length === 0) return undefined
 
     const sorted = this.snapshot()
-    const rank = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))
+    const rank = Math.max(0, Math.ceil((p * sorted.length) / 100) - 1)
     return sorted[rank]
   }
 

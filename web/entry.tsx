@@ -18,7 +18,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import z from '@deepseek-ai/schemastery'
 import { DashboardApp } from './app.tsx'
 import type { DashboardSource } from './app.tsx'
-import { APPROVAL_MODES, approvalModeFor } from '../src/approval-bridge.ts'
+import { APPROVAL_MODES, approvalModeFor, approvalModeLabel } from '../src/approval-bridge.ts'
 
 import { assertSettleAccepted } from '../src/approval-bridge.ts'
 import type { ApprovalModeName, BridgeOutcome } from '../src/approval-bridge.ts'
@@ -187,16 +187,19 @@ function SettingsPanel({ host }: { host: Host }): React.ReactElement {
       if (svc === undefined) return
       const answer = await svc.save(draft)
       if (!answer.ok) { setNotice({ kind: 'error', text: `save: ${answer.error.message}` }); return }
-      // What is true, verified 2026-10-01: this file is read back by the
-      // STATUS page, and by nothing that decides. `apply()` builds the policy
-      // from the profile patch row alone, so a value saved here does not
-      // change the gate — and saying "applies at the next reload" sent the
-      // next person looking for a reload that would never do it.
+      // Verified 2026-10-02: these values now reach the gate. The saved file is
+      // applied OVER the profile patch row on the keys this page owns, so the
+      // RUNNING gate changes at the next plugin load — which is a restart of the
+      // harness, not a page reload, and the difference is worth naming: until
+      // then the previous row is still what decides.
+      //
+      // The earlier notice said the file was display-only. It was true when
+      // written, which is exactly why it was dangerous: it taught the operator
+      // that saving here is a no-op, so nobody saved here.
       setNotice({
         kind: 'ok',
-        text: 'Saved to config.yaml. The running gate is built from the profile '
-          + 'patch row, so this takes effect only after the plugin is wired to '
-          + 'read it — the Status tab shows what is stored.',
+        text: 'Saved to config.yaml and applied over the profile patch row — this '
+          + 'takes effect at the next plugin load (restart the harness to apply it).',
       })
       await load()
     } catch (error) {
@@ -212,24 +215,26 @@ function SettingsPanel({ host }: { host: Host }): React.ReactElement {
   // An absent map is the shipped default, which is the safe posture — so an
   // unset profile reads as "review at risky steps" rather than as nothing.
   const approvalMode = approvalModeFor(draft.gatePolicies as never)
+  const mixedWithFields = approvalModeLabel(draft.gatePolicies as never) !== ''
 
   return (
     <div className="fl-panel">
       {notice === null ? null : <div className="fl-notice" data-kind={notice.kind}>{notice.text}</div>}
 
       {/*
-        Stated before the fields, not in a dialog: everything below is stored,
-        and the one thing that decides is the profile patch row. A person who
-        sets `write: always-approve` here and then watches a write sail
-        through needs to know WHICH file to edit, and the page is the only
-        place they are looking. Verified 2026-10-01 — `apply()` reads the patch
-        row and nothing else.
+        Stated before the fields, not in a dialog, because it names WHERE the
+        decision comes from — and that sentence was the opposite of the truth
+        for its first three weeks. It said "stored, not applied", accurately:
+        `apply()` read the patch row and nothing else. An honest warning about
+        an unimplemented feature is still shipping the feature, and worse, it
+        teaches the operator the page is a mock.
       */}
       <div className="fl-notice" data-kind="info" role="note">
-        These fields are <strong>stored, not applied</strong>. The gate is built
-        from your profile&rsquo;s <code>cordis.patch.yml</code> row, which is the
-        only place a setting changes behaviour today. The Status section below
-        shows what is stored and which of it the row overrides.
+        These fields are <strong>applied over your profile&rsquo;s</strong>{' '}
+        <code>cordis.patch.yml</code> row, so this file wins wherever the two
+        disagree. They take effect at the next <strong>plugin load</strong> —
+        restart the harness to apply them, since the running gate was built when
+        it booted. The Status section below shows what is stored.
       </div>
 
       <div className="fl-section">
@@ -298,7 +303,20 @@ function SettingsPanel({ host }: { host: Host }): React.ReactElement {
         <h3 className="fl-section-title">Approval</h3>
         <Field
           label="When to stop and ask"
-          hint={APPROVAL_MODES[approvalMode].detail}
+          // The hint is the POSTURE's copy, and a hand-edited file is usually
+          // not one of the three postures — it is a mixture of them. So the
+          // option carries a marker when it does not describe the file exactly,
+            // and the hint says the fields are the authority. Measured 2026-10-03
+            // with `{write: always-approve, edit: auto, bash: auto}`: without
+            // this the page said a write is reviewed when the loop has no
+            // confidence to judge it, while two of the three write classes were
+            // never reviewed at all.
+          hint={(mixedWithFields
+            ? 'Not one of the postures, and this page has no per-tool fields: '
+              + 'it lives in ~/.config/dshloop/config.yaml. Picking an option here '
+              + 'REPLACES every class in that file. '
+            : '')
+            + APPROVAL_MODES[approvalMode].detail}
         >
           <select
             value={approvalMode}

@@ -1061,6 +1061,192 @@ function GroupedRunPanels({
   )
 }
 
+/** A fraction as the percentage a human reads. One reader, so the roll-up and the proposals cannot disagree about a rounding. */
+function pctOf(value: number): string {
+  return `${(value * 100).toFixed(0)}%`
+}
+
+/** The lever's own name in the sentence a human reads. */
+const LEVER_LABEL: Record<string, string> = {
+  'ladder-rung': 'Model ladder',
+  'max-tokens': 'Max tokens',
+  'prompt-cache': 'Prompt cache',
+  'step-ceiling': 'Step ceiling',
+  escalation: 'Escalation policy',
+  'attention-budget': 'Attention budget',
+  'tool-result-size': 'Tool result size',
+}
+
+/**
+ * What the optimizer proposes, under the measurements.
+ *
+ * Read-only, and deliberately so: `DashboardState.setRecommendations` documents
+ * that there is no apply affordance anywhere in the server, so a card with a
+ * button would be a control that does nothing. The value an operator takes from
+ * it is the DIFF — what is configured now against what is proposed, with the
+ * evidence the battery read it from.
+ *
+ * A recommendation is the one thing in this page that is an OPINION rather than
+ * a measurement, so it is the one thing marked as such: the confidence is
+ * printed, and a proposal the judge could not score is drawn WITHOUT one rather
+ * than with a zero (§1bq's rule, applied to the axis it was written for).
+ *
+ * Nothing here computes. Every number is the optimizer's; the panel only names
+ * the levers it would move.
+ */
+function RecommendationsPanel({ snapshot }: { snapshot: DashboardSnapshot }) {
+  const recommendations = snapshot.recommendations
+  // Absent is not empty: absent means the battery has not run (or is running),
+  // empty means it ran and the judge had nothing to propose. One draws nothing,
+  // the other says so — the same distinction §1bq rests on, and the reason this
+  // panel returns null instead of an empty list.
+  if (recommendations === undefined) return null
+  if (recommendations.length === 0) {
+    return (
+      <section id="proposals" className="pane pane-proposals" aria-label="Proposals">
+        <div className="section-head pane-head">
+          <h2>Proposals</h2>
+          <span className="tag tag-ghost">none</span>
+        </div>
+        <div className="pane-scroll scroll-beauty">
+          <p className="metric-note">The optimizer ran and proposed nothing.</p>
+        </div>
+      </section>
+    )
+  }
+  return (
+    <section id="proposals" className="pane pane-proposals" aria-label="Proposals">
+      <div className="section-head pane-head">
+        <h2>Proposals</h2>
+        <span className="section-count">{recommendations.length}</span>
+      </div>
+      <div className="pane-scroll scroll-beauty">
+        <ul className="proposal-list">
+          {recommendations.map(rec => (
+            <li key={rec.lever} className="proposal">
+              <div className="proposal-head">
+                <span className="proposal-lever">{LEVER_LABEL[rec.lever] ?? rec.lever}</span>
+                {/* Absent confidence is a GAP in evidence, not zero confidence
+                    (optimizer.ts rule 4) — so it is omitted, never `0%`. */}
+                {rec.confidence === undefined
+                  ? null
+                  : <span className="tag tag-ghost" title="The judge's own confidence">{pctOf(rec.confidence)}</span>}
+              </div>
+              <p className="proposal-diff">
+                <span className="proposal-current">{rec.current}</span>
+                <span className="proposal-arrow" aria-hidden="true"> → </span>
+                <span className="proposal-proposed">{rec.proposed}</span>
+              </p>
+              <p className="metric-note">{rec.evidence}</p>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </section>
+  )
+}
+
+/**
+ * The measurement roll-up, above the run list.
+ *
+ * Only renders what `summarize` already computed, and only figures it says are
+ * present. A Metrics panel that renders its own thresholds is how §1bz happened:
+ * the alert printed "15% of runs" over a number that was a share of steps. So
+ * this one has no arithmetic — it reads names and prints them, and a figure that
+ * is `undefined` is not drawn, because "measured nothing" and "measured zero"
+ * are different facts and only one of them belongs on a screen.
+ *
+ * The numbers chosen are the ones an operator asks for when they open the page
+ * mid-run: did it work, what did it cost, how long did it take, how often did it
+ * stop for me.
+ */
+function MetricsPanel({ snapshot }: { snapshot: DashboardSnapshot }) {
+  const metrics = snapshot.metrics
+  if (metrics === undefined) return null
+  const { runs: measuredRuns, quality } = metrics
+  // `goalMetRate` counts every closed turn, `measuredRuns` the ones that took a
+  // step. Without both, a rate over mostly-empty turns reads as a score (§1br).
+  const pct = pctOf
+  const usd = (value: number): string => `$${value.toFixed(4)}`
+  // §1ca: a median over ONE sample is that sample. The figure is still drawn —
+  // it is the latest real measurement and hiding it would be §1bq's mistake in
+  // reverse — but it is marked as the sample it is, so nobody reads one run as a
+  // distribution.
+  const thin = (samples: number | undefined): string => (
+    samples !== undefined && samples < 3 ? ` (${String(samples)} run${samples === 1 ? '' : 's'})` : ''
+  )
+  const tiles: { label: string, value: string, title: string }[] = [
+    {
+      label: 'Goal met',
+      value: pct(quality.goalMetRate),
+      title: `${String(metrics.runs)} closed turn(s), ${String(measuredRuns)} of which took a step`,
+    },
+    {
+      label: 'Cost / run',
+      value: `${usd(metrics.cost.perRun.p50)}${thin(metrics.cost.perRun.samples)}`,
+      title: `Median across the ${String(metrics.cost.perRun.samples ?? 0)} run(s) that took a step`,
+    },
+    {
+      label: 'Wall clock',
+      // §1ca's exact case: a single 20-minute turn printed as "1203s" beside a
+      // run the e2e had timed at 268s, because nothing said the median was one
+      // point long. Same figure, named for what it is.
+      value: metrics.speed.wallMs.p50 > 0
+        ? `${String(Math.round(metrics.speed.wallMs.p50 / 1000))}s${thin(metrics.speed.wallMs.samples)}`
+        : '—',
+      title: `Median of ${String(metrics.speed.wallMs.samples ?? 0)} timed turn(s), from the harness clock`,
+    },
+    {
+      label: 'Reviews',
+      // Two readings, both named: §1bz's alert said "15% of runs" over a share
+      // of steps, so the page does not get to make that mistake.
+      value: quality.reviewRunRate === undefined
+        ? '—'
+        : pct(quality.reviewRunRate),
+      title: quality.reviewRunRate === undefined
+        ? 'No run reported a review'
+        : `${pct(quality.reviewRunRate)} of runs surfaced a step for review; `
+          + `${pct(quality.reviewFraction)} of steps were reviewed`,
+    },
+  ]
+  return (
+    <section id="metrics" className="pane pane-metrics" aria-label="Measurements">
+      <div className="section-head pane-head">
+        <h2>Measurements</h2>
+        {metrics.provisional ? (
+          <span className="tag tag-ghost" title={`Only ${String(metrics.runs)} run(s) so far`}>
+            early
+          </span>
+        ) : null}
+      </div>
+      <div className="pane-scroll scroll-beauty">
+        <div className="metric-tiles">
+          {tiles.map(tile => (
+            <div key={tile.label} className="metric-tile" title={tile.title}>
+              <span className="metric-value">{tile.value}</span>
+              <span className="metric-label">{tile.label}</span>
+            </div>
+          ))}
+        </div>
+        {metrics.alerts.length > 0 ? (
+          <ul className="metric-alerts">
+            {metrics.alerts.map((alert, index) => (
+              <li key={`${alert.kind}-${String(index)}`} className="metric-alert">
+                {alert.detail}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {quality.firstPassRate === undefined ? null : (
+          <p className="metric-note">
+            {pct(quality.firstPassRate)} met the goal on the first pass.
+          </p>
+        )}
+      </div>
+    </section>
+  )
+}
+
 /** Left sidebar activity ledger — filtered feed, independent scroll. */
 function ActivityFeed({
   snapshot,
@@ -1140,7 +1326,9 @@ export function DashboardApp({ source }: { source: DashboardSource }): React.Rea
         </div>
         <ApprovalThread pending={snapshot.pending} feed={snapshot.feed} source={source} briefsOn={briefsOn} />
       </section>
-      <aside className="rail" aria-label="Grouped runs">
+      <aside className="rail" aria-label="Measurements, proposals and grouped runs">
+        <MetricsPanel snapshot={snapshot} />
+        <RecommendationsPanel snapshot={snapshot} />
         <GroupedRunPanels snapshot={snapshot} filter={sessionFilter} />
       </aside>
     </div>

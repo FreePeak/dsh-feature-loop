@@ -1097,6 +1097,126 @@ test('a /api/state poll counts as a watcher and says so', async (t) => {
 
 // ── the watcher TTL and the page poll must not drift apart ─────────────────
 // The in-UI page claims an ask only while it counts as a watcher, and this poll
+test('the in-UI page renders the roll-up, and only what the roll-up computed', () => {
+  // §1bz fixed the label the alert prints, and found the projection dropping
+  // `metrics` so the page could not receive it at all (a65257b). Nothing rendered
+  // it. These assertions are about the two things that went wrong:
+  //
+  //  1. the panel is MOUNTED in the page, not merely defined beside it;
+  //  2. it computes NOTHING — every threshold in §1bp…§1bz was a number whose
+  //     label disagreed with it, and the fix that stuck was reading names.
+  const here = dirname(fileURLToPath(import.meta.url))
+  const app = readFileSync(join(here, '..', 'web', 'app.tsx'), 'utf8')
+
+  assert.match(app, /<MetricsPanel snapshot=\{snapshot\} \/>/,
+    'the page must MOUNT the metrics panel — a defined-but-unused component is '
+    + 'the shape this defect took')
+  assert.match(app, /if \(metrics === undefined\) return null/,
+    'and it must draw nothing when nothing was measured: "no data" and "zero" '
+    + 'are different facts and only one belongs on a screen')
+  assert.match(app, /aria-label="Measurements"/, 'and it must be a labelled region')
+  // §1ca: the axis knows how many samples its median is drawn from, and a thin
+  // one must SAY SO beside the figure. Drawn from the count, not from a fixed
+  // number, so it tracks the axis rather than restating today's history.
+  assert.match(app, /samples !== undefined && samples < 3/,
+    'the panel must decide thinness FROM the count, not from a constant that '
+    + 'describes today\'s history')
+  assert.match(app, /thin\(metrics\.speed\.wallMs\.samples\)/,
+    'the wall-clock figure must carry its sample count — a median over one run '
+    + 'is that run, and §1ca measured it wearing the label of a distribution')
+  assert.match(app, /thin\(metrics\.cost\.perRun\.samples\)/,
+    'and so must the cost figure')
+
+  // Bounded by a NAME, not a character count. The count was 2400 when written,
+  // the component grew past it, and the failure was a confusing "did not match
+  // /reviewFraction/" — a window that silently stops covering the code it was
+  // written to inspect is worse than no window at all.
+  const panelStart = app.indexOf('function MetricsPanel')
+  const panelEnd = app.indexOf('/** Left sidebar activity ledger', panelStart)
+  assert.ok(panelStart > 0 && panelEnd > panelStart,
+    'MetricsPanel must be defined, and followed by the left-sidebar ledger')
+  const panel = app.slice(panelStart, panelEnd)
+  // No arithmetic on a figure the roll-up already decided. A comparison here is
+  // a threshold invented by the page, which is exactly how the alert came to
+  // print one quantity beside another's name.
+  assert.equal(/quality\.goalMetRate\s*[<>]=?/.test(panel), false,
+    'the panel must not re-threshold goalMetRate')
+  assert.equal(/reviewRunRate\s*[<>]=?/.test(panel), false,
+    'the panel must not re-threshold reviewRunRate')
+  // It names both review readings, because §1bz was those two being conflated.
+  assert.match(panel, /reviewRunRate/)
+  assert.match(panel, /reviewFraction/)
+})
+
+test('the proposals panel draws the diff, and distinguishes absent from empty', () => {
+  // §1cc: `recommendations` had no writer and no renderer. The writer landed in
+  // d4d2242; this is the renderer half. Three facts, each of which was a real
+  // failure mode somewhere in this chain:
+  //
+  //  1. the panel is MOUNTED (a defined-but-unused component is the shape the
+  //     `metrics` gap took);
+  //  2. absent is not empty — absent means the battery has not run, empty means
+  //     it ran and had nothing to say (§1bq's rule, and the reason a `?? []`
+  //     would erase the difference the writer just introduced);
+  //  3. an absent confidence is a GAP in evidence, not zero confidence
+  //     (optimizer.ts rule 4) — so it is omitted, never printed as `0%`.
+  const here = dirname(fileURLToPath(import.meta.url))
+  const app = readFileSync(join(here, '..', 'web', 'app.tsx'), 'utf8')
+
+  assert.match(app, /<RecommendationsPanel snapshot=\{snapshot\} \/>/,
+    'the page must MOUNT the proposals panel')
+  assert.match(app, /if \(recommendations === undefined\) return null/,
+    'and draw nothing when the battery has not run — that is not the same as '
+    + 'an empty list, and collapsing the two is §1bq\'s rule in a new place')
+  assert.match(app, /recommendations\.length === 0/, 'with an empty case that SAYS so')
+  assert.match(app, /The optimizer ran and proposed nothing/,
+    'in words, because an empty heading reads as a broken panel')
+
+  const start = app.indexOf('function RecommendationsPanel')
+  const end = app.indexOf('function MetricsPanel', start)
+  assert.ok(start > 0 && end > start, 'the panel must be defined before the roll-up')
+  const panel = app.slice(start, end)
+  // It prints the optimizer's fields; it computes none of them. A threshold or a
+  // derived figure here would be a second source of truth about the same lever.
+  for (const field of ['rec.current', 'rec.proposed', 'rec.evidence', 'rec.confidence']) {
+    assert.ok(panel.includes(field), `the panel must render ${field}`)
+  }
+  assert.equal(/rec\.confidence\s*\?\?\s*0/.test(panel), false,
+    'an absent confidence must not become 0 — optimizer rule 4 sorts those last '
+    + 'precisely because absence is a gap, not a low score')
+  // The `? null :` guard, as a two-line shape: an absent confidence draws
+  // NOTHING rather than a zero. A single-line regex over a multiline ternary
+  // reads as if the code were one line, which is how a passing check asserts
+  // nothing — the same failure shape as the character-count window fixed in
+  // this file last round.
+  assert.match(panel, /\{rec\.confidence === undefined\s*\n?\s*\? null\s*\n?\s*:/,
+    'and it must be OMITTED when absent, which is the only honest rendering')
+  // Read-only, because there is no apply affordance anywhere in the server
+  // (dashboard.ts documents it) — a button here would be a control that does
+  // nothing, which is a worse lie than no control.
+  assert.equal(/<button|onClick|onChange/.test(panel), false,
+    'the panel must stay read-only: the server has no apply path to call')
+})
+
+test('the CSS the metrics panel uses exists, and the runs pane keeps the rail', () => {
+  // A half-styled pane is worse than an absent one, and a pane that takes the
+  // rail's flex would leave the run list it summarises with a few rows.
+  const here = dirname(fileURLToPath(import.meta.url))
+  const css = readFileSync(join(here, '..', 'web', 'shell.css'), 'utf8')
+  for (const selector of [
+    '.rail .pane-metrics', '.metric-tiles', '.metric-tile', '.metric-alert',
+    '.rail .pane-proposals', '.proposal-list', '.proposal', '.proposal-diff',
+  ]) {
+    assert.ok(css.includes(selector), `shell.css must style ${selector}`)
+  }
+  assert.match(css, /\.rail \.pane-proposals \{\s*flex: 0 0 auto/,
+    'the proposals pane is sized by content, for the same reason as the metrics one')
+  assert.match(css, /\.rail \.pane-metrics \{\s*flex: 0 0 auto/,
+    'the metrics pane is sized by its content')
+  assert.match(css, /\.rail \.pane-runs \{\s*flex: 1 1 auto/,
+    'and the run list keeps the remaining space')
+})
+
 // is what keeps it one. A poll at or above the TTL leaves the page a watcher
 // part of the time, so a gate firing in the gap hands its ask to the composer
 // instead — from the page the operator is watching.

@@ -23,6 +23,19 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
+# A pipeline's exit status is its LAST command's, so `node --test … | tail -8`
+# reports 0 no matter how many suites failed — which is how `make test` printed
+# `# fail 6` and exited 0 on a bare clone (2026-10-03, six suites dying on
+# `Cannot find package '@deepseek-ai/dsh-llm'`). A green exit code over a red line
+# is worse than no target at all, because it is believed.
+#
+# `.SHELLFLAGS := -o pipefail -c` is the usual answer and it does NOT work here:
+# measured on this make, a `@false | tail -1` recipe exits 0 with it, and 2 with
+# either an inline `set -o pipefail` or an explicit `bash -o pipefail -c`. So
+# every recipe that pipes says so itself, which is the only form that survives
+# contact with this make. Recipes that do not pipe are unaffected.
+.DEFAULT_GOAL := help
+
 # ── configuration ──────────────────────────────────────────────────────────
 COMPOSE      ?= docker compose -f docker/docker-compose.yml
 SERVICE      ?= dsh-feature-loop
@@ -139,6 +152,19 @@ build: ## Build the plugin with tsdown into lib/
 image: ## Build the container image
 	@$(export_key); $(COMPOSE) build
 
+# `up` asserts two things and NOT a third, because the third is not measurable
+# (all measured 2026-10-03, see KNOWN-ISSUES §1h):
+#
+#   1. the RELAY answers 401 or 200 on the published host port;
+#   2. the harness printed a `dsh web:` line in this boot's log.
+#
+# What it cannot assert is that the app is SERVING. The published port is a
+# relay, and the relay answers 401 whether the harness behind it is serving,
+# wedged under SIGSTOP, or gone: with PID 1 stopped, a token request still
+# returned 303 three times in a row, the container healthcheck stayed `healthy`,
+# and `RestartCount` stayed 0. So a token probe reads as alive for a dead app and
+# is NOT a liveness signal — the honest check is (2), the harness's own record
+# that it got as far as printing a URL.
 .PHONY: up
 up: ## Start the container detached, then print the URL and token
 	@$(export_key); \
@@ -151,14 +177,22 @@ up: ## Start the container detached, then print the URL and token
 	    sleep 2; \
 	  done; \
 	  echo; \
-	  if [ "$$code" = "401" ] || [ "$$code" = "200" ]; then \
-	    echo "  up (HTTP $$code)"; \
-	    $(MAKE) --no-print-directory url; \
-	    $(MAKE) --no-print-directory dashboard; \
-	  else \
-	    echo "  ! the UI did not answer on :$(HOST_PORT) (last code: $$code)"; \
+	  if [ "$$code" != "401" ] && [ "$$code" != "200" ]; then \
+	    echo "  ! nothing answered on :$(HOST_PORT) (last code: $$code) — the RELAY"; \
+	    echo "    is not up either."; \
 	    echo "    logs:"; $(COMPOSE) logs --tail 30; exit 1; \
-	  fi
+	  fi; \
+	  app_token=$$($(COMPOSE) logs 2>&1 \
+	    | sed -n "s/.*dsh web: http[^ ]*?token=\([^ ]*\).*/\1/p" | tail -1); \
+	  if [ -z "$$app_token" ]; then \
+	    echo "  ! the harness printed no 'dsh web:' line — it exited before the UI"; \
+	    echo "    existed. The relay answers $$code and the container healthcheck is"; \
+	    echo "    green, because both probe the RELAY rather than the app."; \
+	    echo "    logs:"; $(COMPOSE) logs --tail 30; exit 1; \
+	  fi; \
+	  echo "  up (relay HTTP $$code, harness booted)"; \
+	  $(MAKE) --no-print-directory url; \
+	  $(MAKE) --no-print-directory dashboard
 
 .PHONY: down
 down: ## Stop and remove the container (both volumes survive: sessions AND history)
@@ -191,7 +225,7 @@ logs: ## Follow the container log (the 'dsh web:' line carries the token)
 
 .PHONY: url
 url: ## Print the UI URL including its token
-	@token=$$(docker logs $(SERVICE) 2>/dev/null | grep -oE 'token=[A-Za-z0-9_-]+' | tail -1 | cut -d= -f2); \
+	@set -o pipefail; token=$$(docker logs $(SERVICE) 2>/dev/null | grep -oE 'token=[A-Za-z0-9_-]+' | tail -1 | cut -d= -f2); \
 	  if [ -z "$$token" ]; then \
 	    echo "  no token yet — is the container running? try: make logs"; \
 	  else \
@@ -204,7 +238,7 @@ dashboard: ## Print the approval dashboard URL including its token
 	@# Mirrors `url`: the container logs ONE `feature-loop dashboard:` line on
 	@# bind, carrying the generated token. The line's URL is the CONTAINER's
 	@# view (127.0.0.1:8100); from the host it is the published loopback port.
-	@line=$$(docker logs $(SERVICE) 2>/dev/null | grep -oE 'feature-loop dashboard: http://[^ ]+' | tail -1); \
+	@set -o pipefail; line=$$(docker logs $(SERVICE) 2>/dev/null | grep -oE 'feature-loop dashboard: http://[^ ]+' | tail -1); \
 	  token=$$(printf '%s' "$$line" | grep -oE 'token=[A-Za-z0-9_-]+' | cut -d= -f2); \
 	  if [ -z "$$token" ]; then \
 	    echo "  no dashboard line yet — dashboard disabled, or the profile was seeded before"; \
@@ -247,18 +281,46 @@ rmi: ## Remove the container image
 	@docker rmi dsh-feature-loop:local 2>/dev/null && echo "  image removed" || echo "  no image to remove"
 
 # ── checks (no container required) ─────────────────────────────────────────
+# `check` runs CI's LIST, not `test/*.test.ts`. That is the difference between a
+# check you can run on a fresh clone and one you cannot: six suites import
+# src/plugin.ts and need @deepseek-ai/* packages, so `test` needs a harness
+# checkout and `check` does not. Before this, `make check` depended on `test`, so
+# on a bare clone it stopped at `make: *** [test] Error 1` and the four drift
+# checks below never ran — the checks that exist precisely to run without a
+# toolchain were behind a toolchain.
+CI_TESTS := $(shell sed -n '/- name: Run the test suite/,$$p' .github/workflows/ci.yml \
+             | grep -oE '(demo/)?test/[a-z0-9-]+\.test\.ts' | tr '\n' ' ')
+
 .PHONY: check
-check: test typecheck ## Run the test suite, the typecheck, and the config drift checks
+check: ci-tests typecheck ## CI's test list, the typecheck, and the config drift checks
 	@node scripts/check-ci-shape.mjs
 	@node scripts/check-test-list.mjs
 	@node scripts/check-ladder-models.mjs
 	@node scripts/check-dead-exports.mjs
 	@node scripts/check-noop-config-keys.mjs
+	@node scripts/check-actuator-tables.mjs
+	@node scripts/check-known-issues.mjs
 	@echo "  check passed"
 
+.PHONY: ci-tests
+ci-tests: ## Run exactly the test files CI runs (no harness checkout needed)
+	@set -o pipefail; for f in $(CI_TESTS); do \
+	  out=$$(node --experimental-strip-types --test "$$f" 2>&1) || { echo "$$out"; exit 1; }; \
+	  echo "$$out" | sed -n 's/^# pass /  ok /p' | head -1; \
+	done
+	@echo "  ci-tests passed ($$(for f in $(CI_TESTS); do echo x; done | wc -l | tr -d ' ') files)"
+
 .PHONY: test
-test: ## Run the unit test suite (no network)
-	@node --experimental-strip-types --test test/*.test.ts 2>&1 | tail -8
+test: ## Run EVERY unit suite, including the six that need a harness checkout
+# The demo suite is in this glob on purpose and NOT the planted-bug problem it
+# looks like: `make test` runs the demo suite against the FIXED source, which is
+# what is committed. `demo/reset.sh` plants the bug for a loop run, so if you
+# have just run one, re-apply the fix (or `git checkout demo/src`) first.
+#
+# Six of these suites import src/plugin.ts and need the harness packages; they
+# fail on a bare clone and that is what the .SHELLFLAGS note at the top is for —
+# this target used to print `# fail 6` and exit 0.
+	@set -o pipefail; node --experimental-strip-types --test test/*.test.ts demo/test/latency-window.test.ts 2>&1 | tail -8
 
 .PHONY: typecheck
 typecheck: ## Typecheck src/ (whole src/ when the harness packages resolve, else CI's list)
@@ -303,6 +365,21 @@ e2e-dashboard: ## Click the real dashboard page in a real browser (needs Playwri
 e2e-in-ui: ## Click Allow/Reject on the in-UI page against a RUNNING profile (DSH_URL=… PROOF_DIR=…)
 	@test -n "$(DSH_URL)" || { echo "DSH_URL is required: paste the 'dsh web:' line from the server log"; exit 2; }
 	@node test/e2e-in-ui.mjs allow && node test/e2e-in-ui.mjs reject
+
+.PHONY: e2e-composer
+e2e-composer: ## Answer a run from the HARNESS's own composer, with no dashboard page (DSH_URL=…)
+	@test -n "$(DSH_URL)" || { echo "DSH_URL is required: paste the 'dsh web:' line from the server log"; exit 2; }
+	@node test/e2e-composer.mjs
+
+.PHONY: e2e-settings
+e2e-settings: ## Click the SETTINGS page in a real browser (DSH_URL=…; opt-in, not part of verify)
+	@test -n "$(DSH_URL)" || { echo "DSH_URL is required: paste the 'dsh web:' line from the server log"; exit 2; }
+	@node test/e2e-settings.mjs
+
+.PHONY: e2e-settings-gate
+e2e-settings-gate: ## e2e-settings plus a live refusal proving the saved gateMode applies (needs DSH_E2E_HOME/PROFILE/WORKSPACE)
+	@test -n "$(DSH_URL)" || { echo "DSH_URL is required: paste the 'dsh web:' line from the server log"; exit 2; }
+	@node test/e2e-settings.mjs --gate
 
 .PHONY: compose-check
 compose-check: ## Validate the compose file

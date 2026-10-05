@@ -37,6 +37,21 @@ export interface AxisMetric {
   baseline?: number
   /** The alert fired on this axis, mirrored from `alerts` so a dashboard rendering one axis can show why it is red without scanning the list. */
   alert?: string
+  /**
+   * How many samples the percentiles are drawn from.
+   *
+   * A median over one sample IS that sample, and a median over two is a coin
+   * toss between them — so a surface rendering `p50` without this cannot tell
+   * "the loop typically costs $0.005" from "one run cost $0.005". Measured
+   * 2026-10-04 (§1ca): a live e2e printed a 1203s "Wall clock" for a run it had
+   * itself timed at 268s, because the history held exactly ONE timed run and the
+   * figure wore the same label a 40-run median would.
+   *
+   * Absent only for an axis computed from a fixed constant; it is 0, not
+   * undefined, when the axis is genuinely empty — "nothing to draw a percentile
+   * from" is a fact, unlike an absent measurement (§1bq's rule).
+   */
+  samples?: number
 }
 
 /**
@@ -58,7 +73,10 @@ export interface MetricsSummary {
     perRun: AxisMetric
     /** Per-step USD: each run's `costUSD / steps`, zero-step runs excluded (they have no "per step" to divide by). */
     perStep: AxisMetric
-    /** Mean cost of a goal-met run — the price of success. Absent when no run has met its goal, because an absent number is not zero. */
+    /**
+     * Mean cost of a run that met its goal and took a step — the price of
+     * success. Absent when no run has both, because an absent number is not zero.
+     */
     goalMetCost?: number
     /**
      * Sum of `unpricedSteps` across records, exposed whenever non-zero.
@@ -71,27 +89,59 @@ export interface MetricsSummary {
      */
     unpricedSteps: number
   }
+  /** Records the cost/speed axes are computed over. Below `runs` when closed turns took no step. */
+  measuredRuns: number
   speed: {
-    /** Steps per run. */
+    /** Steps per run, over the runs that took a step. */
     steps: AxisMetric
     /** Per-step latency in ms, pooled across every `stepLatencyMs` sample. Records with an empty array contribute nothing here. */
     latencyMs: AxisMetric
-    /** Wall-clock ms per run — every record has one, including the ones that timed no steps. */
+    /**
+     * Wall-clock ms per run, over the runs that TIMED anything — see
+     * `measuredRuns`. Zeros mean no run was timed, not that runs were instant.
+     */
     wallMs: AxisMetric
-    /** What `stepLatencyMs` measured: the common declared kind, or `'mixed'` when records disagree — two differently-labelled numbers must never be averaged into one claim. */
-    latencyKind: 'round-trip' | 'model' | 'mixed'
+    /**
+     * What `stepLatencyMs` measured: the common declared kind, or `'mixed'`
+     * when records disagree — two differently-labelled numbers must never be
+     * averaged into one claim. `undefined` when nothing was timed.
+     */
+    latencyKind?: 'round-trip' | 'model' | 'mixed'
   }
   quality: {
     /** Share of runs that ended `goal-met`. */
     goalMetRate: number
-    /** Share of *all* runs that met their goal on pass 1 — the fraction the loop got right without buying a retry. */
-    firstPassRate: number
+    /**
+     * Share of runs that met their goal on pass 1 — the fraction the loop got
+     * right without buying a retry.
+     *
+     * `undefined` when no record reports a pass number above 1, because in that
+     * case the number would be a copy of {@link goalMetRate} wearing a
+     * different name.
+     */
+    firstPassRate?: number
     /** Mean of every judge score flattened across runs. Absent when no judge ran. */
     meanJudge?: number
     /** Mean of `qualityScore` over the runs that asked for one. Absent when none did — not scored is not zero. */
     meanQuality?: number
-    /** Mean `reviewFraction` across runs: the human-escalation rate. */
+    /**
+     * Mean `reviewFraction` across runs — where each record's `reviewFraction` is
+     * reviews ÷ STEPS in that run.
+     *
+     * So this is a **share of steps**, and it used to be labelled the share of
+     * RUNS. Both numbers are worth having and they disagree: one review in a
+     * single 100-step run is 1% of steps and 100% of runs. The step share answers
+     * "how much attention am I spending", the run share answers "how often does
+     * a session involve a human" — so both are reported and neither is
+     * mislabelled.
+     */
     reviewFraction: number
+    /**
+     * Share of RUNS in which at least one step was surfaced for review. Absent
+     * when there are no records: zero runs and zero escalation are different
+     * facts.
+     */
+    reviewRunRate?: number
   }
   /** Only the thresholds that actually fired, in the book's order. */
   alerts: { kind: string; severity: string; detail: string }[]
@@ -120,12 +170,13 @@ function percentile(sorted: readonly number[], p: number): number {
 }
 
 /** p50/p95/latest over values in chronological (record) order. */
-function axisOf(values: readonly number[]): { p50: number; p95: number; latest: number } {
+function axisOf(values: readonly number[]): AxisMetric {
   const sorted = [...values].sort((a, b) => a - b)
   return {
     p50: percentile(sorted, 50),
     p95: percentile(sorted, 95),
     latest: values.length > 0 ? values[values.length - 1] : 0,
+    samples: values.length,
   }
 }
 
@@ -148,35 +199,72 @@ export function summarize(
   const runs = records.length
   const base = baseline(records)
 
-  const stepsAxis: AxisMetric = { ...axisOf(records.map(r => r.steps)), baseline: base.steps }
-  const perRunAxis: AxisMetric = { ...axisOf(records.map(r => r.costUSD)), baseline: base.cost }
+  // Runs that took no step are excluded from the cost/speed axes, and the count
+  // is reported beside them.
+  //
+  // Measured 2026-10-04 on the committed history: 13 of 15 records had
+  // `steps: 0`, so `steps.p50` and `cost.perRun.p50` were both **0** — a panel
+  // reading "a typical run costs $0.00 and takes 0 steps". The number was exact;
+  // the reading was wrong, because what the zero meant was "most of these runs
+  // never ran". §1bp fixed the label on those records (they are no longer
+  // `goal-met`); this is the other half — a run with no step contributes no
+  // per-step cost and no per-step latency, so including it can only drag the
+  // distribution toward zero, which describes the population and not the loop.
+  const ran = records.filter(r => r.steps > 0)
+  // `base.steps` is the goal-met WINDOW mean; the axis is every stepped run, so
+  // a history mixing long and short runs compares two populations. The
+  // overridden baseline below is the same population the axis is drawn from.
+  const stepsAxis: AxisMetric = { ...axisOf(ran.map(r => r.steps)), baseline: base.steps }
+  const perRunAxis: AxisMetric = { ...axisOf(ran.map(r => r.costUSD)), baseline: base.cost }
   const perStepAxis: AxisMetric = axisOf(
     records.filter(r => r.steps > 0).map(r => r.costUSD / r.steps),
   )
-  const wallAxis: AxisMetric = axisOf(records.map(r => r.wallMs))
+  // Over the records that timed anything: `wallMs` is `undefined` when nothing
+  // was timed, and counting those would put a 0 in the distribution for an
+  // absence (§1bs's shape).
+  //
+  // And `> 0`, because a record written BEFORE §1bv gave this path a clock
+  // carries `wallMs: 0` — and those records never leave the file. Measured
+  // 2026-10-04 (§1ca): a live history of 3 timed runs reported `wallMs p50 0`
+  // because two of the three predated the clock, so a zero out of three
+  // samples was the MEDIAN and the panel said "a typical turn takes 0s" while
+  // `latest` showed 193561. The same rule `ran` uses for `steps > 0`: a
+  // measurement of zero is an absence wearing a number, and it must not be
+  // counted as a sample. `samples` reports how many survived, so the axis stays
+  // honest about its own thinness.
+  const timed = ran.filter(r => r.wallMs !== undefined && r.wallMs > 0)
+  const wallAxis: AxisMetric = axisOf(timed.map(r => r.wallMs ?? 0))
   const latencyValues = records.flatMap(r => r.stepLatencyMs)
   const latencyAxis: AxisMetric = { ...axisOf(latencyValues), baseline: base.latencyMs }
 
   const met = records.filter(r => r.outcome === 'goal-met')
+  const ranMet = met.filter(r => r.steps > 0)
   const judges = records.flatMap(r => r.judgeScores)
   const qualities = records.flatMap(r => (r.qualityScore === undefined ? [] : [r.qualityScore]))
   const unpricedSteps = records.reduce((sum, r) => sum + r.unpricedSteps, 0)
   const reviewFraction = runs > 0 ? mean(records.map(r => r.reviewFraction)) : 0
+  // The share of RUNS, which is what the book's sentence names. A run counts once
+  // however many of its steps were surfaced — otherwise a 100-step run with one
+  // review contributes 0.01 to the mean and reads as "no human was involved".
+  const withReviews = records.filter(r => r.reviewFraction > 0)
+  const reviewRunRate = records.length > 0 ? withReviews.length / records.length : undefined
 
   // Only records that actually timed steps declare a kind: an empty
   // `stepLatencyMs` has no measurement to label.
   const measuredKinds = new Set(
     records.filter(r => r.stepLatencyMs.length > 0).map(r => r.latencyKind),
   )
-  // ponytail: `LatencyKind` has no "none" value, so a history with zero timed
-  // steps reports 'round-trip' rather than "measured nothing"; ceiling: the
-  // dashboard cannot distinguish a measured round-trip from an empty window;
-  // upgrade path: widen `LatencyKind` in runlog.ts to carry 'none'.
+  // Upgraded rather than worked around: `RunRecord.latencyKind` is now optional,
+  // so "measured nothing" is expressible and this no longer has to pick a kind
+  // for an empty window.
+  // `undefined` when nothing was timed. It defaulted to `'round-trip'`, which is
+  // a declared MEASUREMENT KIND for a run that never took one — the `ponytail`
+  // note below records why the type had no 'none' and what changed that.
   const latencyKind: MetricsSummary['speed']['latencyKind'] = measuredKinds.size > 1
     ? 'mixed'
     : measuredKinds.size === 1
       ? [...measuredKinds][0]
-      : 'round-trip'
+      : undefined
 
   const alerts: MetricsSummary['alerts'] = []
   const push = (kind: string, detail: string): string => {
@@ -190,6 +278,32 @@ export function summarize(
   // The book: "Steps per run (P50/P95) … Alert when P95 > 2x baseline".
   // Fires at the boundary too — P95 sitting exactly at 2x baseline is already
   // the condition, matching budget.ts's own `spent >= costBudgetUSD * warnAt`.
+  // Baseline and axis over the SAME population, or the comparison answers two
+  // different questions. `base.steps` averages the last 7 goal-met runs; the
+  // axis takes its p95 over every run that took a step.
+  //
+  // Measured 2026-10-04 on a 21-record live history: the last 7 goal-met runs
+  // were 8,7,7,8,1,2,8,3,2,1 steps — mean 3.57 — because the e2e asks for one
+  // file at a time, so the window was dragged down by the short runs, while p95
+  // over the axis was 8 and p50 was 5. The panel therefore read
+  // "P95 steps per run 8 >= 2x baseline 3.57" about an axis whose median was 5:
+  // a false alarm against the population the axis is drawn from.
+  //
+  // `baseline()` is untouched — "twice as bad as what the loop recently
+  // achieved" is right for cost, and its exported contract stays as
+  // documented. The steps axis takes its own line, and it takes BOTH halves of
+  // the axis's own shape: every run that took a step (`ran`), no window. A
+  // 7-run window here did not fix the mismatch, it moved it — measured on the
+  // same live history the last 7 stepped runs were 8,1,2,8,3,2,1 (mean 3.57)
+  // while the p95 it was compared against came from all 12, so the alert kept
+  // firing about runs that had already been superseded.
+  //
+  // ponytail: the p95 of a small sample is its maximum, so this alert fires on
+  // a long tail rather than on a trend — the ceiling of the book's own rule.
+  // Ceiling: an early bad run inflates the baseline and masks later
+  // degradation. Upgrade path: bucket runs into epochs (a tuning change, a new
+  // maxSteps) and compare each bucket's p95 against the PREVIOUS bucket.
+  stepsAxis.baseline = ran.length > 0 ? mean(ran.map(r => r.steps)) : base.steps
   if (stepsAxis.baseline !== undefined && stepsAxis.p95 >= 2 * stepsAxis.baseline) {
     stepsAxis.alert = push(
       'steps',
@@ -243,9 +357,16 @@ export function summarize(
     }
   }
 
-  // The book: "Human escalation rate … > 15% of runs".
+  // The book: "Human escalation rate … > 15% of runs" — so this fires on the
+  // share of RUNS and says so. It used to fire on the share of STEPS while
+  // printing "(15% of runs)".
+  if (reviewRunRate !== undefined && reviewRunRate >= 0.15) {
+    push('review', `${(reviewRunRate * 100).toFixed(0)}% of runs surfaced a step for review (>= 15%)`)
+  }
+  // The step share is a separate reading with its own bar: a loop that asks about
+  // every third step is drowning a human even when every run involves one.
   if (reviewFraction >= 0.15) {
-    push('review', `mean review fraction ${reviewFraction.toFixed(2)} >= 0.15 (15% of runs)`)
+    push('review-fraction', `reviews are ${(reviewFraction * 100).toFixed(0)}% of steps (>= 15%)`)
   }
 
   return {
@@ -255,16 +376,35 @@ export function summarize(
     cost: {
       perRun: perRunAxis,
       perStep: perStepAxis,
-      goalMetCost: met.length > 0 ? mean(met.map(r => r.costUSD)) : undefined,
+      // Over the runs that both met their goal AND took a step. Mean of the
+      // `goal-met` set alone reads far too low on a history where most closed
+      // turns did no work: measured 2026-10-04, $0.00048 across 13 of 15 records
+      // that spent nothing, against $0.0056 for the two that actually ran.
+      goalMetCost: ranMet.length > 0 ? mean(ranMet.map(r => r.costUSD)) : undefined,
       unpricedSteps,
     },
+    measuredRuns: ran.length,
     speed: { steps: stepsAxis, latencyMs: latencyAxis, wallMs: wallAxis, latencyKind },
     quality: {
       goalMetRate: runs > 0 ? met.length / runs : 0,
-      firstPassRate: runs > 0 ? met.filter(r => r.pass === 1).length / runs : 0,
+      // `undefined` when every record is pass 1, because then this is the SAME
+      // set as `met` and the panel shows two numbers a reader takes as
+      // independent evidence of "the loop gets it right without a retry".
+      //
+      // Every record the plugin writes carries `pass: 1` — `recordTurn`
+      // hardcodes it, and a pass-2 record comes only from the CLI's
+      // `runRefined`, which is not on this path. Measured 2026-10-04 on the
+      // committed history: goalMetRate 0.867, firstPassRate 0.867, 15 records
+      // all pass === 1. Absent is the honest shape; a rate over a denominator of
+      // zero distinct passes has no meaning, and `undefined` is
+      // distinguishable from a real 0.
+      firstPassRate: records.some(r => r.pass > 1)
+        ? met.filter(r => r.pass === 1).length / runs
+        : undefined,
       meanJudge: judges.length > 0 ? mean(judges) : undefined,
       meanQuality: qualities.length > 0 ? mean(qualities) : undefined,
       reviewFraction,
+      ...(reviewRunRate === undefined ? {} : { reviewRunRate }),
     },
     alerts,
   }

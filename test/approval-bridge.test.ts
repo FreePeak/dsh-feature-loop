@@ -14,6 +14,9 @@ import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 
 import {
+  APPROVAL_MODES,
+  approvalModeFor,
+  approvalModeLabel,
   APPROVAL_OPTIONS,
   assertSettleAccepted,
   expiredOutcomeOf,
@@ -155,4 +158,96 @@ test('an expired outcome reaches the gate as a resolution, not an approval', () 
   assert.equal(resolutionForOutcome('cancelled'), 'cancelled')
   assert.equal(resolutionForOutcome('rejected'), undefined)
   assert.equal(resolutionForOutcome('allowed-once'), undefined)
+})
+
+// The posture a hand-edited file gets LABELLED with, and the direction of
+// "closest" is the content of the function rather than an implementation detail.
+// Measured 2026-10-03 with the file the harness has honoured since the settings
+// file became authoritative: {write: auto, edit: auto, bash: auto} — no write
+// class asks — and the page showed "Review at risky steps", whose own policies
+// ask about all three. The file was LOOSER than the posture it was labelled
+// with, and the run agreed with the file.
+
+test('an all-auto write map is labelled "never ask", not "review at risky"', () => {
+  assert.equal(approvalModeFor({ read: 'auto', glob: 'auto', grep: 'auto', edit: 'auto', write: 'auto', bash: 'auto' }), 'never-ask')
+  // The short form the page and a hand-edited file both produce.
+  assert.equal(approvalModeFor({ write: 'auto', edit: 'auto', bash: 'auto' }), 'never-ask')
+})
+
+test('a map that asks about any write class is one of the two asking postures', () => {
+  assert.equal(approvalModeFor({ write: 'auto', edit: 'auto-if-confident', bash: 'auto' }), 'review-risky')
+  assert.equal(approvalModeFor({ write: 'always-approve', edit: 'always-approve', bash: 'always-approve' }), 'approve-every-step')
+  assert.equal(approvalModeFor({ write: 'auto', edit: 'auto', bash: 'auto-if-confident' }), 'review-risky')
+})
+
+test('an empty map asks about nothing the file can see, so it is the strict posture', () => {
+  // Nothing named means the DEFAULTS apply, and `ReviewGate`\'s default for an
+  // unclassified tool is `always-approve` — the asking posture.
+  assert.equal(approvalModeFor(undefined), 'review-risky')
+  assert.equal(approvalModeFor({}), 'review-risky')
+})
+
+test('every posture classifies as ITSELF, so the page\'s select cannot rewrite what it just wrote', () => {
+  // This is the round trip §1m said could not hold with two postures. It holds
+  // with three, and it is the property the select depends on: the page renders
+  // `<select value={approvalMode}>` and a Save with nothing touched must write
+  // back the same policies.
+  for (const name of Object.keys(APPROVAL_MODES)) {
+    assert.equal(approvalModeFor(APPROVAL_MODES[name].policies), name,
+      `${name} must classify as itself, or opening the page and pressing Save rewrites the file`)
+  }
+})
+
+// A hand-edited file is usually a MIXTURE of the postures, and the page's hint
+// is one posture's copy. Measured 2026-10-03 with
+// `{write: always-approve, edit: auto, bash: auto}`: the write asked, the edit
+// and the shell command did not, and the page said "A write is reviewed when the
+// loop has no confidence to judge it" — a claim about `write`, while two of the
+// three write classes were never reviewed at all.
+
+test('a MIXED map is marked as one, so a posture\'s copy is never shown as its own', () => {
+  assert.equal(approvalModeLabel({ write: 'always-approve', edit: 'auto', bash: 'auto' }), ' — mixed with the fields below')
+  assert.equal(approvalModeLabel({ write: 'auto', edit: 'auto', bash: 'auto-if-confident' }), ' — mixed with the fields below')
+})
+
+test('each posture\'s OWN map carries no marker, so the page reads normally', () => {
+  for (const name of Object.keys(APPROVAL_MODES)) {
+    assert.equal(approvalModeLabel(APPROVAL_MODES[name].policies), '',
+      `${name} describes itself exactly and must not be marked mixed`)
+  }
+})
+
+test('a partial map is marked mixed, because the unset classes DEFAULT — not because it is a mixture', () => {
+  // `{write: auto}` alone leaves `edit` and `bash` on the gate's defaults, and
+  // `ReviewGate`\'s default for an unclassified tool is `always-approve`. Marking
+  // it "mixed" is the safe direction: it sends the reader to the fields rather
+  // than letting a posture name stand in for what they do not see.
+  assert.equal(approvalModeLabel({ write: 'auto' }), ' — mixed with the fields below')
+  // `{}` and `undefined` are NOT marked: with nothing named, `ReviewGate`\'s
+  // default for every tool is `always-approve`, which is the strictest gate there
+  // is and exactly what `approve-every-step`'s own map asks for. Nothing is at
+  // risk from picking a posture, so nothing is warned about.
+  assert.equal(approvalModeLabel({}), '')
+  assert.equal(approvalModeLabel(undefined), '')
+})
+
+test('the SHIPPED row is NOT marked, because it asks about every write class', () => {
+  // Every generated profile writes exactly this, and `bash` is absent because
+  // the spec's `actuator` already classifies it `irreversible`:
+  //
+  //   { read: auto, glob: auto, grep: auto, edit: auto-if-confident,
+  //     write: always-approve }
+  //
+  // It is not `review-risky`'s map VERBATIM — its `write` differs — so the first
+  // version of the marker, which tested exact equality, marked the default row
+  // "mixed with the fields below" on a profile nobody had touched. A marker that
+  // fires on the shipped default is a marker nobody reads. It classifies as
+  // `review-risky` and every write class asks, so it is described.
+  const shipped: Record<string, string> = {
+    read: 'auto', glob: 'auto', grep: 'auto',
+    edit: 'auto-if-confident', write: 'always-approve',
+  }
+  assert.equal(approvalModeFor(shipped), 'review-risky')
+  assert.equal(approvalModeLabel(shipped), '',
+    'the default row must not be marked mixed')
 })

@@ -14,20 +14,27 @@
  * *after* the dashboard has already recorded the route, the step and the spend.
  * Nothing errors at boot; nothing errors at config load.
  *
- * Three files ship a `spec:` block, and each one is checked against the model
- * list of the deployment it is FOR:
+ * FIVE places in this repo decide what model runs, and each is checked against
+ * the list the deployment it is FOR:
  *
- *   cordis.patch.yml          → settings.template.yaml (docker) AND the local
- *                                profile's own settings (documented below)
+ *   cordis.patch.yml          → docker/settings.template.yaml
  *   docker/profile.patch.yml  → docker/settings.template.yaml
  *   scripts/make-profile.sh   → its own generated settings row
+ *   demo/cli.ts               → the route it defaults to (asserted, not parsed
+ *                                as a ladder: it is a TS string)
+ *   test/probe-container.mjs  → the model list it writes into the profile it
+ *                                composes, which IS its resolver
+ *
+ * The demo is in the list because it was the FOURTH place to carry a model and
+ * the check above called the other three covered — a list that names its own
+ * files is a promise somebody has to keep, and the demo ran
+ * `xiaomi/mimo-v2.5` for six months after every YAML spec had moved. A fourth
+ * case that reads its answer out of the source is cheaper than a fifth person
+ * remembering.
  *
  * A local DSH profile has no single shipped settings file — the provider row is
- * whatever the operator wrote — so the local check is a documented pair rather
- * than a resolved comparison: `execution` and `planning` are the onegw role
- * aliases this repo's docs and demo tell people to configure, and they must
- * therefore be declared together. A profile that declares one and not the other
- * is exactly the container's bug, one layer over.
+ * whatever the operator wrote — so the local half of this check cannot resolve a
+ * model list and says so per profile rather than guessing.
  *
  * Run: `node scripts/check-ladder-models.mjs` (CI, and `make check`).
  *
@@ -36,7 +43,8 @@
  * shape a parser would forgive. It exits non-zero, naming the file and the
  * model.
  */
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -109,28 +117,40 @@ function modelsDeclaredByMakeProfile() {
   return ids
 }
 
-const cases = [
-  {
-    file: 'docker/profile.patch.yml',
-    label: 'the container deployment',
-    ids: dockerIds,
-  },
-  {
-    // The bundle patch ships the DEFAULT spec every deployment inherits, so it
-    // is held to the same declared-id list. When it named `execution` and the
-    // Docker settings did not, this check fired on the very first run — which
-    // is the failure the container already cost a day for.
-    file: 'cordis.patch.yml',
-    label: 'the bundle patch (the shipped defaults)',
-    ids: dockerIds,
-  },
-  {
-    file: 'scripts/make-profile.sh',
-    label: 'the generated local profile',
-    ids: modelsDeclaredByMakeProfile(),
-  },
-]
+/**
+ * The models the demo declares, and the route it defaults to.
+ *
+ * Both are read out of `demo/cli.ts` rather than duplicated: the default is a
+ * TS string (`model: 'onegw/execution'`) and a copy of it here is a second
+ * answer to "which model does the demo run" — the same class of drift the
+ * ladder check exists to catch, inside the check itself.
+ *
+ * @returns the models the demo's parseArgs defaults name, and the default route.
+ */
+function modelsDeclaredByDemo() {
+  const text = readFileSync(join(repo, 'demo/cli.ts'), 'utf8')
+  const ids = new Set()
+  for (const m of text.matchAll(/model:\s*'([\w./-]+)'/g)) ids.add(m[1])
+  return ids
+}
 
+/** The demo's `--model` default, as a `provider/model` key. */
+function demoDefaultRoute() {
+  const text = readFileSync(join(repo, 'demo/cli.ts'), 'utf8')
+  const m = /model:\s*'([\w./-]+)'/.exec(text)
+  return m?.[1] ?? ''
+}
+
+/**
+ * The models `test/probe-container.mjs` writes into its own profile.
+ *
+ * The probe composes a profile whose only `llm-pi-ai` row is its own, because
+ * the container's settings import is one-shot and belongs to `dsh-fl`. So this
+ * list — not the container's settings template — decides whether a probe run can
+ * resolve a rung, and it is invisible to every check that only reads YAML.
+ *
+ * @returns the ids the probe's patch declares.
+ */
 /**
  * The route every shipped deployment in this repo must run on.
  *
@@ -157,16 +177,172 @@ const cases = [
  */
 const TESTED_ROUTE = 'onegw/execution'
 
+function modelsDeclaredByProbe() {
+  const text = readFileSync(join(repo, 'test/probe-container.mjs'), 'utf8')
+  const ids = new Set()
+  for (const m of text.matchAll(/'\s+- id: ([\w./-]+)'/g)) ids.add(m[1])
+  return ids
+}
+
+const cases = [
+  {
+    file: 'docker/profile.patch.yml',
+    label: 'the container deployment',
+    ids: dockerIds,
+  },
+  {
+    // The bundle patch ships the DEFAULT spec every deployment inherits, so it
+    // is held to the same declared-id list. When it named `execution` and the
+    // Docker settings did not, this check fired on the very first run — which
+    // is the failure the container already cost a day for.
+    file: 'cordis.patch.yml',
+    label: 'the bundle patch (the shipped defaults)',
+    ids: dockerIds,
+  },
+  {
+    file: 'scripts/make-profile.sh',
+    label: 'the generated local profile',
+    ids: modelsDeclaredByMakeProfile(),
+  },
+  {
+    // The container PROBE. It builds a profile at run time and — because the
+    // settings import is one-shot — that profile gets NO settings of its own, so
+    // llm-pi-ai resolves its rungs against the `models:` list the probe writes
+    // into its own patch. That list was the FIFTH place carrying the dead
+    // concrete ids, and it cost a round of UNKNOWN_MODEL in the container after
+    // the patch row and the settings were both already correct (§1h).
+    //
+    // The ids are read out of the probe source rather than copied, for the same
+    // reason the demo's route is: a copy here is a second answer.
+    file: 'test/probe-container.mjs',
+    label: 'the container probe profile',
+    ids: modelsDeclaredByProbe(),
+    // No ladder of its own: the probe copies `dsh-fl`'s row, so the rung is the
+    // container's. What this case asserts is the half that is its own — that the
+    // route the inherited ladder names is RESOLVABLE from the ids written here.
+    // That is the assertion that was missing, and its absence is why a probe run
+    // died UNKNOWN_MODEL with the patch row and the settings both correct.
+    resolvesOnly: TESTED_ROUTE,
+  },
+  {
+    // The DEMO. Its default route lives in `demo/cli.ts` as a TS string rather
+    // than YAML, so this case reads the default out of the source instead of
+    // adding a second ladder-shaped file.
+    //
+    // It was the FOURTH place to run a model and it carried
+    // `xiaomi/mimo-v2.5` until this branch changed it — while the check above
+    // called all three YAML specs covered. A check that names its own files is a
+    // list, and a list is a promise somebody has to keep; this one is now
+    // derived from the four files the repo actually ships a route in.
+    file: 'demo/cli.ts',
+    label: 'the demo',
+    ids: modelsDeclaredByDemo(),
+    route: demoDefaultRoute(),
+  },
+]
+
+/**
+ * Every model this repo asks for, wherever the default lives.
+ *
+ * The ladder check asks whether a LADDER rung resolves. That is the wrong
+ * question for the two other places a model id is hard-coded, and both were
+ * wrong for the same reason:
+ *
+ *   src/plugin.ts   `config.judgeModel ?? 'xiaomi/mimo-v2.5'`
+ *   cordis.patch.yml  the brief example, `model: xiaomi/mimo-v2.5`
+ *
+ * A deployment that set `judge: chat` — or enabled `dashboard.brief` by
+ * copying the documented example — asked a concrete id this repo does not
+ * declare anywhere, that no shipped config names, and that no test had ever
+ * run. It resolved perfectly on the gateway, which is exactly what §1a says
+ * about the ladder: *resolves* and *tested* are different questions, and
+ * only the first one had a check.
+ *
+ * So this asks the second question about the two places that can still be
+ * wrong, and it reads them from SOURCE rather than keeping a list — a list is
+ * a promise somebody has to keep, which is how all four of these drifted in
+ * the first place.
+ *
+ * ponytail: three greps over two files. The alternative — a YAML-schema walk
+ * of the harness's own config surface — would be more correct and would need a
+ * dependency, for a check whose whole job is to catch a string that a parser
+ * would happily accept.
+ */
+const TESTED_MODEL = 'execution'
+
+/**
+ * Model ids hard-coded as a DEFAULT in src/, with the file that holds them.
+ *
+ * Scoped to the two assignments that NAME a model, by name, in a field called
+ * `model` (or `judgeModel`). A bare `?? '<string>'` sweep caught `gateMode:
+ * 'ask'`, `history: '.feature-loop/runs.jsonl'` and `judge: 'none'` — three
+ * false positives on the first run, which is the same lesson the ladder check
+ * learned the hard way when `declaredModels` swept in the patch's own entry
+ * ids. The field name is the discriminator: a default MODEL is the one that
+ * is passed to something that asks a gateway.
+ */
+const MODEL_DEFAULT = /(judgeModel|model)\s*[:?]{1,2}\s*'([\w./-]+)'/g
+
+function defaultModelsInSrc() {
+  const out = []
+  for (const file of ['src/plugin.ts']) {
+    const text = readFileSync(join(repo, file), 'utf8')
+    for (const m of text.matchAll(MODEL_DEFAULT)) out.push([file, m[2]])
+  }
+  return out
+}
+
+/** Model ids hard-coded in a shipped YAML example someone copies verbatim. */
+function defaultModelsInPatches() {
+  const out = []
+  for (const file of ['cordis.patch.yml', 'docker/profile.patch.yml']) {
+    const text = readFileSync(join(repo, file), 'utf8')
+    for (const m of text.matchAll(/^\s*#?\s*model:\s*([\w./-]+)\s*$/gm)) {
+      // The ladder's own rungs are `provider: X` on the previous line; skip
+      // those by requiring no provider line directly above.
+      const line = text.slice(0, m.index).split('\n').length
+      const lines = text.split('\n')
+      if (/^\s*-\s*provider:/.test(lines[line - 2] ?? '')) continue
+      out.push([file, m[1]])
+    }
+  }
+  return out
+}
+
 let failed = false
 for (const c of cases) {
   const text = readFileSync(join(repo, c.file), 'utf8')
   const routes = ladderRoutes(text)
   if (routes.length === 0) {
+    if (c.resolvesOnly !== undefined) {
+      if (!c.ids.has(c.resolvesOnly.split('/').pop())) {
+        console.error(
+          `${c.file}: declares no model for the route ${c.resolvesOnly}.\n` +
+          `  declared here: ${[...c.ids].join(', ') || '(nothing)'}\n` +
+          '  this profile has no ladder of its own, so the model list below IS the\n' +
+          `  resolver — a run on ${c.resolvesOnly} dies UNKNOWN_MODEL on step 1.`,
+        )
+        failed = true
+      }
+      continue
+    }
     console.error(`${c.file}: no ladder found — is the block still shaped as provider/model pairs?`)
     failed = true
     continue
   }
   const prices = priceKeys(text)
+  // A YAML ladder is read from the file; a TS default is asserted directly, so
+  // the same "is this the route we run" rule covers both shapes.
+  if (c.route !== undefined) {
+    if (c.route !== TESTED_ROUTE) {
+      console.error(
+        `${c.file}: the default route is ${String(c.route)}, not ${TESTED_ROUTE}.\n` +
+        `  This repo runs on onegw's EXECUTION role alias. See KNOWN-ISSUES §1a.`,
+      )
+      failed = true
+    }
+    continue
+  }
   for (const r of routes) {
     if (!c.ids.has(r.model)) {
       console.error(
@@ -233,6 +409,48 @@ function localProfiles() {
     .map(e => join(root, e.name))
 }
 
+/**
+ * A HEADLESS profile that still says `gateMode: ask` gates nothing and says so.
+ *
+ * Measured 2026-10-03 against `~/.dsh/profiles/feature-loop-headless`, a
+ * profile the docs tell people to build by hand:
+ *
+ *   Error: tool "write" requires approval, but no approval channel is
+ *   available
+ *
+ * `ask` needs a MOUNTED ANSWERER. `dsh headless` mounts none: no dashboard
+ * page is opened, no browser polls `/api/state`, so every ask resolves "no
+ * answerer available" and the gate fails closed — which is correct behaviour
+ * and leaves the run with nowhere to go. The generated profile is right
+ * (`make-profile.sh` stamps `deny` for `--headless`); the hand-built one is
+ * what people actually boot, and it is a directory nobody revisits.
+ *
+ * The same trap has a second door: a WEB profile whose dashboard port is
+ * already taken also has no answerer on the port you are looking at.
+ *
+ * Which app a profile boots is in its own `package.json` — the harness reads
+ * it from there, so this reads it from there rather than guessing from the
+ * profile's NAME.
+ *
+ * ponytail: one string plus one comparison per profile. The alternative —
+ * refusing to check at all, because a profile is not the shipped config — is
+ * how `flsdk` and `headless` drifted in the first place; the ladder half of
+ * this same script already made that argument for them.
+ */
+function bundlesOf(dir) {
+  try {
+    const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
+    return pkg?.dsh?.profile?.bundles ?? []
+  } catch {
+    return []
+  }
+}
+
+/** `true` when the profile boots a headless app (so nobody can answer a gate). */
+function isHeadless(dir) {
+  return bundlesOf(dir).some(b => /dsh-headless\b/.test(b))
+}
+
 const profiles = localProfiles()
 for (const dir of profiles) {
   const file = join(dir, 'cordis.patch.yml')
@@ -243,7 +461,17 @@ for (const dir of profiles) {
   const ids = declaredModels(text)
   const prices = priceKeys(text)
   const label = `profile ${basename(dir)}`
-  // A profile that declares NO models of its own has no `llm-pi-ai` row, so it
+  if (isHeadless(dir) && /gateMode:\s*ask\b/.test(text)) {
+    console.error(
+      `${label}: a HEADLESS profile with gateMode: ask — nothing can answer it.\n` +
+      '  dsh headless opens no dashboard page and nothing polls /api/state, so\n' +
+      '  every ask resolves "no approval channel is available" and the run\n' +
+      '  produces no work. Measured 2026-10-03 against this exact profile.\n' +
+      '  fix: gateMode: deny here — refuse at once, with a reason. A WEB\n' +
+      '       profile keeps ask, and its dashboard port must be free.',
+    )
+    failed = true
+  }
   // resolves through the harness's own default provider — where these rungs are
   // unreachable for a reason this check cannot see and should not claim. Report
   // it as a skip, not a failure: the honest statement is "this file does not
@@ -308,6 +536,120 @@ for (const dir of profiles) {
       )
       failed = true
     }
+  }
+}
+
+// The judge and the brief, checked against the same constant as the ladder.
+for (const [file, model] of [...defaultModelsInSrc(), ...defaultModelsInPatches()]) {
+  const bare = model.split('/').pop()
+  if (bare !== TESTED_MODEL) {
+    console.error(
+      `${file}: a model this repo asks for by DEFAULT is ${model}, not ${TESTED_MODEL}.\n`
+      + `  A deployment that configures nothing inherits this one, and nothing\n`
+      + `  reads it but the call itself. It resolves on the gateway — which is not\n`
+      + `  the question. ${TESTED_MODEL} is the route verified end to end here.\n`
+      + `  (§1a: "resolves" and "tested" were conflated, once already.)`,
+    )
+    failed = true
+  }
+}
+
+/**
+ * A profile running a STALE build of the plugin, reported per profile.
+ *
+ * This is the failure that costs a debugging session and names neither the
+ * profile nor the build. A `file:` dependency COPIES the package at install
+ * time — it is not a link — so `npm run build` in the checkout, a commit, and
+ * a rebuild all leave the profile serving the bytes it was installed with.
+ * Nothing errors. The row composes, the client bundle is in the boot graph,
+ * and the profile runs the plugin you fixed three commits ago.
+ *
+ * Measured on this machine before the check existed: all 11 installed
+ * profiles reported a `client.js` that matched NO checkout — the worktree,
+ * `prod-warts`, or `main`. Every one of them was serving a build from
+ * somewhere else entirely.
+ *
+ * `client.js` is checked rather than `lib/`: it is TRACKED (so its hash is
+ * stable across a rebuild) and it is what the harness loads as
+ * `dsh.client`, so a stale one is a stale UI in front of a correct gate.
+ * `lib/` would be the more direct signal but tsdown's chunk names are
+ * content-hashed (`approvals-05MIOAcj.mjs`), so its filenames change on every
+ * build and there is nothing stable to compare.
+ *
+ * `link:` specs are exempt and the reason is worth stating: a symlinked
+ * dependency is always current by construction, so naming it would report a
+ * defect that cannot exist.
+ *
+ * ponytail: a sha256 of one tracked file per profile, compared to this
+ * checkout's. The alternative — comparing mtimes — is wrong in the direction
+ * that matters: a `git checkout` rewrites mtime without changing content, so
+ * it would call an up-to-date profile stale.
+ */
+function sha256(path) {
+  try {
+    return createHash('sha256').update(readFileSync(path)).digest('hex')
+  } catch {
+    return undefined
+  }
+}
+
+const hereClient = sha256(join(repo, 'client.js'))
+
+if (hereClient !== undefined) {
+  for (const dir of profiles) {
+    const pkg = join(dir, 'package.json')
+    let spec
+    try {
+      spec = JSON.parse(readFileSync(pkg, 'utf8'))?.dependencies?.['@freepeak/dsh-feature-loop'] ?? ''
+    } catch {
+      continue
+    }
+    if (spec.startsWith('link:')) continue
+    const installed = sha256(join(dir, 'node_modules/@freepeak/dsh-feature-loop/client.js'))
+    if (installed === undefined) continue
+    // Compare against the tree the profile DECLARES it installs, not against
+    // whatever checkout the reader happens to be standing in. A profile whose
+    // `file:` spec is `…/prod-warts` is current when its bytes match
+    // prod-warts, and comparing it to exec-rung would report eight profiles
+    // stale for the crime of being pinned to a different branch.
+    const root = spec.replace(/^file:/, '')
+    const sourcePath = join(root, 'client.js')
+    const installedPath = join(dir, 'node_modules/@freepeak/dsh-feature-loop/client.js')
+    // pnpm HARDLINKS a `file:` dependency out of the store, so `client.js` in
+    // the profile and `client.js` in the source tree can be the SAME inode —
+    // verified on this machine (nlink 9). Content comparison cannot see a
+    // difference between two names for one file, which is not a defect: there
+    // is nothing to report. `lib/` cannot be used the same way because tsdown's
+    // chunk names are content-hashed and change on every build.
+    try {
+      if (statSync(installedPath).ino === statSync(sourcePath).ino) continue
+    } catch {
+      // `sourcePath` does not exist: handled as its own failure below.
+    }
+    const source = sha256(sourcePath)
+    if (source === undefined) {
+      // The spec names a tree that no longer exists. This is a WEAKER state
+      // than stale and it is worth naming on its own: reinstalling cannot fix
+      // it, and the profile is running the last bytes that tree ever had.
+      console.error(
+        `profile ${basename(dir)}: its plugin source no longer exists —\n`
+        + `  installs: ${spec}\n`
+        + `  A file: dependency is copied at install time, so this profile still runs\n`
+        + `  whatever that tree last built; a reinstall would only fail. Point it at a\n`
+        + `  live tree (or at a tag) before you reinstall.`,
+      )
+      failed = true
+      continue
+    }
+    if (installed === source) continue
+    console.log(
+      `profile ${basename(dir)}: STALE — it runs different bytes than the tree it installs.\n`
+      + `  A file: dependency is COPIED at install time, not linked, so this profile\n`
+      + `  runs the plugin as it was when it was installed. Nothing errors and nothing\n`
+      + `  looks wrong: the row composes and the gate works, on the wrong bytes.\n`
+      + `  installs: ${spec}\n`
+      + `  fix: cd ${dir} && npx pnpm@9.15.9 install`,
+    )
   }
 }
 

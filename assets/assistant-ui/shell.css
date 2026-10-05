@@ -457,6 +457,108 @@ html.fl-standalone #root {
   display: flex;
   flex-direction: column;
 }
+/* The runs pane keeps the flexible box; the metrics pane is sized by its
+   CONTENT, so four tiles do not steal half the rail from the run list it
+   summarises. `flex: 0 0 auto` plus `flex-shrink: 0` on the tiles' container is
+   what makes that true when a run list is long. */
+.rail .pane-metrics {
+  flex: 0 0 auto;
+  max-height: 40cqh;
+  display: flex;
+  flex-direction: column;
+}
+.rail .pane-metrics .pane-scroll {
+  overflow: auto;
+}
+.metric-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr));
+  gap: 6px;
+  padding: 8px 10px;
+}
+.metric-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--border-soft) 70%, transparent);
+  border-radius: 6px;
+  min-width: 0;
+}
+.metric-value {
+  font-size: 1.05rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+.metric-label,
+.metric-note {
+  font-size: 0.72rem;
+  color: var(--muted, currentColor);
+  opacity: 0.8;
+}
+.metric-note { padding: 0 10px 8px; margin: 0; }
+.metric-alerts {
+  list-style: none;
+  margin: 0;
+  padding: 0 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.metric-alert {
+  font-size: 0.75rem;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--warn, #d8a657) 55%, transparent);
+  color: color-mix(in srgb, var(--warn, #d8a657) 80%, currentColor);
+}
+/* Same rule as the metrics pane: sized by its content, so a list of proposals
+   cannot take the rail from the run list beneath it. */
+.rail .pane-proposals {
+  flex: 0 0 auto;
+  max-height: 40cqh;
+  display: flex;
+  flex-direction: column;
+}
+.rail .pane-proposals .pane-scroll { overflow: auto; }
+.proposal-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.proposal {
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--border-soft) 70%, transparent);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.proposal-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.proposal-lever { font-size: 0.8rem; font-weight: 600; }
+/* The diff is the value: what is configured now, against what is proposed. The
+   two sides are distinguished by weight, not by colour alone — a colour-only
+   distinction is invisible to a screen reader and to anyone whose contrast
+   setting drops it. */
+.proposal-diff {
+  margin: 0;
+  font-size: 0.76rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+.proposal-current { text-decoration: line-through; opacity: 0.7; }
+.proposal-proposed { font-weight: 600; }
+.proposal .metric-note { padding: 0; }
+
 .rail .pane-runs {
   flex: 1 1 auto;
   min-height: 0;

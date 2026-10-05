@@ -89,7 +89,30 @@ export function escalationText(from: string, to: string, why: string): string | 
 export function reviewText(reason: string, source: string): string {
   return [
     `REVIEW REQUESTED (${source}): ${reason}.`,
-    'A human should review this before the loop goes further. Do not start work that depends on it; '
-    + 'if the step was not consistent with the goal, stop and report what you have instead.',
+    // "A human should review this before the loop goes further" — and, crucially,
+    // the loop DOES go further: nothing here blocks the next step, the notice is
+    // a request for attention, not a stop. The second sentence said the
+    // opposite — "if the step was not consistent with the goal, STOP and
+    // report what you have instead" — and the model believed it.
+    //
+    // Measured 2026-10-04, live: the judge scored an `ls` at 1.1/3, the notice
+    // went out, and the very next assistant message was "Stopping here for
+    // review rather than continuing", followed by a tidy report of what it had
+    // found and nothing else. The turn ended one step in, on a task whose first
+    // `write` was next. The e2e reported it as "1 ask settled, 3 files absent"
+    // and the run record called it `goal-met`: the notice's own wording produced
+    // the failure it was reporting on.
+    //
+    // So the notice now says what actually happens. A judge-sourced review is a
+    // curiosity flag ("look at this if you have a moment"), not a hazard; only
+    // the gate's own asks — which DO stop the tool call — keep the stop wording,
+    // and `gateForTool` already carries the tool name for that.
+    source === 'judge'
+      ? 'The loop will keep going after this notice, so nothing is waiting on you: '
+        + 'it is a "worth a look" flag. Carry on with the task, and mention it if the '
+        + 'flagged step turns out to matter.'
+      : 'A human should review this before the loop goes further. Do not start work that '
+        + 'depends on it; if the step was not consistent with the goal, stop and report '
+        + 'what you have instead.',
   ].join('\n')
 }

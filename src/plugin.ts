@@ -50,7 +50,7 @@ declare module '@deepseek-ai/dsh-llm' {
     'plugin:feature-loop': { kind: 'plugin:feature-loop' } & ContextFormed
   }
 }
-import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
+import type { PostToolDecision, PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
 import { LoopBudget } from './budget.ts'
 import type { BudgetSnapshot, UsageReading } from './budget.ts'
 import { PhaseAllocator } from './phase-budget.ts'
@@ -94,15 +94,16 @@ import { normalizeBrief } from './brief.ts'
 import { createOnegwClient } from './llm.ts'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { budgetStopText, budgetWarnText, escalationText, reviewText } from './messages.ts'
-// Type-only: `summarize` reads data, never the disk, so the module ships no
-// fs imports into the plugin's graph (the same stance `metrics.ts` documents
-// for its own `RunRecord` import). The history I/O (`runlog.ts`) is loaded
-// dynamically only when a deployment configures `optimize.history`, so a
-// deployment that never asked for run-history keeps the plugin's graph
-// exactly as it was before this feature existed.
+// Type-only: `summarize` reads data, never the disk, so that module ships no
+// fs imports of its own. `runlog.ts` — which does touch the disk — is imported
+// STATICALLY on purpose; it used to be a dynamic import inside the turn closer,
+// and a load that never settles loses the record with no error at all
+// (KNOWN-ISSUES §1bw). A static import resolves at load, before any run.
 import { summarize } from './metrics.ts'
+import { advisoryFor } from './optimize.ts'
+import { appendRecord, readRecords, specFingerprint, taskKeyOf } from './runlog.ts'
 import type { RunRecord, StepRecord } from './runlog.ts'
 import type { RunOutcome } from './runlog.ts'
 
@@ -192,6 +193,22 @@ export interface FeatureLoopPolicy {
   /** The explainer that authors review briefs for dashboard asks. */
   explainer: Explainer
   /** The step history the detectors read. */
+  /**
+   * The detectors' output sink. Carried from {@link CreatePolicyOptions.onSignals}
+   * so `reviewStep` — which takes only the policy — can reach it. See that field
+   * for why it exists at all.
+   */
+  onSignals?: (signals: readonly ReviewSignal[], step: number) => void
+  /**
+   * The detectors' output for the step being closed.
+   *
+   * Set by `reviewStep` and consumed by `recordTurn`, so a record carries what
+   * the detectors actually said about that turn. `undefined` means the hook did
+   * not run — an absent signal list, never a synthetic one.
+   */
+  pendingSignals?: readonly ReviewSignal[]
+  /** The judge's scores for the OPEN turn, drained by `recordTurn` on `turn/end`. */
+  turnJudgeScores?: number[]
   history: StepObservation[]
   /**
    * The tool call observed since the last step boundary, not yet committed to
@@ -350,18 +367,61 @@ function dashboardURLOnceBound(dashboard: DashboardHandle): Record<string, unkno
 }
 
 /**
- * Absolute workspace cwd from a live agent session header.
- * Structural read: `Agent` type only guarantees `id`; ReactLoopAgent also
- * carries `session.header.cwd`. Tests/fakes without a session stay ungrouped.
+ * Absolute workspace cwd from a live agent or session.
+ *
+ * Structural read, BOTH shapes: `Agent` only guarantees `id` (ReactLoopAgent
+ * carries `session`), and `Session` carries the header itself — so reading one
+ * shape would force every caller to unwrap the other. Tests/fakes with neither
+ * stay ungrouped.
+ *
+ * @param source - the agent or the session, as the call site received it.
+ * @returns the absolute cwd, or `undefined` when neither carries one.
  */
-function sessionCwdOf(agent: Agent | undefined): string | undefined {
-  if (agent === undefined) return undefined
-  const session = (agent as { readonly session?: { readonly header?: { readonly cwd?: unknown } } }).session
-  const cwd = session?.header?.cwd
+function sessionCwdOf(source: unknown): string | undefined {
+  if (source === null || typeof source !== 'object') return undefined
+  const holder = source as {
+    readonly session?: { readonly header?: { readonly cwd?: unknown } }
+    readonly header?: { readonly cwd?: unknown }
+  }
+  const cwd = holder.session?.header?.cwd ?? holder.header?.cwd
   if (typeof cwd !== 'string' || cwd === '') return undefined
   // Absolute POSIX or Windows drive path — reject relative junk.
   if (cwd.startsWith('/') || /^[A-Za-z]:[\\/]/.test(cwd)) return cwd
   return undefined
+}
+
+/**
+ * Where one session's records belong.
+ *
+ * The default history path is RELATIVE (`.feature-loop/runs.jsonl`), and both
+ * `appendRecord` and `readRecords` resolve a relative path against the PROCESS
+ * working directory. In a `dsh web` deployment that is the directory the
+ * server was launched from — not the workspace the task ran in — so the history
+ * grew beside the profile, the optimizer read a file the operator could not
+ * find, and the proposals panel said the battery had never run on a page full
+ * of runs. Measured 2026-10-04 on a real `dsh web` deployment: 15 records under
+ * the server's cwd, and none under the workspace the task actually ran in.
+ *
+ * An ABSOLUTE `optimize.history` is the operator's own statement about where
+ * records live and is honoured verbatim — which is also how one file is
+ * deliberately collected from several workspaces. A relative one resolves
+ * against the session's OWN workspace, falling back to the process cwd only
+ * when the session carries none, so the old behaviour still holds for every
+ * deployment that never had a per-session cwd.
+ *
+ * ponytail: resolved per turn, so the single metrics/proposals slot on the page
+ * shows the LAST workspace that recorded. Keying those by workspace is the
+ * upgrade path if one process ever serves several at once.
+ *
+ * @param session - the session whose turn is closing.
+ * @param agent - its agent, when the harness resolved one.
+ * @param configured - the `optimize.history` value, default or explicit.
+ * @returns an absolute path, so the append, the roll-up and the battery cannot
+ *   disagree about which file they are talking about.
+ */
+function historyPathFor(session: unknown, agent: Agent | undefined, configured: string): string {
+  if (isAbsolute(configured)) return configured
+  return resolve(sessionCwdOf(session) ?? sessionCwdOf(agent) ?? process.cwd(), configured)
 }
 
 /** Project session/workspace meta onto the dashboard run row. */
@@ -445,6 +505,15 @@ export interface CreatePolicyOptions {
   /** Attention-router overrides: review budget and judge threshold. */
   router?: ConstructorParameters<typeof AttentionRouter>[0]
   /**
+   * Called with the detectors' output for every step. NOT for deployments — it
+   * exists because `error-cascade` (one of only two CRITICAL signals) had no
+   * reachable test: the signals live inside `prepareReview`'s return value and
+   * the dashboard state is internal, so the only test of it called
+   * `noteToolOutcomes` directly and proved nothing about the plugin path (§1r).
+   * An assertion that cannot see the value it names is the §1n shape.
+   */
+  onSignals?: (signals: readonly ReviewSignal[], step: number) => void
+  /**
    * How a review is expressed at the tool boundary. Defaults to `ask` so a
    * human can approve it in the Web UI; set `deny` for unattended runs.
    */
@@ -525,6 +594,7 @@ export function createPolicy(options: CreatePolicyOptions): FeatureLoopPolicy {
     judge: options.judge ?? NO_JUDGE,
     explainer: options.explainer ?? NO_EXPLAINER,
     history: [],
+    ...options.onSignals === undefined ? {} : { onSignals: options.onSignals },
     pending: undefined,
     lastConfidence: undefined,
     pipeline,
@@ -623,6 +693,22 @@ export async function reviewStep(
       error: failed,
     })
     policy.pending = undefined
+    // The signals are deliberately NOT cleared here, for exactly the reason the
+    // lines below give for the judge's answers: `reviewStep` overwrites them on
+    // the next boundary anyway, and `recordTurn` drains them on `turn/end`,
+    // which is LATER than every step boundary in the turn.
+    //
+    // Measured 2026-10-04: they were cleared here, so every closed turn read
+    // `pendingSignals === undefined` and recorded `signals: []` — the fix
+    // "replacing the placeholder" had silently become "recording nothing",
+    // which is worse, because an empty array reads as "no detector fired"
+    // rather than "this column is a placeholder". Set at one seam, consumed at a
+    // later one, cleared in between: the exact shape of §1bw.
+    //
+    // A turn that opens WITHOUT a pre-step (a resumed session, a nested
+    // dispatch) therefore records the previous turn's signals. `reviewStep` is
+    // what clears them, and a turn without one has no detectors to report
+    // either — so the honest fix is the cheap one: keep the last real set.
     policy.router.observeStep()
     // The ladder's failure signal, from the step that just ended. The plugin
     // path had none: `recordFailure` had no caller outside the runner's own
@@ -663,6 +749,12 @@ export async function reviewStep(
     budgetRemaining: policy.router.budgetRemaining(),
   })
 
+  // Kept for `recordTurn`, which closes the turn this hook began. `policy.
+  // onSignals` below is the OPTION's sink; this is the loop's own record of
+  // what it just computed.
+  policy.pendingSignals = preparation.signals
+  policy.onSignals?.(preparation.signals, step)
+
   // The judge answers about the *previous* step, because the current one has
   // not happened yet. An absent answer is not evidence of confidence, so it is
   // passed through as `undefined` and the gate asks rather than proceeds.
@@ -671,6 +763,13 @@ export async function reviewStep(
     const question = judgeQuestion(preparation.judgeState, preparation.signals)
     const answer = await policy.judge.score(question.state, question.questions)
     policy.lastConfidence = answer.score
+    // Kept for the run record. Measured 2026-10-04: `judgeScores` was a literal
+    // `[]` on every harness-path record, so 7 live records carried zero judge
+    // answers while the feed printed "the local judge scored this step 1.1/3" —
+    // and `summarize`'s `meanJudge`, and every optimizer battery question that
+    // asks how the judge is doing, were answered from nothing. Same shape as
+    // `reviewFraction`'s literal `0` above.
+    if (answer.score !== undefined) (policy.turnJudgeScores ??= []).push(answer.score)
   }
 
   // The review checkpoint is checked before the router's own verdict, so a
@@ -740,9 +839,48 @@ export function escalationForStep(
  * @param toolName - the tool about to run.
  * @returns the review decision: proceed, prompt a human, or refuse.
  */
+/**
+ * The thing this call is about, in a form a human can act on.
+ *
+ * Measured 2026-10-03 on a three-file task: five asks arrived, three of them
+ * `write`, and every card said the same thing — "write: irreversible is always
+ * approved by a human". A person cannot tell ask 3 from ask 4 without reading
+ * the run, and a gate whose cards are indistinguishable trains the click that
+ * makes it worthless.
+ *
+ * `tools/pre-execute` already receives the PARSED ARGUMENTS (this file stores
+ * their key for the step record two lines above), so the fact was in hand and
+ * discarded. Only path-like string values are used: a review prompt should
+ * never quote a file's contents back at the human who is deciding whether to
+ * write them.
+ *
+ * Returns '' when nothing names the call — the previous behaviour, unchanged.
+ *
+ * @param toolName - the tool about to run.
+ * @param args - its parsed arguments.
+ * @returns ` — <subject>` or an empty string.
+ */
+function subjectOf(toolName: string, args: unknown): string {
+  if (args === null || typeof args !== 'object' || Array.isArray(args)) return ''
+  const record = args as Record<string, unknown>
+  const path = record['file_path'] ?? record['path'] ?? record['filePath']
+  const subject = typeof path === 'string' && path !== ''
+    ? path
+    // `bash` names its work in the command, and a truncated one is still enough
+    // to tell ask 1 from ask 5.
+    : typeof record['command'] === 'string' && record['command'] !== ''
+      ? record['command'].slice(0, 80)
+      : undefined
+  // The subject must be checkable by the eye: a newline would break the card
+  // into two paragraphs, and a very long path is not what was being asked.
+  if (subject === undefined || /[\n\r]/.test(subject) || subject.length > 120) return ''
+  return ` — ${toolName} ${subject}`
+}
+
 export function gateForTool(
   policy: FeatureLoopPolicy,
   toolName: string,
+  args: unknown,
 ): GateVerdict {
   // YOLO short-circuits the gate entirely, and it does so *before* the
   // reversibility lookup: under `auto` there is nothing to ask a human about,
@@ -753,13 +891,37 @@ export function gateForTool(
   const reversibility = resolveReversibility(toolName, policy.spec?.actuator)
   const decision = policy.gate.check(toolName, reversibility, policy.lastConfidence)
   if (!decision.review) return { kind: 'proceed' }
-  const reason = reviewText(decision.reason, decision.source)
+  const reason = reviewText(`${decision.reason}${subjectOf(toolName, args)}`, decision.source)
   // The mode decides *how* the human is asked, never *whether* the call is
   // questioned: both branches stop the call, and `ask` still fails closed if no
   // approval channel answers.
-  return policy.gateMode === 'deny'
-    ? { kind: 'deny', reason }
-    : { kind: 'ask', reason }
+  if (policy.gateMode === 'deny') return { kind: 'deny', reason }
+
+  // `ask` with nobody to ask, refused HERE rather than by the harness.
+  //
+  // The harness's own fail-closed is correct and its message is
+  //   tool "write" requires approval, but no approval channel is available
+  // which a run reports as "the sandbox denied it" — the model is told the
+  // filesystem objected, which is a different fact and sends it looking for a
+  // narrower tool. Measured 2026-10-03 on a headless profile: the model spent
+  // its remaining budget reasoning about whether Bash was a legitimate
+  // alternative and then produced no work.
+  //
+  // This plugin can see the answerer directly: the dashboard registers a
+  // watcher when a page opens or polls /api/state (approvals.ts), and
+  // `ask` with no watcher cannot be answered by anything — not the harness, not
+  // the composer, not the standalone page. So the refusal is ours, it carries
+  // the reason a human would give, and it costs nothing when a page IS open:
+  // the watcher is a TTL-kept fact, not a prediction.
+  if (!someoneCanAnswer()) {
+    return {
+      kind: 'deny',
+      reason: `${reason} — nobody is watching: this run has no open dashboard or `
+        + 'composer, so no human can answer an approval. Open the Feature Loop page '
+        + `or set gateMode: deny to refuse up front.`,
+    }
+  }
+  return { kind: 'ask', reason }
 }
 
 /**
@@ -796,6 +958,41 @@ function stopArmed(policy: FeatureLoopPolicy): boolean {
 const STOP_SENTINEL = '.feature-loop/STOP'
 
 /**
+ * Whether any channel in this deployment could actually answer an `ask`.
+ *
+ * §1be's watcher test proved the OPPOSITE of what its fixtures claimed. The
+ * dashboard heartbeat (`noteWatcher`) says a Feature Loop page is polling; it
+ * says nothing about the HARNESS's own answerer, which is the composer panel
+ * that `@deepseek-ai/dsh-client-ui-approval` registers on `approval/request`
+ * and which never touches `/api/state` — so a TTY operator who is reading the
+ * composer was recorded as "nobody is watching", and their `ask` was denied up
+ * front with a sentence telling them to open a page they did not need.
+ *
+ * The refusal was therefore not only wrong for the model (§1bb): it was wrong
+ * for the person. The plugin cannot know who is at the keyboard, so it asks the
+ * two things it CAN see and treats either as sufficient:
+ *
+ *  1. a Feature Loop page polling (`watcherActive`), and
+ *  2. a live UI client stream on the gateway (`hasLiveClient`), which is what
+ *     carries the composer panel's `approval/request` consumer. Absent gateway,
+ *     absent answer — an assumption, and the fail-closed one.
+ *
+ * The registry's own claim guard (§1be) is unchanged: the dashboard still only
+ * claims an ask when a page is watching, so an unwatched ask falls through to
+ * the composer. That is the delegation this check must not overrule.
+ */
+let liveClientProbe: () => boolean = () => false
+
+/** Install the gateway's client-stream predicate. Not exported: `apply` owns it. */
+function setLiveClientProbe(probe: () => boolean): void {
+  liveClientProbe = probe
+}
+
+function someoneCanAnswer(): boolean {
+  return watcherActive() || liveClientProbe()
+}
+
+/**
  * The gate's verdict for one tool call.
  *
  * `proceed` dispatches, `ask` routes to the deployment's approval channel, and
@@ -830,7 +1027,7 @@ function gateEnforce(
   args: unknown,
   stopArmed: boolean,
 ): GateVerdict {
-  if (policy.gateMode !== 'auto') return gateForTool(policy, toolName)
+  if (policy.gateMode !== 'auto') return gateForTool(policy, toolName, args)
   if (stopArmed) {
     // Checked at the tool boundary, not only at the step boundary, so a stop
     // lands before the next *call* rather than at the start of the next step —
@@ -1573,16 +1770,21 @@ function pipelinePreCallGuard(policy: FeatureLoopPolicy): PreStepDecision | unde
  * @param event - the appended event, exactly as recorded.
  * @returns the turn number and the reason kind, or `undefined`.
  */
-function asTurnEnd(event: unknown): { turn: number, reasonKind: string } | undefined {
+function asTurnEnd(event: unknown): { turn: number, reasonKind: string, time?: number } | undefined {
   if (event === null || typeof event !== 'object') return undefined
-  const record = event as { readonly type?: unknown, readonly data?: unknown }
+  const record = event as { readonly type?: unknown, readonly data?: unknown, readonly time?: unknown }
   if (record.type !== 'turn/end') return undefined
   if (record.data === null || typeof record.data !== 'object') return undefined
   const data = record.data as { readonly turn?: unknown, readonly reason?: unknown }
   if (typeof data.turn !== 'number' || !Number.isFinite(data.turn)) return undefined
   const reason = data.reason as { readonly kind?: unknown } | null | undefined
   if (reason === null || typeof reason !== 'object' || typeof reason.kind !== 'string') return undefined
-  return { turn: data.turn, reasonKind: reason.kind }
+  // `SessionEvent.time` is Unix epoch ms on EVERY event, stamped by the
+  // harness's clock. It is the plugin path's own stopwatch: §1bu made the
+  // runner carry a real `wallMs`, and this is the same measurement here, from
+  // data the harness already writes rather than one the plugin never started.
+  const time = typeof record.time === 'number' && Number.isFinite(record.time) ? record.time : undefined
+  return { turn: data.turn, reasonKind: reason.kind, ...(time === undefined ? {} : { time }) }
 }
 
 /**
@@ -1597,7 +1799,7 @@ function sessionIdOf(session: unknown): string {
 }
 
 /** Use {@link asTurnEnd} — the structural narrow on the `turn/end` payload. */
-export function isTurnEnd(event: unknown): { turn: number, reasonKind: string } | undefined {
+export function isTurnEnd(event: unknown): { turn: number, reasonKind: string, time?: number } | undefined {
   return asTurnEnd(event)
 }
 
@@ -1611,12 +1813,26 @@ export function isTurnEnd(event: unknown): { turn: number, reasonKind: string } 
  */
 interface TurnRecordInput {
   session: unknown
-  event: { turn: number, reasonKind: string }
+  /** The closed turn: its number, why it ended, and the harness's own `time`. */
+  event: { turn: number, reasonKind: string, time?: number }
+  /**
+   * When the turn opened, from `turn/start` in the session log.
+   *
+   * `undefined` when the log does not say — and then the record says so
+   * (`wallMs` absent) rather than reporting a zero for a run that took minutes.
+   */
+  openedAt?: number
   options: Parameters<typeof createPolicy>[0] & { dashboard?: DashboardConfig }
   policyFor: (agent: Agent | undefined) => FeatureLoopPolicy
   /** Live agent lookup keyed by session id (`ctx.agents.get`). */
   resolveAgent: (sessionId: string) => Agent | undefined
   state: DashboardState
+  /**
+   * The CONFIGURED `optimize.history` value, default or explicit — NOT a
+   * resolved path. `historyPathFor` resolves it against this session's
+   * workspace, so the append, the roll-up and the battery are all derived from
+   * one call rather than each resolving a relative path on their own.
+   */
   historyPath: string
   /**
    * The harness agent registry, used to resolve the session's agent.
@@ -1643,10 +1859,21 @@ interface TurnRecordInput {
  * @param policy - the agent's policy, for the budget verdict when present.
  * @returns the run outcome to record.
  */
-function outcomeOf(reasonKind: string, policy: FeatureLoopPolicy): RunOutcome {
+function outcomeOf(reasonKind: string, policy: FeatureLoopPolicy, steps: number): RunOutcome {
   if (reasonKind === 'aborted') return 'aborted'
   if (reasonKind === 'error') return 'error'
   if (reasonKind === 'blocked') return 'blocked'
+  // A turn that took no step is not a successful turn. `completed` here means
+  // the transport closed, and the loop's own success check lives in the CLI
+  // runner — so without this a turn that did nothing at all is recorded as
+  // `goal-met`, and the roll-ups read it as one.
+  //
+  // Measured 2026-10-04 on the committed history: 13 of 15 records had
+  // `steps: 0` and `costUSD: 0`, 12 of them `goal-met`. `summarize` reported
+  // `goalMetRate 0.867` — an 87% success rate computed almost entirely from
+  // turns that touched nothing. Every other number in that roll-up was
+  // correct; this one was a claim about work that never happened.
+  if (steps === 0) return 'model-stop'
   // `completed`, `max-tokens` and `interrupted` all say the transport closed
   // the turn without refusing it. Whether the loop *succeeded* is then a
   // question for the ceilings: a turn the harness calls completed that spent
@@ -1671,48 +1898,164 @@ function outcomeOf(reasonKind: string, policy: FeatureLoopPolicy): RunOutcome {
  * turns a failed append into a feed line, and this function itself never
  * catches: a record that failed to land must be visible, not swallowed.
  *
- * Two loads are dynamic, both deliberate:
+ * `runlog.ts` is imported STATICALLY, and that is a fix rather than a style:
+ * it used to be `await import('./runlog.ts')` here, justified as keeping
+ * `node:fs` out of the plugin's static graph — but `readFileSync` from
+ * `node:fs` has been a static import at the top of this file for some time, so
+ * the justification was stale and the cost was the defect.
  *
- * - `runlog.ts` (fs + crypto) is imported only here so the plugin's static
- *   graph ships no `node:fs` (see the import comment at the top of this
- *   module). `metrics.ts` is static because it is pure arithmetic.
- * - `optimize.ts` is NOT imported: `planEnvelope`'s P95 derivation belongs to
- *   the CLI's pre-run planning, not to a per-turn hook. What the dashboard
- *   needs is the roll-up (`summarize`), which is already imported statically.
+ * Measured 2026-10-04 on a real web run: the listener fired, `asTurnEnd`
+ * accepted the `turn/end`, this function was entered (its first statement
+ * printed a feed note), and the very next statement — the dynamic import —
+ * never resolved. No rejection, so the caller's `.catch` never ran, no record
+ * was written and nothing was logged. A load that never settles loses the write
+ * silently, which is the worst shape a dependency can have.
+ *
+ * `optimize.ts` is still NOT imported: `planEnvelope`'s P95 derivation belongs to
+ * the CLI's pre-run planning, not to a per-turn hook. What the dashboard needs is
+ * the roll-up (`summarize`), which is already imported statically.
  *
  * @param input - the closed turn and everything the record is built from.
  */
+/**
+ * When this turn opened, from the session's own log.
+ *
+ * `turn/start` and `turn/end` are both logged and both carry `time` (Unix epoch
+ * ms, stamped by the harness), so their difference IS the run's wall clock —
+ * the plugin path's equivalent of the runner's `performance.now()` span (§1bu).
+ * Structural like every other session read here: a session without `eventAt`
+ * yields `undefined`, and an unmeasured run says so rather than reporting `0`.
+ *
+ * Bounded backward walk, because this runs on every closed turn and a turn is
+ * short: a full scan of a long session per turn is a cost the measurement does
+ * not justify.
+ *
+ * @param session - the session that closed the turn.
+ * @param turn - the 1-based turn number.
+ * @returns Unix epoch ms, or `undefined` when the log does not say.
+ */
+function turnStartTime(session: unknown, turn: number): number | undefined {
+  const typed = session as {
+    readonly seq?: unknown
+    readonly eventAt?: (seq: unknown) => { readonly type?: unknown, readonly data?: unknown, readonly time?: unknown } | undefined
+  } | null | undefined
+  const at = typed?.eventAt
+  const seq = typed?.seq
+  // BOUND, not detached. `Session.eventAt` reads `this.log`, so hoisting the
+  // method out of the object and calling it later gives `this === undefined` and
+  // throws `Cannot read properties of undefined (reading 'log')` — verbatim, on
+  // every closed turn, inside the listener, where the harness contained it and
+  // logged it below the level the web app surfaces.
+  //
+  // That single unbound reference is why no harness-path run record has ever
+  // been written, and why every figure in KNOWN-ISSUES §1bp–§1bv was wrong. It
+  // took four rounds of live instrumentation to find, and the throw string was in
+  // the feed the whole time — printed by the synchronous guard added in 864dc80,
+  // which is why it was findable at all (§1bw).
+  const read = typeof at === 'function' ? (cursor: number) => at.call(typed, cursor) : undefined
+  if (read === undefined || typeof seq !== 'number') return undefined
+  for (let cursor = seq - 1; cursor >= 0 && cursor >= seq - 200; cursor -= 1) {
+    const event = read(cursor)
+    if (event === undefined || event === null || typeof event !== 'object') continue
+    if (event.type !== 'turn/start') continue
+    const data = event.data as { readonly turn?: unknown } | null | undefined
+    if (data === null || typeof data !== 'object' || data.turn !== turn) continue
+    return typeof event.time === 'number' && Number.isFinite(event.time) ? event.time : undefined
+  }
+  return undefined
+}
+
+/**
+ * Closed turns before the optimizer is asked for proposals.
+ *
+ * A battery of judge questions is evidence-gathering, and one turn is not
+ * evidence: a proposal computed from a single 4-step run says more about that
+ * run than about the loop. Five is the same number `MetricsSummary.provisional`
+ * already uses for "a tail would be an anecdote", so the page marks both with
+ * the same word. Exported so a test can assert the number rather than a
+ * comment's promise.
+ */
+export const RECOMMENDATION_MIN_RUNS = 5
+
+/** Judge batteries in flight, whole process. See the `advisoryInFlight` read below. */
+let advisoryInFlight = 0
+
 async function recordTurn(input: TurnRecordInput): Promise<void> {
-  const { session, event, options, policyFor, resolveAgent, state, historyPath } = input
-  const runlog = await import('./runlog.ts')
+  const { session, event, openedAt, options, policyFor, resolveAgent, state } = input
   const agent = agentOfSession(session, resolveAgent)
   const policy = policyFor(agent)
+  // Once, here: the append, the metrics roll-up and the battery below all read
+  // THIS path, so a workspace-relative default can never send one of them to a
+  // different file than the other two.
+  const historyPath = historyPathFor(session, agent, input.historyPath)
+  // Drain this turn's judge scores, then clear them: the policy is keyed by
+  // agent and an agent outlives one turn, so without this the SECOND turn's
+  // record would carry the first turn's scores as well. Measured 2026-10-04:
+  // every live record said `judgeScores: []`, because the field was a literal;
+  // the first fix (accumulate per turn, drain on `turn/end`) had to be paired
+  // with this, or the same agent's history would double-count.
+  const turnJudgeScores = policy.turnJudgeScores
+  policy.turnJudgeScores = []
   const snapshot = policy.budget?.snapshot()
   const spec = policy.spec ?? options.spec
   const now = Date.now()
   const steps = snapshot?.steps ?? 0
   const runId = sessionIdOf(session)
   const record: RunRecord = {
-    runId,
-    startedAt: now,
-    endedAt: now,
+    runId: sessionIdOf(session),
+    startedAt: openedAt ?? now,
+    endedAt: event.time ?? now,
     pass: 1,
     passes: 1,
-    taskKey: spec === undefined ? 'none' : runlog.taskKeyOf(spec.goal),
-    outcome: outcomeOf(event.reasonKind, policy),
+    taskKey: spec === undefined ? 'none' : taskKeyOf(spec.goal),
+    outcome: outcomeOf(event.reasonKind, policy, steps),
     steps,
     maxSteps: spec?.maxSteps ?? 0,
     costUSD: snapshot?.spentUSD ?? 0,
     budgetUSD: spec?.costBudgetUSD ?? 0,
     unpricedSteps: snapshot?.unpricedSteps ?? 0,
     byRoute: snapshot === undefined ? {} : { ...snapshot.byRoute },
+    // Absent, not zero. This path has no seam that times a step — the runner's
+    // own records are the ones that carry a measurement — so `0` and
+    // `'round-trip'` were a run that took minutes reporting "0 ms, round trip".
+    // `summarize` reads both, so the absence has to be in the record.
     stepLatencyMs: [],
-    wallMs: 0,
-    latencyKind: 'round-trip',
-    signals: policy.history.length === 0 ? [] : policy.history.map(() => ({ kind: 'detector', severity: 'info' })),
-    judgeScores: [],
-    reviewFraction: 0,
-    specFingerprint: spec === undefined ? 'none' : runlog.specFingerprint(spec),
+    // The harness's own clock: the `turn/start` and `turn/end` events this
+    // record is written from. So the plugin path reports a REAL wall clock
+    // rather than an absence (§1bt made it optional; §1bu gave the runner one,
+    // and this is the same measurement for the harness path). Per-step latency
+    // stays absent: the plugin has no seam around a model call, only the turn
+    // boundary — and `latencyKind` stays absent because nothing was timed at
+    // that resolution.
+    wallMs: openedAt === undefined || event.time === undefined ? undefined : event.time - openedAt,
+    latencyKind: undefined,
+    // The detectors' OWN output for this turn, not a placeholder.
+    //
+    // Measured 2026-10-04: this was `policy.history.map(() => ({kind:
+    // 'detector', severity: 'info'}))` — one synthetic `info` signal per
+    // recorded step. Every signal in 21 live records read `detector/info`, so
+    // the column was uniformly "a detector exists": present, plausible, and
+    // carrying no information. Two consequences, both real. (1) `summarize`'s
+    // cycle alert counts `kind === 'tool-cycle'` over it and can therefore
+    // NEVER fire on a harness-path record — a threshold reading a field that
+    // cannot hold its value. (2) The optimizer battery reasons over a history
+    // whose signals say nothing, so any lever depending on WHICH detector
+    // fired is answered from the config alone.
+    //
+    // The detectors are `policy.pendingSignals`, set by `reviewStep` on the
+    // pre-step hook and carried on the policy — the same place the step's
+    // errors are stashed, so it is cleared in the same place it is set. Absent
+    // stays absent: a turn with no detector output records no signals, which is
+    // different from recording a signal that says nothing.
+    signals: policy.pendingSignals === undefined ? [] : [...policy.pendingSignals],
+    judgeScores: turnJudgeScores ?? [],
+    // From the router that counted them. `recordTurn` wrote a literal `0` here,
+    // so every harness-path record reported a human-escalation rate of exactly
+    // zero — and `summarize`'s "Human escalation rate > 15%" alert could never
+    // fire, however many reviews the loop had actually requested. The count was
+    // on `policy.router` the whole time, exposed by its own `stats()`.
+    reviewFraction: policy.router.stats().fraction,
+    specFingerprint: spec === undefined ? 'none' : specFingerprint(spec),
     // Where the 0→1 pipeline got to, and what it may spend next. A phase change
     // needs a TURN to deliver its instructions, so a run that finishes its turn
     // mid-pipeline resumes at the next one — which means the resume point has to
@@ -1724,14 +2067,58 @@ async function recordTurn(input: TurnRecordInput): Promise<void> {
     // that cannot reach the content it indexes is not an index.
     ...(policy.history.length === 0 ? {} : { trajectory: policy.history.map(observationToStep) }),
   }
-  runlog.appendRecord(historyPath, record)
+  appendRecord(historyPath, record)
   writeEvidenceBundle(String(runId), record)
   // The Metrics panel reads what just landed: the roll-up is over the file,
   // not over memory, so a resumed process that never saw the earlier turns
   // still renders their history. A torn line is counted and skipped by the
   // reader, never thrown — the panel shows a smaller history, not an error.
-  const { records, malformed } = runlog.readRecords(historyPath)
+  const { records, malformed } = readRecords(historyPath)
   state.setMetrics(summarize(records, { malformed }))
+
+  // The optimizer's proposals, on a CANDIDATE: one turn's history is not the
+  // evidence a battery of judge questions is for, and a card that says "raise
+  // maxSteps to 8" after a single 4-step run is a card nobody should trust.
+  // They are produced here and published only once enough closed turns exist,
+  // which is what `RECOMMENDATION_MIN_RUNS` states. Seven sequential round trips
+  // is the ceiling `proposeOptimizations` documents; paying it on the hot path
+  // of every turn is how that becomes the loop's own latency.
+  //
+  // Before this, `recommendations` was forwarded by `projectLive` (a65257b) and
+  // set by nobody: `setRecommendations` had no production caller in the whole
+  // repo, so the key could never be present. Measured 2026-10-04 by grep — the
+  // first of the "data arrives, nothing draws it" family to be found by asking
+  // who WRITES the field rather than by looking for a missing renderer.
+  // One battery at a time, for the whole process. A turn is short and a second
+  // pass would multiply seven round trips by the number of concurrent runs.
+  // `historyPath`, not the `historyEnabled` flag from `apply`: this function
+  // does not have that binding, so naming it here was a ReferenceError thrown
+  // AFTER `appendRecord` — which is why the history grew to 6 lines while the
+  // battery never ran once, with no error anywhere. Same class as §1bw's
+  // contained throw: a real failure, invisible because nothing owned it.
+  if (historyPath.trim() !== '' && records.length >= RECOMMENDATION_MIN_RUNS && advisoryInFlight === 0) {
+    advisoryInFlight += 1
+    void advisoryFor({ records, malformed, spec, judge: policy.judge })
+      .then((advisory) => {
+        state.setRecommendations(advisory.recommendations)
+        state.note(
+          'note',
+          advisory.unavailable === undefined
+            ? `optimizer: ${String(advisory.recommendations.length)} proposal(s) from `
+              + `${String(records.length)} recorded runs`
+            : `optimizer: no proposals — ${advisory.unavailable}`,
+        )
+      })
+      // A judge outage is a normal state (rule 1), not a turn failure: the
+      // roll-up above is already published and this must not take the turn
+      // with it. So the rejection is swallowed with a feed line, exactly as a
+      // failed history append is.
+      .catch((error: unknown) => {
+        state.setRecommendations([])
+        state.note('note', `optimizer: no proposals — ${error instanceof Error ? error.message : String(error)}`)
+      })
+      .finally(() => { advisoryInFlight -= 1 })
+  }
 }
 
 /**
@@ -2018,10 +2405,23 @@ export const inject = ['agents']
  */
 export function apply(
   ctx: Context,
-  options: Parameters<typeof createPolicy>[0] & { dashboard?: DashboardConfig, rowConfig?: Record<string, unknown> } = {},
+  options: Parameters<typeof createPolicy>[0] & {
+    dashboard?: DashboardConfig
+    rowConfig?: Record<string, unknown>
+  } = {},
 ): () => void {
   const policies = new WeakMap<Agent, FeatureLoopPolicy>()
   const fresh = (): FeatureLoopPolicy => createPolicy(options)
+  // The gateway's live-client predicate, read the same defensive way
+  // `resolveAgent` reads `agents`: hoisted or unbound access to a Cordis
+  // service throws, and a throw inside the gate would turn every gated call
+  // into an error instead of a decision. Absent gateway -> no composer, which
+  // is the fail-closed reading of "nobody can answer".
+  setLiveClientProbe(() => {
+    const gateway = ctx.reflect?.get?.('typertGateway', false) as
+      { hasLiveClient?: () => boolean } | undefined
+    return gateway?.hasLiveClient?.() === true
+  })
   /**
    * The policy for one agent, built on first sight.
    *
@@ -2067,11 +2467,46 @@ export function apply(
 
   // Agent id === session id in DSH (`AgentRegistry.get`). Structural: a test
   // double without `agents` still mounts; live cordis always injects it.
+  //
+  // `ctx.agents` is a cordis PROXY, and the proxy THROWS on a missing service
+  // rather than returning undefined — so the `agents?:` type above is a lie that
+  // cost a real run: `resolveAgent` was called on the `session/event` fiber,
+  // where `AgentRegistry` had not been injected, the getter threw
+  // `cannot get property "agents" without inject`, and the turn's history record
+  // was LOST. Measured 2026-10-03 on a live web run, in the feed, verbatim.
+  //
+  // A failed record is supposed to be visible but not fatal, and it was — the
+  // cost was a silent hole in the run history, which is the one thing the
+  // history exists to prevent. The lookup is now a try/catch: no agent found is
+  // already a supported answer (the agent-less policy), so a throwing getter is
+  // the same answer with extra noise, not a lost record.
   const resolveAgent = (sessionId: string): Agent | undefined => {
-    const agents = (ctx as { agents?: { get?: (id: string) => Agent | undefined } }).agents
-    const get = agents?.get
-    if (typeof get !== 'function') return undefined
-    return get.call(agents, sessionId)
+    // `ctx.reflect.get('agents', false)` is cordis's OWN lookup: the service or
+    // `undefined`, and it does not throw for a missing one. Verified 2026-10-04
+    // against the harness's cordis, where the obvious spellings all fail:
+    //
+    //   `ctx.agents.get(id)`  THROWS `cannot get property "agents" without
+    //                         inject` on a fiber without the dependency
+    //   `const g = ctx.agents.get; g(id)`  same throw, via `this.store`
+    //
+    // THREE shapes of the same mistake in this file, each of which returned
+    // `undefined` and each of which was therefore invisible:
+    //
+    //   §1bw  a session method hoisted off its object   (`this.log`)
+    //   here  a proxy accessor hoisted off the proxy     (`this.store`)
+    //   here  reading `ctx.agents` itself, which throws  (no `this` at all)
+    //
+    // And the consequence was the same every time: `resolveAgent` answered
+    // "no agent", `policyFor(undefined)` returned the AGENT-LESS policy — a fresh
+    // budget, zero steps, zero cost, a router that never saw a step — and every
+    // harness-path turn record was built from it. Measured with a probe
+    // reporting `agent=UNRESOLVED` on every closed turn.
+    const registry = (ctx as unknown as {
+      reflect?: {
+        get?: (name: string, strict?: boolean) => { get?: (id: string) => Agent | undefined } | undefined
+      }
+    }).reflect?.get?.('agents', false)
+    return registry?.get?.(sessionId)
   }
 
   // The dashboard is process-wide (one server, one feed), not per agent — it
@@ -2228,12 +2663,18 @@ export function apply(
   // (zeros/empties), never invented — the same honesty rule `refine.ts`
   // follows when it writes records from `LoopRunResult`.
   const optimize: OptimizeConfig | undefined = options.optimize
-  // On by default: omitting `optimize` records to `.feature-loop/runs.jsonl`
-  // under the process working directory. An explicit `history` overrides the
-  // path; an explicit `history: ''` disables recording. The default keeps the
-  // loopback posture (a file next to the process, not a service), and records
-  // are evidence, never control — a failed append is a feed line, not a
-  // failed turn.
+  // On by default: omitting `optimize` records to `.feature-loop/runs.jsonl`.
+  // An explicit `history` overrides the path; an explicit `history: ''`
+  // disables recording. The default keeps the loopback posture (a file next to
+  // the work, not a service), and records are evidence, never control — a
+  // failed append is a feed line, not a failed turn.
+  //
+  // LEFT RELATIVE on purpose. `recordTurn` resolves it against the closing
+  // session's own workspace (`historyPathFor`), which is what put a `dsh web`
+  // deployment's records under the server's cwd instead of the task's. The
+  // feed line below therefore names the CONFIGURED path — which is exactly
+  // what the operator wrote, and what the records will be found under, relative
+  // to the workspace the run happened in.
   const historyPath = optimize?.history ?? '.feature-loop/runs.jsonl'
   const historyEnabled = historyPath.trim() !== ''
   if (historyEnabled) {
@@ -2264,6 +2705,12 @@ export function apply(
 
   const disposeSession = !historyEnabled ? undefined : (() => {
     const path: string = historyPath
+    // `global: true` because the harness emits `session/event` with `this` bound
+    // to a per-session SCOPE CARRIER, and a hook that a scope filter rejects is
+    // silently dropped. Measured 2026-10-04 on a real web run: the listener
+    // receives the carrier's events with this set, and it is the documented
+    // switch for "receive regardless of context filter checks" — so the
+    // registration is not relying on the root context happening to be untagged.
     return ctx.on('session/event', (session: unknown, event: unknown) => {
       const end = asTurnEnd(event)
       if (end === undefined) return
@@ -2277,14 +2724,23 @@ export function apply(
       // there, and the next turn re-entered a phase that was already done.
       const turnAgent = agentOfSession(session, resolveAgent)
       if (turnAgent !== undefined) advanceIfGated(policyFor(turnAgent), turnAgent)
-      void recordTurn({ session, event: end, options, policyFor, resolveAgent, state, historyPath: path })
+      void recordTurn({
+        session,
+        event: end,
+        openedAt: turnStartTime(session, end.turn),
+        options,
+        policyFor,
+        resolveAgent,
+        state,
+        historyPath: path,
+      })
         .catch((error: unknown) => {
           // A failed append must never fail the turn: the record is
           // evidence, not control. The feed line says so in the harness's
           // own words, and the next turn tries again.
           state.note('note', `run history append failed: ${error instanceof Error ? error.message : String(error)}`)
         })
-    })
+    }, { global: true })
   })()
 
   const disposeStep = ctx.on('agent/pre-step', async ({ agent, turn, step }, next) => {
@@ -2456,11 +2912,47 @@ export function apply(
     },
   )
 
+
+  // The outcome of a call that RAN — the only place `isError` exists.
+  //
+  // This one flag reaches BOTH consumers: `reviewStep` reads it as `failed`, which
+  // feeds the ladder (`recordFailure`) and the detectors (`error-cascade` reads
+  // the committed observation's `error`). `noteToolOutcomes` — the helper whose
+  // own doc says `error-cascade` "could never fire in the plugin path" — turns
+  // out to be UNNECESSARY once the flag is set here: the observation the helper
+  // would have marked is written from this same `pending` a step later, with the
+  // flag already carrying. Verified by removing both the helper call and this
+  // flip: the cascade test fails; with only the flip it passes. So the helper has
+  // no call site in src/ and is not given one (§1r).
+  //
+  // `policy.pending.error` used to be set in exactly one branch: the one where
+  // the GATE blocks a call. So a `bash` that executed and exited 1 left it
+  // `false`, `reviewStep` read the step as a success, and in a DSH deployment
+  // the ladder climbed ONLY when the gate stopped the loop — never when the work
+  // failed. `error-cascade` never counted a visibly failing run either. Measured
+  // 2026-10-02 on a two-rung profile with the gate open for `bash`: two runs of
+  // `cat /nonexistent` never produced a MODEL ESCALATION notice (§1q).
+  const disposeResults = ctx.on(
+    'tools/post-execute',
+    (exec: { agent?: Agent }, result: { isError?: boolean }, next: () => Promise<PostToolDecision>) => {
+      if (result.isError === true) {
+        const policy = policyFor(exec.agent)
+        if (policy.pending !== undefined) policy.pending.error = true
+      }
+      return next()
+    },
+  )
+
   return () => {
+    // The probe closes over THIS context, so it must not outlive the plugin:
+    // a disposed context's service lookup is a different question, and the
+    // default is the safe one.
+    setLiveClientProbe(() => false)
     disposeStep()
     disposeRequest()
     disposeTurnStopping()
     disposeTools()
+    disposeResults()
     disposeSession?.()
     disposeApproval?.()
     if (dashboard !== undefined) void dashboard.stop()
@@ -2606,7 +3098,16 @@ export function resolveJudge(config: JudgeConfig): { judge: Judge, label: string
       + 'Use judge: laya for a local judge that needs no key, or judge: none for detectors only.',
     )
   }
-  const model = config.judgeModel ?? 'xiaomi/mimo-v2.5'
+  // `execution`, onegw's EXECUTION role alias — the same route every ladder in
+  // this repo names, and the only one verified against the live gateway
+  // (2026-10-03: POST /v1/chat/completions {"model":"execution"} -> 200).
+  // It used to be `xiaomi/mimo-v2.5`, a concrete id this repo does not
+  // declare anywhere and no shipped config mentions: a deployment that set
+  // `judge: chat` without also setting `judgeModel` was asking a model no
+  // test had ever run, which is the same "resolves but was never tested"
+  // shape §1a records for the ladder — one rung over, and invisible because
+  // nothing reads a judge's model except the judge itself.
+  const model = config.judgeModel ?? 'execution'
   return {
     judge: createChatJudge({
       llm: createOnegwClient({
