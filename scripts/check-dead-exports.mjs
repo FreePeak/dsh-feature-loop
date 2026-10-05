@@ -91,6 +91,20 @@ const DECLARATION = /^export (?:async )?(?:function|const|let|class|enum) (\w+)/
 const BY_CONSTRUCTION = new Set([
   'FeatureLoopRemote',
   'attachApprovalAnswerer',
+  // 0→1 pipeline constants that arrived from main. The pipeline's own phases,
+  // sandbox and evidence modules exist, but the seams that would CALL these were
+  // never written, so a reference search correctly finds no user. Deleting them
+  // would delete a public surface main named on purpose; un-exporting them would
+  // make the gate green by leaving code nothing reads. Named here, with the
+  // reason, because the file's own rule is that an exception must be written down
+  // rather than tolerated by silence — and because the next person to hit this
+  // should be able to tell a deliberate allowance from a missed wiring.
+  'closePhase',
+  'startSandbox',
+  'isPipelinePhase',
+  'DEFAULT_RUNS_DIR',
+  'FIRST_PHASE',
+  'STEPS_FILE',
 ])
 
 const dead = []
