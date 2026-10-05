@@ -332,7 +332,14 @@ let liveState: LiveSource | undefined
  */
 export interface LiveSource {
   /** The plugin's own `DashboardState` snapshot, verbatim. */
-  snapshot(): { runs: DashboardSnapshot['runs'], feed: DashboardSnapshot['feed'] }
+  snapshot(): {
+    runs: DashboardSnapshot['runs']
+    feed: DashboardSnapshot['feed']
+    /** Optional so "measured nothing" and "measured zero" stay distinguishable. */
+    metrics?: DashboardSnapshot['metrics']
+    /** Optional: absent until the battery has run, which is not the same as empty. */
+    recommendations?: DashboardSnapshot['recommendations']
+  }
   pendingApprovals(): DashboardSnapshot['pending']
   /** The policy row's own config, read per call so the URL can arrive late. */
   config(): Record<string, unknown>

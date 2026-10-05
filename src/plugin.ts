@@ -50,7 +50,7 @@ declare module '@deepseek-ai/dsh-llm' {
     'plugin:feature-loop': { kind: 'plugin:feature-loop' } & ContextFormed
   }
 }
-import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
+import type { PostToolDecision, PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
 import { LoopBudget } from './budget.ts'
 import type { BudgetSnapshot, UsageReading } from './budget.ts'
 import { PhaseAllocator } from './phase-budget.ts'
@@ -1770,7 +1770,7 @@ function pipelinePreCallGuard(policy: FeatureLoopPolicy): PreStepDecision | unde
  * @param event - the appended event, exactly as recorded.
  * @returns the turn number and the reason kind, or `undefined`.
  */
-function asTurnEnd(event: unknown): { turn: number, reasonKind: string, time: number } | undefined {
+function asTurnEnd(event: unknown): { turn: number, reasonKind: string, time?: number } | undefined {
   if (event === null || typeof event !== 'object') return undefined
   const record = event as { readonly type?: unknown, readonly data?: unknown, readonly time?: unknown }
   if (record.type !== 'turn/end') return undefined
@@ -2934,7 +2934,7 @@ export function apply(
   // `cat /nonexistent` never produced a MODEL ESCALATION notice (§1q).
   const disposeResults = ctx.on(
     'tools/post-execute',
-    (exec: { agent?: Agent }, result: { isError?: boolean }, next: () => Promise<unknown>) => {
+    (exec: { agent?: Agent }, result: { isError?: boolean }, next: () => Promise<PostToolDecision>) => {
       if (result.isError === true) {
         const policy = policyFor(exec.agent)
         if (policy.pending !== undefined) policy.pending.error = true
