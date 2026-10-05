@@ -1021,7 +1021,7 @@ export type GateVerdict =
  * @param stopArmed - whether the operator's stop sentinel is set.
  * @returns proceed or deny. Never `ask` — that is what YOLO means.
  */
-export function gateEnforce(
+function gateEnforce(
   policy: FeatureLoopPolicy,
   toolName: string,
   args: unknown,
