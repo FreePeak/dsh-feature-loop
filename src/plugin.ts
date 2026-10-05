@@ -2247,8 +2247,21 @@ export function apply(
       // it. Without this a run that wrote a perfectly good research note and then
       // finished its turn left the pipeline in `research` with the note sitting
       // there, and the next turn re-entered a phase that was already done.
+      //
+      // The final drain belongs HERE, before the record is built: the last
+      // attempt of a turn is settled by `agent/request` as that handler returns,
+      // which is after this `turn/end` listener runs. Without this the record
+      // is written one attempt short — a turn of N model calls recorded
+      // `steps: N-1` and priced N-1 of them, and the missing one is the most
+      // expensive step of the turn (the final answer, on the longest context).
+      // Measured 2026-10-05 in the Desktop app against the session log:
+      // `steps` equalled `assistant/message` count minus one in 8 of 8 runs.
       const turnAgent = agentOfSession(agents, session)
-      if (turnAgent !== undefined) advanceIfGated(policyFor(turnAgent), turnAgent)
+      if (turnAgent !== undefined) {
+        const policy = policyFor(turnAgent)
+        advanceIfGated(policy, turnAgent)
+        spendSettledUsage(policy, turnAgent)
+      }
       void recordTurn({ session, event: end, options, policyFor, state, historyPath: path, agents })
         .catch((error: unknown) => {
           // A failed append must never fail the turn: the record is

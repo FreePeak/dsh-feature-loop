@@ -2,7 +2,15 @@
 
 **Status:** Phase 1 complete (de-fork executed). Phase 2 not started.
 **Owner:** Linh Doan
-**Last updated:** 2026-09-30 (the cheap-first ladder no longer carries a model's
+**Last updated:** 2026-10-05 (a run record is no longer written one attempt
+short: the `turn/end` listener now drains settled usage itself, because the
+turn's closing model call is only settled by `agent/request` as that handler
+returns — after this listener ran. Measured in the Desktop app: `steps`
+equalled the session log's `assistant/message` count minus one in 8 of 8 runs,
+and the missing step is the turn's most expensive one. See §8 and
+`test/plugin-approval.test.ts` § "the closing drain")
+
+Earlier: 2026-09-30 (the cheap-first ladder no longer carries a model's
 reasoning effort onto the wrong route — `routeForStep` hands the rung's own
 effort over and a rung with none drops the session's, so a profile whose rungs
 are gateway aliases works beside a UI selection instead of failing every turn
@@ -273,10 +281,14 @@ estimate is now **denied** rather than dispatched.
   at versions CI cannot resolve. It is typechecked locally against the prebuilt
   packages. Closing this needs a lockfile, which needs published harness
   versions.
-- **Spend is observed, not metered by the plugin.** `LoopBudget.spend()` must be
-  called with real usage for the cost ceiling to mean anything; the plugin
-  currently reads spend from the budget snapshot rather than pricing each settled
-  attempt from `agent/request` usage. **This is the largest correctness gap.**
+- **Spend is observed, not metered by the plugin.** `LoopBudget.spend()` is
+  called with the real usage of every settled attempt, but the *cadence* was
+  wrong until 2026-10-05: `agent/pre-step` and `agent/request` both drain, and
+  a turn's last attempt is settled only as the `agent/request` handler returns
+  — after `turn/end` had already snapshotted the budget. Every record was
+  therefore one attempt short (8 of 8 runs in the Desktop app), losing the
+  turn's most expensive step. `turn/end` now drains before it builds the
+  record. The ceiling is still bounded by step count, not by spend alone.
 - **A reasoning effort belongs to a model, so a route change must drop it.**
   `Route.reasoningEffort` is the rung's own, and the harness refuses any explicit
   effort a model does not advertise (`UNSUPPORTED_REASONING_EFFORT`, thrown

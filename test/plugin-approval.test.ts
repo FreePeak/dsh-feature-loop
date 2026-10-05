@@ -41,14 +41,17 @@ type Decision = { kind: string, reason?: string }
 type Handler = (payload: unknown, next: () => Promise<Decision>) => Promise<Decision>
 
 /**
- * A context that records handlers instead of dispatching them.
+ * A context that records handlers instead of dispatching them, plus an
+ * optional `agents` service so a test can prove the per-agent lookup.
  *
- * Only `on` is needed: `apply` reads nothing else from the context, and the
- * handlers it registers are invoked directly by the tests below.
+ * `on` is what `apply` needs to register; `get` is optional because
+ * `apply` reads it defensively and a context without one is a real
+ * deployment shape (the plugin falls back to the shared agent-less policy).
  *
- * @returns the fake context and a reader for the handlers it captured.
+ * @param agents - what `ctx.get('agents')` returns, when supplied.
+ * @returns the fake context and readers for what it captured.
  */
-function fakeCtx(): {
+function fakeCtx(agents?: unknown): {
   ctx: unknown
   handler: (event: string) => Handler
   registered: () => string[]
@@ -60,6 +63,9 @@ function fakeCtx(): {
         handlers.set(event, fn)
         return () => { handlers.delete(event) }
       },
+      ...agents === undefined
+        ? {}
+        : { get(service: string): unknown { return service === 'agents' ? agents : undefined } },
     },
     handler(event: string): Handler {
       const fn = handlers.get(event)
@@ -395,4 +401,80 @@ test('a blocked turn records a blocked run', async () => {
   })
   const record = JSON.parse(readFileSync(historyPath, 'utf8').trim().split('\n')[0]!) as Record<string, unknown>
   assert.equal(record.outcome, 'blocked')
+})
+
+test('the closing drain prices the turn\'s LAST attempt, so steps count every call', async () => {
+  // The off-by-one this pins was measured in the Desktop app on 2026-10-05:
+  // every recorded run reported `steps` exactly one below the session log's
+  // `assistant/message` count, because the closing attempt is settled by
+  // `agent/request` as that handler RETURNS — after this `turn/end` listener
+  // has already snapshotted the budget. The last attempt of a turn is also its
+  // most expensive one (the final answer, on the longest context), so the
+  // undercount is not spread evenly across the run.
+  //
+  // The fixture models the real ORDER, which is the whole point: a step
+  // boundary drains first with the closing answer still unmaterialised, then
+  // the answer lands, then `turn/end` arrives. A log that already contained the
+  // answer at the first boundary would pass with or without the fix.
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-hist-'))
+  const historyPath = join(dir, 'runs.jsonl')
+  const closing = {
+    seq: 98,
+    type: 'assistant/message',
+    data: {
+      usage: { inputTokens: 1_000, outputTokens: 100 },
+      message: { source: { provider: 'deepseek', model: 'deepseek-v4-flash' } },
+    },
+  }
+  // The session log as it exists at each point in the turn.
+  const log: unknown[] = [{ seq: 90, type: 'tool/result', data: {} }]
+  const session = {
+    // `id` is what `sessionIdOf` reads, so the registry lookup is keyed by it;
+    // without it the lookup falls to 'unknown-session' and the drain lands on
+    // the shared agent-less policy, which prices nothing — a real deployment
+    // shape, and the reason this fixture carries the id.
+    //
+    // `seq` is where the drain cursor OPENS on its first call, so a real run
+    // starts it at the head of step 1, where no answer exists yet.
+    id: 'sess-drain',
+    seq: 0,
+    snapshotEvents(from: number): unknown[] {
+      return log.filter(event => (event as { seq: number }).seq >= from)
+    },
+  }
+  // The agent the registry hands back for this session — without it the
+  // plugin falls to the shared agent-less policy, which never sees a step.
+  const agent = { id: 'agent-1', session }
+  const registry = { get: (id: unknown): unknown => (id === 'sess-drain' ? agent : undefined) }
+  const { ctx, handler } = fakeCtx(registry)
+  const dispose = apply(ctx as never, {
+    spec: { ...SPEC, prices: { 'deepseek/deepseek-v4-flash': { inputPerMTok: 0.14, outputPerMTok: 0.28 } } },
+    dashboard: { enabled: false },
+    optimize: { history: historyPath },
+  })
+  const preStep = handler('agent/pre-step') as unknown as (p: unknown, n: () => Promise<Decision>) => Promise<Decision>
+  // Step boundary: only the tool result is settled, no answer yet.
+  await preStep({ agent, turn: 1, step: 1 }, async () => ALLOW)
+  // The closing answer lands AFTER the last step boundary — this is the event
+  // only the `turn/end` drain can price.
+  log.push(closing)
+  const fn = handler('session/event') as unknown as (s: unknown, e: unknown) => unknown
+  fn(session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+  const deadline = Date.now() + 5000
+  for (;;) {
+    try {
+      if (readFileSync(historyPath, 'utf8').trim() !== '') break
+    } catch { /* not written yet */ }
+    if (Date.now() > deadline) { dispose(); assert.fail('run record never landed') }
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  dispose()
+  const record = JSON.parse(readFileSync(historyPath, 'utf8').trim().split('\n')[0]!) as Record<string, unknown>
+  // One model call priced, not zero: this is the step count the history file
+  // reports and the cost the ceiling prices against.
+  assert.equal(record.steps, 1)
+  assert.ok(
+    Math.abs((record.costUSD as number) - (1000 * 0.14 + 100 * 0.28) / 1_000_000) < 1e-12,
+    `expected the closing attempt priced, got ${String(record.costUSD)}`,
+  )
 })
