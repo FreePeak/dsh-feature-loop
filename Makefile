@@ -288,7 +288,7 @@ CI_FILES := src/agent-policy.ts src/budget.ts src/dashboard.ts \
             src/judge.ts src/laya.ts src/llm.ts src/messages.ts src/metrics.ts \
             src/optimize.ts src/optimizer.ts src/phases.ts src/phase-budget.ts \
             src/pipeline.ts src/sandbox.ts src/ship.ts src/yolo.ts \
-            src/observation.ts src/driver.ts src/workers.ts src/worker-dispatch.ts src/phase-notice.ts \
+            src/observation.ts src/driver.ts src/workers.ts src/worker-dispatch.ts src/worker-changes.ts src/phase-notice.ts \
             src/brief.ts src/approval-bridge.ts src/prompts.ts src/questioner.ts \
             src/refine.ts src/review.ts src/routing.ts src/runlog.ts \
             src/runner.ts src/signals.ts src/spec.ts src/tools.ts

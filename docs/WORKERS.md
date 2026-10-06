@@ -139,6 +139,19 @@ Failures are reports, not exceptions: `COMPLETED`, `FAILED (exit N)`, `TIMEOUT`,
 `ABORTED` or `ERROR` is returned with the tail of the output so the orchestrator
 can decide what to do next.
 
+## Files a worker changed, and the ship phase
+
+Ship stages only the paths the run *recorded* writing, never `git add -A`. A
+worker is a separate process, so the envelope never sees its writes; without
+help, the files it created would be invisible to ship and the run would "pass"
+with a commit that held none of them (the first real run built a whole API and
+left it untracked). So for `implement` and `test` workers the dispatcher takes a
+`git status` snapshot (with a content hash per dirty file) before and after the
+run, reports the difference as `files changed (N): …`, and records those paths
+for ship. Files that were already dirty and untouched by the worker are not
+recorded: they belong to someone else. A validator's writes are never recorded.
+Outside a git repository nothing is attributed.
+
 ## What the dashboard shows
 
 Each worker adds two lines to the HITL dashboard feed (and nothing else needs

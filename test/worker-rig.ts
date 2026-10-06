@@ -111,6 +111,7 @@ export function stubCli(dir: string, name: string): void {
     '  *STUB_HANG*) echo "working..."; sleep 30; echo unreachable ;;',
     `  *STUB_LEAK*) echo "key is ${secret}"; exit 0 ;;`,
     '  *STUB_BIG*) head -c 60000 /dev/zero | tr "\\0" "y"; echo; echo "TAIL-MARKER"; exit 0 ;;',
+    '  *STUB_WRITE*) echo made > made-by-worker.txt; echo edited >> tracked.txt; echo "wrote files"; exit 0 ;;',
     '  *STUB_ANSI*) printf "\\033[0m\\033[1;32mcoloured text\\033[0m\\n"; exit 0 ;;',
     '  *STUB_VALIDATE*) echo "checked the diff"; echo "VERDICT: FAIL"; exit 0 ;;',
     '  *) echo "did the work"; exit 0 ;;',

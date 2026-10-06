@@ -13,7 +13,8 @@
  */
 
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, it } from 'node:test'
@@ -21,7 +22,7 @@ import { afterEach, describe, it } from 'node:test'
 import { describeWorkerEvent, runWorker, terminalPortFor } from '../src/worker-dispatch.ts'
 import type { TerminalsService, WorkerEvent } from '../src/worker-dispatch.ts'
 import { ShellPort, stubCli } from './worker-rig.ts'
-import { checkDispatch, parseWorkersConfig } from '../src/workers.ts'
+import { checkDispatch, formatWorkerReport, parseWorkersConfig } from '../src/workers.ts'
 import type { DispatchRequest } from '../src/workers.ts'
 
 interface Rig {
@@ -254,6 +255,40 @@ describe('runWorker', { concurrency: false }, () => {
     assert.match(start!, /^worker xdev \(validate\) started in terminal pty-1 \[[0-9a-f]{8}\] — STUB_VALIDATE check the diff/)
     assert.match(end!, /^worker xdev \(validate\) COMPLETED exit 0 in \d+\.\ds · verdict FAIL \[[0-9a-f]{8}\] — .*VERDICT: FAIL · evidence \S+validate$/)
     assert.ok(!/\n/.test(start!) && !/\n/.test(end!), 'one line each')
+  })
+
+  it('reports the files a writing worker changed, so ship can stage them', async () => {
+    const r = fresh()
+    const git = (...args: string[]): void => {
+      execFileSync('git', ['-C', r.work, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { stdio: 'ignore' })
+    }
+    git('init', '-q')
+    writeFileSync(join(r.work, 'tracked.txt'), 'one\n')
+    writeFileSync(join(r.work, 'preexisting.txt'), 'someone else\n')
+    git('add', 'tracked.txt')
+    git('commit', '-qm', 'init')
+    const result = await r.run({ task: 'STUB_WRITE', role: 'implement' })
+    assert.equal(result.status, 'completed')
+    const names = (result.changedFiles ?? []).map(f => f.slice(f.lastIndexOf('/') + 1)).sort()
+    assert.deepEqual(names, ['made-by-worker.txt', 'tracked.txt'], 'the untouched pre-existing file is not ours')
+    assert.ok((result.changedFiles ?? []).every(f => f.startsWith('/')), 'absolute paths')
+    assert.match(formatWorkerReport(result), /files changed \(2\): made-by-worker\.txt, tracked\.txt/)
+    const end = r.events.at(-1)
+    assert.ok(end?.kind === 'end' && end.changedFiles?.length === 2)
+    assert.match(describeWorkerEvent(end), /2 file\(s\) changed/)
+  })
+
+  it('never attributes writes to a validator', async () => {
+    const r = fresh()
+    execFileSync('git', ['-C', r.work, 'init', '-q'], { stdio: 'ignore' })
+    const result = await r.run({ task: 'STUB_WRITE', role: 'validate' })
+    assert.equal(result.changedFiles, undefined)
+  })
+
+  it('reports no files outside a git repository', async () => {
+    const r = fresh()
+    const result = await r.run({ task: 'STUB_WRITE', role: 'implement' })
+    assert.equal(result.changedFiles, undefined)
   })
 
   it('keeps colour codes out of the report and the feed', async () => {

@@ -2661,6 +2661,13 @@ export function apply(
         onEvent: (agent, event) => {
           const runId = recordAgentMeta(state, agent as Agent | undefined)
           state.note('note', describeWorkerEvent(event), runId)
+          // A worker's writes never pass the envelope, so ship would not know
+          // them. Record what git saw it change; `recordWrite` itself drops
+          // anything outside the run's root.
+          if (event.kind === 'end' && event.changedFiles !== undefined) {
+            const policy = policyFor(agent as Agent | undefined)
+            for (const file of event.changedFiles) recordWrite(policy, file)
+          }
         },
       })
       workersReady = true

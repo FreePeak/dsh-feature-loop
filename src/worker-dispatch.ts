@@ -43,6 +43,8 @@ import {
   terminalCommand,
   workerExcerpt,
 } from './workers.ts'
+import { changedBetween, snapshotChanges } from './worker-changes.ts'
+import type { ChangeSnapshot } from './worker-changes.ts'
 import type { DispatchRequest, WorkerResult, WorkersConfig, WorkerStatus } from './workers.ts'
 
 /** What a settled terminal send says. A subset of the PTY service's result. */
@@ -90,6 +92,8 @@ export interface RunWorkerOptions {
   scanLines?: number
   /** Called at each lifecycle step, for the dashboard feed. */
   onEvent?: (event: WorkerEvent) => void
+  /** Reads the dirty files under a directory; defaults to `git status`. A test seam. */
+  snapshot?: (cwd: string) => ChangeSnapshot | undefined
 }
 
 /** A lifecycle event, for the feed. */
@@ -108,6 +112,8 @@ export type WorkerEvent =
     /** The last few hundred characters of the output, on one line. */
     excerpt: string
     evidenceDir?: string
+    /** Absolute paths the worker created or modified. */
+    changedFiles?: string[]
   }
 
 /**
@@ -129,6 +135,7 @@ export function describeWorkerEvent(event: WorkerEvent): string {
     event.verdict === undefined ? '' : ` · verdict ${event.verdict}`,
     ` [${event.id}]`,
     event.excerpt === '' ? '' : ` — ${event.excerpt}`,
+    event.changedFiles === undefined ? '' : ` · ${event.changedFiles.length} file(s) changed`,
     event.evidenceDir === undefined ? '' : ` · evidence ${event.evidenceDir}`,
   ].join('')
 }
@@ -161,6 +168,10 @@ export async function runWorker(
   const id = (options.newId ?? defaultId)()
   const startedAt = now()
   const evidenceDir = join(options.evidenceRoot, `${id}-${request.worker}-${request.role}`)
+  // Only a role that may write has anything to attribute; a validator that
+  // writes anyway is misbehaving and its files must not be staged by ship.
+  const takeSnapshot = options.snapshot ?? snapshotChanges
+  const before = request.role === 'validate' ? undefined : takeSnapshot(request.cwd)
   const files = {
     prompt: join(evidenceDir, 'prompt.md'),
     script: join(evidenceDir, 'run.sh'),
@@ -174,6 +185,7 @@ export async function runWorker(
     const { text, clipped } = clipMiddle(redacted, options.config.maxOutputChars)
     const verdict = request.role === 'validate' ? parseVerdict(redacted) : undefined
     const { raw: _raw, ...rest } = partial
+    const changedFiles = before === undefined ? [] : changedBetween(before, takeSnapshot(request.cwd))
     const result: WorkerResult = {
       ...base,
       ...rest,
@@ -182,6 +194,8 @@ export async function runWorker(
       clipped,
       ...verdict === undefined ? {} : { verdict },
       evidenceDir,
+      cwd: request.cwd,
+      ...changedFiles.length === 0 ? {} : { changedFiles },
     }
     try {
       writeFileSync(files.result, `${JSON.stringify({ ...result, output: undefined }, null, 2)}\n`)
@@ -199,6 +213,7 @@ export async function runWorker(
       ...result.exitCode === undefined ? {} : { exitCode: result.exitCode },
       ...result.verdict === undefined ? {} : { verdict: result.verdict },
       ...result.evidenceDir === undefined ? {} : { evidenceDir: result.evidenceDir },
+      ...result.changedFiles === undefined ? {} : { changedFiles: result.changedFiles },
     })
     return result
   }

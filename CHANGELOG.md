@@ -32,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `testCommand` to check their own work, and the dashboard feed now shows each
   worker's task, status, verdict, output excerpt and evidence path.
 
+  Found by the first real build loop (a sample Go API): a worker's files were
+  invisible to the ship phase, which stages only recorded writes, so the run
+  reported READY with a commit holding none of the code. Workers now report
+  `files changed` from a before/after git snapshot and those paths are recorded
+  for ship.
+
 - **The 0→1 product loop.** `pipeline:` turns a bounded turn into a five-phase
   run — research → PRD → implement → test → ship — driven by one sentence of user
   intent. Ships **disabled**; flip `pipeline.enabled` in the patch row. Each

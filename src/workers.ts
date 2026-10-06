@@ -616,6 +616,13 @@ export interface WorkerResult {
   evidenceDir?: string
   /** Why the run is `error`, `timeout` or `aborted`. */
   detail?: string
+  /** The directory the worker started in. */
+  cwd?: string
+  /**
+   * Absolute paths the worker created or modified, from a before/after git
+   * snapshot. Only set for roles that may write, and only inside a repository.
+   */
+  changedFiles?: string[]
 }
 
 /**
@@ -704,6 +711,15 @@ export function environmentHint(result: Pick<WorkerResult, 'status' | 'output'>)
   return undefined
 }
 
+/** The "files changed" line of a report, empty when the worker changed nothing we could see. */
+function changedLine(result: Pick<WorkerResult, 'changedFiles' | 'cwd'>): string[] {
+  const files = result.changedFiles
+  if (files === undefined || files.length === 0) return []
+  const shown = files.slice(0, 30).map(file => result.cwd === undefined ? file : relative(result.cwd, file))
+  const more = files.length > shown.length ? ` … and ${files.length - shown.length} more` : ''
+  return [`files changed (${files.length}): ${shown.join(', ')}${more}`]
+}
+
 /**
  * The report the main session thread reads.
  *
@@ -726,6 +742,7 @@ export function formatWorkerReport(result: WorkerResult): string {
     ...result.evidenceDir === undefined ? [] : [`evidence: ${result.evidenceDir}`],
     ...result.detail === undefined ? [] : [`note: ${result.detail}`],
     ...hint === undefined ? [] : [hint],
+    ...changedLine(result),
   ]
   const body = result.output.trim() === '' ? '(the worker printed nothing)' : result.output.trim()
   const tail = result.role === 'validate'
