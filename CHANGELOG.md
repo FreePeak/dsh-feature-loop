@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sessions (`test/integration/workers-in-dsh.spec.ts`); `FL_REAL_WORKERS=1` runs
   the real CLIs. See `docs/WORKERS.md`.
 
+  Found by running it in a real dsh and fixed here: the web bundle's terminals
+  sit in isolated per-agent groups, so a root plugin never sees them and the tool
+  silently never registered — it now logs when it registers and warns after 15s
+  when no root `terminals` service exists, and the docs give the two profile rows
+  that provide one. Worker CLIs fail under dsh's default `workspace-write`
+  sandbox (no login, no state dir): reports carry a `hint:` line for those
+  failures and the docs spell out the permission trade-off. Colour codes are
+  stripped from reports, `claude` implementers may run the configured
+  `testCommand` to check their own work, and the dashboard feed now shows each
+  worker's task, status, verdict, output excerpt and evidence path.
+
 - **The 0→1 product loop.** `pipeline:` turns a bounded turn into a five-phase
   run — research → PRD → implement → test → ship — driven by one sentence of user
   intent. Ships **disabled**; flip `pipeline.enabled` in the patch row. Each

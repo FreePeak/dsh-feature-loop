@@ -52,6 +52,7 @@ declare module '@deepseek-ai/dsh-llm' {
 }
 import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
 import { LoopBudget } from './budget.ts'
+import { describeWorkerEvent } from './worker-dispatch.ts'
 import { WORKER_TOOL_NAME, parseWorkersConfig } from './workers.ts'
 import type { WorkersConfig } from './workers.ts'
 import type { BudgetSnapshot, UsageReading } from './budget.ts'
@@ -2555,6 +2556,21 @@ export function apply(
   // (and so `@deepseek-ai/dsh-tools`) out of this file's static graph.
   const workersConfig = options.workers === undefined ? undefined : parseWorkersConfig(options.workers)
   if (workersConfig?.enabled === true && typeof (ctx as { inject?: unknown }).inject === 'function') {
+    // `inject` waits silently for services that may never arrive. In dsh's
+    // web profile the terminal service lives inside each agent preset's
+    // isolated group, which this plugin cannot see; without a terminal service
+    // at the root the tool would simply never appear. Say so, once.
+    let workersReady = false
+    const missing = setTimeout(() => {
+      if (!workersReady) {
+        process.stderr.write(
+          'dsh-feature-loop: workers.enabled is set but dispatch_worker is not registered — '
+          + 'no root-level `terminals` service. Add @deepseek-ai/dsh-terminal and '
+          + '@deepseek-ai/dsh-terminal-bash to the profile (docs/WORKERS.md, "Profile requirements").\n',
+        )
+      }
+    }, 15_000)
+    missing.unref?.()
     void ctx.inject(['tools', 'terminals'], async inner => {
       const { registerWorkerTool } = await import('./worker-tool.ts')
       await registerWorkerTool(inner as unknown as Parameters<typeof registerWorkerTool>[0], {
@@ -2563,15 +2579,12 @@ export function apply(
         cwdFor: agent => sessionCwdOf(agent as Agent | undefined),
         onEvent: (agent, event) => {
           const runId = recordAgentMeta(state, agent as Agent | undefined)
-          state.note(
-            'note',
-            event.kind === 'start'
-              ? `worker ${event.worker} (${event.role}) started in terminal ${event.session} [${event.id}]`
-              : `worker ${event.worker} (${event.role}) ${event.status}${event.exitCode === undefined ? '' : ` exit ${String(event.exitCode)}`} [${event.id}]`,
-            runId,
-          )
+          state.note('note', describeWorkerEvent(event), runId)
         },
       })
+      workersReady = true
+      clearTimeout(missing)
+      process.stderr.write(`dsh-feature-loop: dispatch_worker registered (workers: ${workersConfig.allow.join(', ')})\n`)
     })
   }
 

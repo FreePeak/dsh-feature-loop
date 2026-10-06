@@ -1,14 +1,14 @@
-# Run sess-2
+# Run sess-drain
 
 **Verdict: READY**
 
 | | |
 |---|---|
-| Started | 2026-10-06T06:27:45.573Z |
-| Ended | 2026-10-06T06:27:45.573Z |
+| Started | 2026-10-06T06:27:45.801Z |
+| Ended | 2026-10-06T06:27:45.801Z |
 | Outcome | `goal-met` |
-| Steps | 0 of 8 allowed |
-| Cost | $0.00 of $1.0000 (0%) |
+| Steps | 1 of 8 allowed |
+| Cost | $0.0002 of $1.0000 (0%) |
 | Wall | 0ms |
 
 ---

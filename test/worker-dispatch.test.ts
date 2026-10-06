@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, it } from 'node:test'
 
-import { runWorker, terminalPortFor } from '../src/worker-dispatch.ts'
+import { describeWorkerEvent, runWorker, terminalPortFor } from '../src/worker-dispatch.ts'
 import type { TerminalsService, WorkerEvent } from '../src/worker-dispatch.ts'
 import { ShellPort, stubCli } from './worker-rig.ts'
 import { checkDispatch, parseWorkersConfig } from '../src/workers.ts'
@@ -232,6 +232,35 @@ describe('runWorker', { concurrency: false }, () => {
     assert.deepEqual(r.events.map(e => e.kind), ['start', 'end'])
     const end = r.events[1]!
     assert.ok(end.kind === 'end' && end.status === 'completed' && end.exitCode === 0)
+  })
+
+  it('gives the feed enough to read without opening the evidence: task, verdict, excerpt, path', async () => {
+    const r = fresh()
+    await r.run({ task: 'STUB_VALIDATE check the diff', role: 'validate' })
+    const [start, end] = r.events
+    assert.ok(start?.kind === 'start')
+    assert.match(start.task, /STUB_VALIDATE check the diff/)
+    assert.ok(end?.kind === 'end')
+    assert.equal(end.verdict, 'FAIL')
+    assert.match(end.excerpt, /checked the diff.*VERDICT: FAIL/)
+    assert.ok(end.durationMs >= 0)
+    assert.match(end.evidenceDir ?? '', /validate$/)
+  })
+
+  it('words the feed lines so a reader needs nothing else open', async () => {
+    const r = fresh()
+    await r.run({ task: 'STUB_VALIDATE check the diff', role: 'validate' })
+    const [start, end] = r.events.map(describeWorkerEvent)
+    assert.match(start!, /^worker xdev \(validate\) started in terminal pty-1 \[[0-9a-f]{8}\] — STUB_VALIDATE check the diff/)
+    assert.match(end!, /^worker xdev \(validate\) COMPLETED exit 0 in \d+\.\ds · verdict FAIL \[[0-9a-f]{8}\] — .*VERDICT: FAIL · evidence \S+validate$/)
+    assert.ok(!/\n/.test(start!) && !/\n/.test(end!), 'one line each')
+  })
+
+  it('keeps colour codes out of the report and the feed', async () => {
+    const r = fresh()
+    const result = await r.run({ task: 'STUB_ANSI' })
+    assert.ok(!result.output.includes('\u001b'))
+    assert.match(result.output, /coloured text/)
   })
 
   it('two workers in a row get separate evidence directories and the right output each', async () => {

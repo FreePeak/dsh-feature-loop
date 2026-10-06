@@ -27,8 +27,8 @@ the `dispatch_worker` tool result — a message in the orchestrator's own thread
 
 | role        | what the worker is told                                              | flags the loop passes (no bypass flag, ever)                         |
 |-------------|----------------------------------------------------------------------|----------------------------------------------------------------------|
-| `implement` | make the change described in the brief, inside the worktree          | `xdev -approval-mode write` · `claude --permission-mode acceptEdits` |
-| `test`      | run the project's test command, fix nothing unasked, report results  | same as implement; `claude` is pinned to `Bash(<testCommand>)`       |
+| `implement` | make the change described in the brief, inside the worktree          | `xdev -approval-mode write` · `claude --permission-mode acceptEdits` (+ `Bash(<testCommand>)` when set, so it can check its own work) |
+| `test`      | run the project's test command, fix nothing unasked, report results  | same as implement                                                     |
 | `validate`  | review read-only, end with `VERDICT: PASS` or `VERDICT: FAIL`        | `xdev -plan` · `claude --permission-mode plan` · `opencode --agent plan` |
 
 `implement` runs one at a time; `test` and `validate` are concurrency-safe, so
@@ -51,14 +51,66 @@ workers:
   models: { claude: sonnet }        # optional per-CLI model
 ```
 
-Unknown keys fail loudly at load. The profile must carry the terminal plugins
-(`@deepseek-ai/dsh-terminal`, `dsh-terminal-bash`, `dsh-subprocess-local`,
-`dsh-sandbox-local`, `dsh-sandbox-policy`); without them the plugin still
-loads and `dispatch_worker` is simply not registered.
+Unknown keys fail loudly at load.
 
 Credentials are never configured here. Each CLI reads its own (`ONEGW_API_KEY`,
 `~/.dsh/.credentials.yaml`, its own login). A worker that has none reports the
 CLI's own error, in the thread.
+
+## Profile requirements
+
+`dispatch_worker` needs a **root-level** `terminals` service. Which bundle gives
+you one matters:
+
+| bundle                  | root `terminals`? | what to do                                              |
+|-------------------------|-------------------|---------------------------------------------------------|
+| `dsh-headless`          | no                | add the two rows below                                  |
+| `dsh-web-app`           | no — its terminals live inside each agent preset's *isolated* group, which a root plugin cannot see | add the two rows below |
+
+```yaml
+# profile cordis.patch.yml — root-level terminal service for the workers
+- insert:
+    - id: pty
+      name: '@deepseek-ai/dsh-terminal'
+    - id: terminal-bash
+      name: '@deepseek-ai/dsh-terminal-bash'
+      config:
+        timeoutMs: 300000
+```
+
+Both packages ship inside the dsh runtime; do not `dsh plugin add` them (the
+registry carries only old, incompatible versions). The sandbox, subprocess and
+sandbox-policy plugins the bash backend needs are already in the base bundle.
+
+If `workers.enabled` is set and no such service appears, the plugin says so on
+stderr after 15 seconds instead of silently not registering the tool; when it
+does register, it logs `dsh-feature-loop: dispatch_worker registered`.
+
+A ready-made interactive profile for this is `flweb` (web UI, `gateMode: ask`,
+all three CLIs allowed): `DSH_PERMISSION_MODE=danger-full-access dsh --profile flweb`.
+
+## Permissions and credentials
+
+A worker runs **inside dsh's own sandbox**. dsh's default permission mode is
+`workspace-write`; under it a CLI cannot read its login or write its own state
+directory (measured against the real tools: `claude` → `401 OAuth access token
+has expired`, `opencode` → `EPERM … ~/.local/share/opencode/log/opencode.log`).
+The report says so with a `hint:` line, because the orchestrator would otherwise
+read it as "the brief was wrong" and retry.
+
+To let workers run you must start dsh in a mode that lets them reach their own
+state:
+
+```bash
+DSH_PERMISSION_MODE=danger-full-access dsh --profile flweb
+```
+
+This lifts the sandbox for **every** tool in that session, not just workers, so
+the feature loop's own gates are what stands between the model and your machine:
+keep `gateMode: ask` (each dispatch is approved by a human), keep `allow` as
+short as you can, and keep the profile's gate policies. Do not combine it with
+`gateMode: deny` and a `dispatch_worker: auto` override on a machine you care
+about — that override exists for the test below, not for daily use.
 
 ## Safety model
 
@@ -87,6 +139,21 @@ Failures are reports, not exceptions: `COMPLETED`, `FAILED (exit N)`, `TIMEOUT`,
 `ABORTED` or `ERROR` is returned with the tail of the output so the orchestrator
 can decide what to do next.
 
+## What the dashboard shows
+
+Each worker adds two lines to the HITL dashboard feed (and nothing else needs
+opening to follow it):
+
+```
+worker claude (implement) started in terminal pty-1 [5ddb46f7] — Goal: make `node hello.js` print exactly …
+worker claude (implement) COMPLETED exit 0 in 21.7s [5ddb46f7] — … Files changed: hello.js … · evidence /tmp/dsh-feature-loop/workers/5ddb46f7-claude-implement
+worker opencode (validate) COMPLETED exit 0 in 20.1s · verdict PASS [9386b997] — … VERDICT: PASS · evidence …
+```
+
+The line carries the task preview, status, exit code, duration, the validator's
+verdict, the last few hundred characters of output (colour codes stripped,
+secrets redacted) and the path to the full log.
+
 ## How the orchestrator is told
 
 `phaseNotice` adds a short block when workers are enabled: in *implement* the
@@ -108,3 +175,15 @@ bash test/integration/run.sh
 # calls; a CLI with no credential on this machine is skipped, not failed)
 FL_REAL_WORKERS=1 bash test/integration/run.sh
 ```
+
+### Verified end to end in a real dsh
+
+A real `dsh` boot (0.2.0-rc.2, `onegw` model, the profile above with
+`DSH_PERMISSION_MODE=danger-full-access`) was given: *dispatch `claude` to
+change `hello.js` to print `hello, dsh`, then dispatch `opencode` to validate
+it, then summarise.* The model called `dispatch_worker` twice; `claude` made the
+edit, `opencode` ran the program and ended `VERDICT: PASS`; both reports arrived
+in the thread and the model's final answer summarised them. Under the default
+`workspace-write` mode the same run returned two honest `FAILED` reports (the
+credential and `EPERM` failures above) and the model reported them as
+environmental rather than claiming success.

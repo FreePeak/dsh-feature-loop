@@ -409,7 +409,7 @@ export function buildArgv(kind: WorkerKind, role: WorkerRole, options: ArgvOptio
         '--permission-prompts', 'none',
         '--no-session-persistence',
         ...model === undefined ? [] : ['--model', model],
-        ...role === 'test' && options.testCommand !== undefined
+        ...role !== 'validate' && options.testCommand !== undefined
           ? ['--allowedTools', `Bash(${options.testCommand})`]
           : [],
       ]
@@ -659,6 +659,52 @@ export function clipMiddle(text: string, max: number): { text: string, clipped: 
 }
 
 /**
+ * Remove terminal control sequences (colours, cursor moves) from CLI output.
+ *
+ * A worker runs in a pseudo-terminal, so `opencode` and friends colour their
+ * output; the escape bytes are noise to the orchestrator and make the
+ * dashboard feed unreadable.
+ *
+ * @param text - raw terminal output.
+ * @returns the same text without ANSI escape sequences.
+ */
+export function stripAnsi(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, '')
+}
+
+/**
+ * A one-line tail of a worker's output, for the dashboard feed.
+ *
+ * @param output - the (already redacted) output.
+ * @param max - the longest excerpt to return.
+ * @returns whitespace-collapsed text, ending with the last `max` characters.
+ */
+export function workerExcerpt(output: string, max = 280): string {
+  const flat = stripAnsi(output).replace(/\s+/g, ' ').trim()
+  return flat.length <= max ? flat : `…${flat.slice(flat.length - max + 1)}`
+}
+
+/**
+ * A pointer for the failures that are about the *environment*, not the task.
+ *
+ * A worker runs inside dsh's own sandbox. Under `workspace-write` (dsh's default
+ * permission mode) a CLI cannot read its login or write its state directory, and
+ * says so in its own words. The orchestrator would otherwise read that as "the
+ * task failed" and retry or rewrite the brief.
+ *
+ * @param result - the finished run.
+ * @returns a one-line hint, or `undefined` when the output shows no such symptom.
+ */
+export function environmentHint(result: Pick<WorkerResult, 'status' | 'output'>): string | undefined {
+  if (result.status === 'completed') return undefined
+  if (/EPERM|operation not permitted|EACCES|permission denied|token has expired|not logged in|failed to authenticate|has no credential|\b401\b/i.test(result.output)) {
+    return 'hint: this looks like the CLI\'s own login or state directory is unreachable from the dsh terminal (sandbox or credential), not a problem with the brief. See docs/WORKERS.md, "Permissions and credentials".'
+  }
+  return undefined
+}
+
+/**
  * The report the main session thread reads.
  *
  * This text *is* the worker-to-orchestrator channel: it is returned as the
@@ -671,6 +717,7 @@ export function clipMiddle(text: string, max: number): { text: string, clipped: 
  */
 export function formatWorkerReport(result: WorkerResult): string {
   const seconds = (result.durationMs / 1000).toFixed(1)
+  const hint = environmentHint(result)
   const head = [
     `[worker report] ${result.worker} · ${result.role} · ${result.status.toUpperCase()}`
     + `${result.exitCode === undefined ? '' : ` (exit ${result.exitCode})`} · ${seconds}s`,
@@ -678,6 +725,7 @@ export function formatWorkerReport(result: WorkerResult): string {
     ...result.session === undefined ? [] : [`terminal: ${result.session}`],
     ...result.evidenceDir === undefined ? [] : [`evidence: ${result.evidenceDir}`],
     ...result.detail === undefined ? [] : [`note: ${result.detail}`],
+    ...hint === undefined ? [] : [hint],
   ]
   const body = result.output.trim() === '' ? '(the worker printed nothing)' : result.output.trim()
   const tail = result.role === 'validate'

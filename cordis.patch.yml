@@ -258,8 +258,10 @@
         # or `opencode`, which runs in a dsh terminal session for the implement,
         # test or validate role. The worker's result comes back as the tool
         # result in THIS session's thread. Off by default; needs the profile to
-        # carry the dsh terminal plugins. Design and safety model:
-        # docs/WORKERS.md.
+        # carry a ROOT-level terminal service (add @deepseek-ai/dsh-terminal and
+        # dsh-terminal-bash rows; the web bundle only has them inside isolated
+        # agent groups) and run with DSH_PERMISSION_MODE=danger-full-access so the
+        # CLIs can reach their own login. Design, safety model: docs/WORKERS.md.
         #
         # Every dispatch is an `irreversible` call, so under `gateMode: ask` a
         # human approves it. No CLI is started with a permission-bypass flag.

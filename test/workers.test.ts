@@ -31,6 +31,7 @@ import {
   buildArgv,
   checkDispatch,
   clipMiddle,
+  environmentHint,
   evidenceRoot,
   formatWorkerReport,
   markersFor,
@@ -41,8 +42,10 @@ import {
   rolePrompt,
   scanScrollback,
   shQuote,
+  stripAnsi,
   terminalCommand,
   withinRoot,
+  workerExcerpt,
 } from '../src/workers.ts'
 import type { WorkerKind, WorkerResult, WorkerRole } from '../src/workers.ts'
 import { envelope } from '../src/yolo.ts'
@@ -202,12 +205,51 @@ describe('buildArgv', () => {
     assert.equal(x[x.indexOf('-max-time') + 1], '90s')
   })
 
-  it('lets Claude Code run only the configured test command, and only in the test role', () => {
+  it('lets Claude Code run only the configured test command, and never in the read-only validate role', () => {
     const t = buildArgv('claude', 'test', { ...opts, testCommand: 'pnpm test' })
     assert.equal(t[t.indexOf('--allowedTools') + 1], 'Bash(pnpm test)')
-    assert.ok(!buildArgv('claude', 'implement', { ...opts, testCommand: 'pnpm test' }).includes('--allowedTools'))
+    // An implementer that cannot run the suite cannot verify its own change
+    // (seen against the real CLI: it handed back an unverified edit).
+    const i = buildArgv('claude', 'implement', { ...opts, testCommand: 'pnpm test' })
+    assert.equal(i[i.indexOf('--allowedTools') + 1], 'Bash(pnpm test)')
+    assert.ok(!buildArgv('claude', 'validate', { ...opts, testCommand: 'pnpm test' }).includes('--allowedTools'))
+    assert.ok(!buildArgv('claude', 'implement', opts).includes('--allowedTools'))
     // Variadic flag last, so it cannot swallow the prompt.
     assert.ok(t.indexOf(PROMPT_SLOT) < t.indexOf('--allowedTools'))
+  })
+})
+
+describe('stripAnsi, workerExcerpt, environmentHint', () => {
+  it('removes colour and cursor sequences but keeps the words', () => {
+    assert.equal(stripAnsi('\u001b[0m> plan \u001b[1;32mOK\u001b[0m\u001b]0;title\u0007 done'), '> plan OK done')
+  })
+
+  it('takes a one-line tail, marking the cut', () => {
+    assert.equal(workerExcerpt('a\n\n  b   c'), 'a b c')
+    const long = workerExcerpt(`${'x'.repeat(500)} END`, 40)
+    assert.equal(long.length, 40)
+    assert.ok(long.startsWith('…') && long.endsWith(' END'))
+  })
+
+  it('points at the sandbox or login for environment failures, and only for failures', () => {
+    const symptoms = [
+      'EPERM: operation not permitted, open \'/Users/x/.local/share/opencode/log/opencode.log\'',
+      'API Error: 401 OAuth access token has expired',
+      'xdev: config: provider "onegw" has no credential',
+    ]
+    for (const output of symptoms) {
+      assert.match(environmentHint({ status: 'failed', output }) ?? '', /docs\/WORKERS\.md/)
+    }
+    assert.equal(environmentHint({ status: 'completed', output: symptoms[0]! }), undefined)
+    assert.equal(environmentHint({ status: 'failed', output: '2 tests failed' }), undefined)
+  })
+
+  it('puts the hint in the report the orchestrator reads', () => {
+    const report = formatWorkerReport({
+      id: 'a', worker: 'opencode', role: 'validate', status: 'failed', exitCode: 1, durationMs: 400,
+      output: 'EPERM: operation not permitted', clipped: false,
+    })
+    assert.match(report, /hint: .*sandbox or credential/)
   })
 })
 

@@ -39,7 +39,9 @@ import {
   renderRunScript,
   rolePrompt,
   scanScrollback,
+  stripAnsi,
   terminalCommand,
+  workerExcerpt,
 } from './workers.ts'
 import type { DispatchRequest, WorkerResult, WorkersConfig, WorkerStatus } from './workers.ts'
 
@@ -92,8 +94,44 @@ export interface RunWorkerOptions {
 
 /** A lifecycle event, for the feed. */
 export type WorkerEvent =
-  | { kind: 'start', id: string, worker: string, role: string, cwd: string, session: string }
-  | { kind: 'end', id: string, worker: string, role: string, status: WorkerStatus, exitCode?: number }
+  | { kind: 'start', id: string, worker: string, role: string, cwd: string, session: string, task: string }
+  | {
+    kind: 'end'
+    id: string
+    worker: string
+    role: string
+    status: WorkerStatus
+    exitCode?: number
+    durationMs: number
+    /** From a validator's `VERDICT:` line. */
+    verdict?: string
+    /** The last few hundred characters of the output, on one line. */
+    excerpt: string
+    evidenceDir?: string
+  }
+
+/**
+ * One dashboard-feed line for a worker event.
+ *
+ * Pure so the wording is tested; the plugin only hands the result to the feed.
+ *
+ * @param event - a start or end event from `runWorker`.
+ * @returns a single line of text.
+ */
+export function describeWorkerEvent(event: WorkerEvent): string {
+  if (event.kind === 'start') {
+    return `worker ${event.worker} (${event.role}) started in terminal ${event.session} [${event.id}] — ${event.task}`
+  }
+  return [
+    `worker ${event.worker} (${event.role}) ${event.status.toUpperCase()}`,
+    event.exitCode === undefined ? '' : ` exit ${String(event.exitCode)}`,
+    ` in ${(event.durationMs / 1000).toFixed(1)}s`,
+    event.verdict === undefined ? '' : ` · verdict ${event.verdict}`,
+    ` [${event.id}]`,
+    event.excerpt === '' ? '' : ` — ${event.excerpt}`,
+    event.evidenceDir === undefined ? '' : ` · evidence ${event.evidenceDir}`,
+  ].join('')
+}
 
 const DEFAULT_SCAN_LINES = 4_000
 const DEFAULT_INTERRUPT_GRACE_MS = 2_000
@@ -132,7 +170,7 @@ export async function runWorker(
 
   const base = { id, worker: request.worker, role: request.role }
   const finish = (partial: Omit<WorkerResult, 'id' | 'worker' | 'role' | 'durationMs' | 'output' | 'clipped'> & { raw?: string }): WorkerResult => {
-    const redacted = redactSecrets(partial.raw ?? '')
+    const redacted = redactSecrets(stripAnsi(partial.raw ?? ''))
     const { text, clipped } = clipMiddle(redacted, options.config.maxOutputChars)
     const verdict = request.role === 'validate' ? parseVerdict(redacted) : undefined
     const { raw: _raw, ...rest } = partial
@@ -150,7 +188,18 @@ export async function runWorker(
     } catch {
       // Evidence is best-effort at the very end; the result is what matters.
     }
-    options.onEvent?.({ kind: 'end', id, worker: request.worker, role: request.role, status: result.status, ...result.exitCode === undefined ? {} : { exitCode: result.exitCode } })
+    options.onEvent?.({
+      kind: 'end',
+      id,
+      worker: request.worker,
+      role: request.role,
+      status: result.status,
+      durationMs: result.durationMs,
+      excerpt: workerExcerpt(result.output),
+      ...result.exitCode === undefined ? {} : { exitCode: result.exitCode },
+      ...result.verdict === undefined ? {} : { verdict: result.verdict },
+      ...result.evidenceDir === undefined ? {} : { evidenceDir: result.evidenceDir },
+    })
     return result
   }
 
@@ -189,7 +238,7 @@ export async function runWorker(
     } catch (error) {
       return finish({ status: outer.aborted ? 'aborted' : 'error', detail: `could not open a terminal: ${messageOf(error)}` })
     }
-    options.onEvent?.({ kind: 'start', id, worker: request.worker, role: request.role, cwd: request.cwd, session: sessionId })
+    options.onEvent?.({ kind: 'start', id, worker: request.worker, role: request.role, cwd: request.cwd, session: sessionId, task: workerExcerpt(redactSecrets(request.task), 200) })
 
     // 3–4. Type the line, then wait for the end marker.
     const scanLines = options.scanLines ?? DEFAULT_SCAN_LINES
