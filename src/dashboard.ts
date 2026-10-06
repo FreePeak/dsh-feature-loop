@@ -44,6 +44,8 @@ import type { ReviewSignal } from './signals.ts'
 // the loopback server.
 import { clearWatcher, noteWatcher } from './approvals.ts'
 import type { ApprovalRegistry } from './approvals.ts'
+import type { ApprovalDecision } from './approval-bridge.ts'
+import { RunGrants, runGrantable } from './run-grants.ts'
 // Type-only on purpose: the measurement modules are authored concurrently by
 // other seams, and type-only imports are erased at runtime, so this module
 // neither loads nor requires their code — it only renders their shapes.
@@ -711,10 +713,12 @@ export interface DashboardHandle {
    * were beaten", not a crash.
    *
    * @param id - the pending entry's id.
-   * @param outcome - `allowed-once` releases the tool; `rejected` refuses it.
+   * @param outcome - `allowed-once` releases the tool; `rejected` refuses it;
+   *   `allowed-run` releases it and every later ask for the same tool in the
+   *   same run (file tools under a policy rule only — see `run-grants.ts`).
    * @returns whether an entry was settled.
    */
-  settleApproval(id: string, outcome: 'allowed-once' | 'rejected'): boolean
+  settleApproval(id: string, outcome: ApprovalDecision): boolean
 }
 
 /** A pending ask, internal form: the settle closure the POST path drives. */
@@ -778,8 +782,13 @@ export function startDashboard(
     briefs: { markBriefPending: () => undefined, recordBrief: () => undefined },
     pendingSnapshot: () => [],
     settleApproval: () => false,
+    grants: new RunGrants(),
     stop: () => undefined,
   }
+  // Grants for the standalone path, where this module owns its asks. With a
+  // shared registry the registry's own store is the only one, so a grant made
+  // through either front end is honoured by both.
+  const grants = registry.grants
   const clients = new Set<ServerResponse>()
   let stopped = false
 
@@ -918,6 +927,23 @@ export function startDashboard(
     })
   }
 
+  /**
+   * `allowed-run` for an ask this module owns: grant, then release every other
+   * pending ask for the same tool in the same run. Mirrors the registry's
+   * `grantForRun`; the two exist because the standalone dashboard can run with
+   * no registry, and neither may depend on the other being present.
+   */
+  const grantOwnAsk = (entry: PendingEntry, feedback: string): void => {
+    const runId = entry.runId ?? 'agentless'
+    grants.grant(runId, entry.toolName)
+    for (const other of [...pending.values()]) {
+      if (other.id === entry.id || (other.runId ?? 'agentless') !== runId || other.toolName !== entry.toolName) continue
+      if (!runGrantable(other.toolName, other.reason)) continue
+      other.settle('allowed-once', `allowed for this run: ${other.toolName} (queued ask released)`)
+    }
+    entry.settle('allowed-once', `allowed for this run: ${entry.toolName}${feedback === '' ? '' : ` — ${feedback}`}`)
+  }
+
   const approve = async (req: IncomingMessage, res: ServerResponse, id: string): Promise<void> => {
     if (!authorized(req, new URL('/', 'http://x'), false)) return deny(res)
     if (!sameOrigin(req)) return sendJson(res, 403, { error: 'cross-origin approval denied' })
@@ -929,8 +955,8 @@ export function startDashboard(
     }
     const parsed = body as { outcome?: unknown, feedback?: unknown } | null
     const outcome = parsed?.outcome
-    if (outcome !== 'allowed-once' && outcome !== 'rejected') {
-      return sendJson(res, 400, { error: 'outcome must be "allowed-once" or "rejected"' })
+    if (outcome !== 'allowed-once' && outcome !== 'allowed-run' && outcome !== 'rejected') {
+      return sendJson(res, 400, { error: 'outcome must be "allowed-once", "allowed-run" or "rejected"' })
     }
     // Optional operator note from the chat composer. Cap length so a huge
     // paste cannot bloat the feed; empty/whitespace is treated as absent.
@@ -938,6 +964,15 @@ export function startDashboard(
     const feedback = typeof feedbackRaw === 'string'
       ? firstLine(feedbackRaw.trim(), 500)
       : ''
+    // `allowed-run` is the one decision that widens what a later ask may do,
+    // so it is checked against the ask itself rather than trusted from the
+    // request: a forged POST naming a `bash` ask gets a 400, not a grant.
+    if (outcome === 'allowed-run') {
+      const target = pendingEntries().find(candidate => candidate.id === id)
+      if (target !== undefined && !runGrantable(target.toolName, target.reason)) {
+        return sendJson(res, 400, { error: `"${target.toolName}" cannot be allowed for the run: only file tools asked under a policy rule can` })
+      }
+    }
     const entry = pending.get(id)
     // 409, not 404: the request existed; it was settled, expired, or
     // cancelled. A late click must read as "you were beaten", not "bad url".
@@ -949,6 +984,10 @@ export function startDashboard(
       return sendJson(res, 200, { ok: true, outcome, ...feedback === '' ? {} : { feedback } })
     }
     if (entry === undefined) return sendJson(res, 409, { error: 'no such pending approval (settled, expired, or cancelled)' })
+    if (outcome === 'allowed-run') {
+      grantOwnAsk(entry, feedback)
+      return sendJson(res, 200, { ok: true, outcome, ...feedback === '' ? {} : { feedback } })
+    }
     const feedText = feedback === ''
       ? undefined
       : `${OUTCOME_LABEL[outcome]}: ${entry.toolName} — ${feedback}`
@@ -1075,6 +1114,12 @@ export function startDashboard(
     const id = randomUUID()
     const toolName = question.toolName
 
+    // Already allowed for this run by a human click; see `run-grants.ts`.
+    if (grants.covers(runId, toolName, question.reason)) {
+      state.note('approval', `allowed for this run: ${toolName} (no prompt)`, runId)
+      return 'allowed-once'
+    }
+
     return new Promise<ApprovalOutcome>(resolve => {
       let settled = false
       let timer: NodeJS.Timeout | undefined
@@ -1131,10 +1176,15 @@ export function startDashboard(
     stop,
     briefs,
     pendingSnapshot: () => pendingEntries(),
-    settleApproval: (id: string, outcome: 'allowed-once' | 'rejected'): boolean => {
+    settleApproval: (id: string, outcome: ApprovalDecision): boolean => {
       if (!ownsItsOwnAsks) return registry.settleApproval(id, outcome)
       const entry = pending.get(id)
       if (entry === undefined) return false
+      if (outcome === 'allowed-run') {
+        if (!runGrantable(entry.toolName, entry.reason)) return false
+        grantOwnAsk(entry, '')
+        return true
+      }
       entry.settle(outcome)
       return true
     },

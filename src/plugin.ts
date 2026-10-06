@@ -83,6 +83,7 @@ import { parseDashboardConfig, pendingIdFor, startDashboard, DashboardState } fr
 import { createApprovalRegistry, clearWatcher, watcherActive } from './approvals.ts'
 import { createChangeEmitter } from './change-event.ts'
 import type { ApprovalRegistry } from './approvals.ts'
+import type { ApprovalDecision } from './approval-bridge.ts'
 import type { ApprovalOutcome, ApprovalQuestion, BriefNode, DashboardConfig, DashboardHandle, DashboardSnapshot } from './dashboard.ts'
 import { prepareReview, resolveReversibility } from './agent-policy.ts'
 import { validateSpec } from './spec.ts'
@@ -2211,7 +2212,7 @@ export function apply(
       state.recordMeta(sessionId, { sessionId, label: task })
     },
     answers: () => dashboardConfig.answers ?? true,
-    settleApproval: (id: string, outcome: 'allowed-once' | 'rejected', feedback?: string): boolean =>
+    settleApproval: (id: string, outcome: ApprovalDecision, feedback?: string): boolean =>
       registry.settleApproval(id, outcome, feedback),
     // The policy row's own config, so the in-UI status page reports the spec,
     // judge and dashboard that are actually running. Without this the remote

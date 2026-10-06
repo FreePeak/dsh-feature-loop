@@ -486,6 +486,27 @@ approval channel — it is strictly more capable without being less safe. Set
     gateMode: ask          # or: deny (CI / unattended)
 ```
 
+### Allow for this run — fewer clicks, same gate
+
+A run that writes a dozen files would otherwise ask a dozen times. On an ask for
+`write` or `edit` that came from a `gatePolicies` rule, the Feature Loop page
+offers a third button, **Allow for this run**, between **Allow once** and
+**Reject**. One click releases that ask, any other pending ask for the same tool
+in the same run, and the later asks for it.
+
+It is deliberately narrower than "always allow":
+
+| Limit | Why |
+|---|---|
+| **One run.** Keyed by the agent id; a new session starts with none. | A decision about this task is not a decision about the next one. |
+| **One tool.** Granting `write` says nothing about `edit`. | Each tool class is its own risk. |
+| **Memory only.** Never written to the config; a restart drops it. | A click must not widen the gate behind the deployment's back. |
+| **Policy asks only.** A critical-signal ask, or any ask without the `REVIEW REQUESTED (policy)` marker, still reaches a human. | The grant waives a rule you configured, not a safety signal. |
+| **Never `bash`.** The button is not offered, and a forged request is refused (400). | One approved command says nothing about the next. For no prompts on shell, use `gateMode: auto`, where the envelope is enforced. |
+
+Each use is a line in the feed (`allowed for this run: write (no prompt)`), so the
+log still shows every call the grant covered.
+
 ### The approval dashboard
 
 Besides the composer prompt, the plugin can host its own **loopback web page**

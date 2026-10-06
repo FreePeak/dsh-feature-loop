@@ -29,7 +29,7 @@ import {
 } from '@assistant-ui/react'
 import type { ThreadMessageLike, ToolCallMessagePartProps } from '@assistant-ui/react'
 import { outcomeForResponse, toApprovalGate } from '../src/approval-bridge.ts'
-import type { BridgeOutcome } from '../src/approval-bridge.ts'
+import type { ApprovalDecision } from '../src/approval-bridge.ts'
 import type { BriefNode, DashboardSnapshot, PendingApproval } from '../src/dashboard.ts'
 import { PHASE_ORDER, phaseFraction, phaseRail } from '../src/phases.ts'
 import { WATCHER_TTL_MS } from '../src/watcher-ttl.ts'
@@ -47,7 +47,7 @@ export interface DashboardSource {
    */
   onChange?(listener: () => void): () => void
   /** Settle one ask. Rejects so the card can report a refused decision. */
-  respond(id: string, outcome: BridgeOutcome, feedback: string): Promise<void>
+  respond(id: string, outcome: ApprovalDecision, feedback: string): Promise<void>
 }
 
 declare global {
@@ -224,7 +224,7 @@ function ApprovalCard(props: ToolCallMessagePartProps): React.ReactElement {
             <button
               key={option.id}
               type="button"
-              className={option.kind === 'allow-once' ? 'allow' : 'reject'}
+              className={option.kind === 'reject-once' ? 'reject' : 'allow'}
               disabled={busy}
               aria-busy={busy}
               onClick={() => decide(option.id)}

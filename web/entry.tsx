@@ -21,7 +21,7 @@ import type { DashboardSource } from './app.tsx'
 import { APPROVAL_MODES, approvalModeFor } from '../src/approval-bridge.ts'
 
 import { assertSettleAccepted } from '../src/approval-bridge.ts'
-import type { ApprovalModeName, BridgeOutcome } from '../src/approval-bridge.ts'
+import type { ApprovalDecision, ApprovalModeName } from '../src/approval-bridge.ts'
 import { decideStart, openedWorkspaceId } from './start-target.ts'
 import type { SessionRow, StartWorkspace } from './start-target.ts'
 
@@ -97,7 +97,7 @@ function remoteSource(host: Host): DashboardSource {
       if (!answer.ok) throw new Error(answer.error.message)
       return answer.value
     },
-    async respond(id: string, outcome: BridgeOutcome, feedback: string) {
+    async respond(id: string, outcome: ApprovalDecision, feedback: string) {
       const svc = host.get('remote.featureLoop')
       if (svc === undefined) throw new Error('feature-loop host remote is not mounted')
       // A settle that reports the ask was already resolved is NOT a failure:
