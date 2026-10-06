@@ -373,6 +373,27 @@ function recordWrite(policy: FeatureLoopPolicy, absolute: string): void {
 }
 
 /**
+ * Why a file write is refused once the run has shipped, or `undefined` when it is fine.
+ *
+ * The ship machine commits the moment the phase is entered, yet the phase lasts
+ * one more model step. A live run used it: the model wrote a new test file
+ * AFTER the commit, the file was wrong, and the working tree ended red while the
+ * committed branch was green. A write at that point can be neither shipped nor
+ * verified, so it only ever produces a dirty tree that nobody checked.
+ *
+ * @param policy - the run's policies.
+ * @param toolName - the tool about to run.
+ * @returns the refusal, or `undefined`.
+ */
+export function writeAfterShipDenial(policy: FeatureLoopPolicy, toolName: string): string | undefined {
+  if (toolName !== 'write' && toolName !== 'edit') return undefined
+  const state = policy.pipeline?.run.state
+  if (state !== 'ship' && state !== 'done') return undefined
+  return `The run has already shipped (${state}): its work is committed and the checks have passed. `
+    + 'A file written now is not in that commit and was never verified. Do not change files; report what was built.'
+}
+
+/**
  * Remember a write a supervised run ASKED for, so ship can stage it.
  *
  * YOLO records at the moment the envelope allows a write. Under `ask` nothing is
@@ -2575,6 +2596,11 @@ export function apply(
       // needs the parsed arguments: the command line, the target path. A gate
       // that only sees a tool name cannot tell `git push origin fl/x` from
       // `git push origin main`, and that distinction is the entire boundary.
+      const afterShip = writeAfterShipDenial(policy, toolName)
+      if (afterShip !== undefined) {
+        state.recordGate(recordAgentMeta(state, agent), toolName, 'deny', afterShip)
+        return { kind: 'deny', reason: afterShip }
+      }
       const gate = gateEnforce(policy, toolName, rawArgs, stopArmed(policy), sessionCwdOf(agent) ?? process.cwd())
       if (gate.kind === 'proceed') {
         // Recorded BEFORE dispatch, because the record is evidence the call was
