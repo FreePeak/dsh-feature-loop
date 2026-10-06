@@ -309,8 +309,8 @@ export const SHIP_PHASE: PipelinePhaseDef = {
   gate: {
     kind: 'artifact',
     path: '.feature-loop/artifacts/pr-url.txt',
-    label: 'a pull request URL was recorded',
-    mustMatch: [/https?:\/\/\S+\/pull\/\d+/],
+    label: 'a pull request URL (or, with no remote, the commit) was recorded',
+    mustMatch: [/https?:\/\/\S+\/pull\/\d+|^local-commit [0-9a-f]{7,40}\b/m],
   },
   produces: ['pull request'],
 }
@@ -377,6 +377,27 @@ export function renderRules(phase: PipelinePhaseDef): string {
 }
 
 /**
+ * Whether a verify command's output says it ran no tests at all.
+ *
+ * Deliberately a short list of the runners' own words, each matched only when
+ * nothing in the output shows a test that did run — so a Go module with one
+ * tested package and one untested package still passes, and an unrecognised
+ * runner is never failed on a guess.
+ *
+ * @param output - the verify command's combined output.
+ * @returns true when the output positively says no test ran.
+ */
+export function ranNoTests(output: string): boolean {
+  // Go: `?   pkg  [no test files]` for every package, and no `ok`/`FAIL` line.
+  if (/\[no test files\]/.test(output) && !/^(ok|FAIL|---)\s/m.test(output)) return true
+  // node:test and TAP: `# tests 0`.
+  if (/^# tests 0\s*$/m.test(output)) return true
+  // pytest / jest / vitest.
+  if (/no tests ran|No tests found|No test files found/i.test(output)) return true
+  return false
+}
+
+/**
  * Evaluate one phase's exit gate.
  *
  * Every branch fails closed. An artifact that was not read, a verify command
@@ -414,7 +435,15 @@ export function evaluateGate(gate: ExitGate, obs: PhaseObservation): GateResult 
   if (obs.verify === undefined) {
     return { pass: false, detail: `${gate.label}: no verify command was run` }
   }
-  if (obs.verify.exitCode === 0) return { pass: true, detail: `${gate.label}: exit 0` }
+  if (obs.verify.exitCode === 0) {
+    // An exit code of 0 from a runner that ran nothing is the probe passing, not
+    // the work. A live run's test phase "passed" on `[no test files]` and the
+    // suite was written only after ship had committed without it.
+    if (ranNoTests(obs.verify.output ?? '')) {
+      return { pass: false, detail: `${gate.label}: exit 0, but the output shows no test ran — write tests, then run it again` }
+    }
+    return { pass: true, detail: `${gate.label}: exit 0` }
+  }
   // The command's own last line of output, because an exit code alone sent the
   // investigation in the wrong direction twice: 126 is npm's "script failed to
   // execute" and this function's own refusal code, and the two are

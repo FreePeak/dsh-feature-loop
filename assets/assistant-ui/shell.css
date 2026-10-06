@@ -677,7 +677,10 @@ details.help {
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--accent);
+  /* --accent is the host's link colour and can resolve to near-white on a light
+     theme, which left the card's own title unreadable. The label colour is the
+     one the host guarantees against its panel. */
+  color: var(--text);
 }
 .asked {
   font-family: var(--font-mono);
@@ -714,6 +717,20 @@ details.help {
 }
 .card .meta .meta-v { overflow-wrap: anywhere; }
 
+.card .call {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-doc);
+  padding: 8px 10px;
+  margin: 0 0 12px;
+  max-height: 160px;
+  overflow: auto;
+}
 .card .reason {
   white-space: pre-wrap;
   background: var(--panel-2);

@@ -42,7 +42,8 @@ function fakeRun(over: Record<string, { code: number; stdout?: string; stderr?: 
       // and `git rev-parse HEAD` are different questions and a test that cannot
       // tell them apart cannot test either.
       const key = command === 'git' ? `git ${args[0] ?? ''}` : command
-      const answer = over[key] ?? over[command]
+      // A repository that has a remote, unless a test says otherwise.
+      const answer = over[key] ?? over[command] ?? (key === 'git remote' ? { code: 0, stdout: 'origin\n' } : undefined)
       if (answer !== undefined) return { code: answer.code, stdout: answer.stdout ?? '', stderr: answer.stderr ?? '' }
       // `git diff --cached --quiet` exits 0 when nothing is staged.
       if (command === 'git' && args[0] === 'diff') return { code: 1, stdout: '', stderr: '' }
@@ -97,7 +98,7 @@ describe('the happy path', () => {
     // The branch is created before staging, so the commit lands on it — a live
     // run pushed `fl/…` and got `src refspec does not match any` because the name
     // was assumed rather than made.
-    assert.deepEqual(calls.map(c => c.command), ['git', 'git', 'git', 'git', 'git', 'git', 'git', 'git', 'gh'])
+    assert.deepEqual(calls.map(c => c.command), ['git', 'git', 'git', 'git', 'git', 'git', 'git', 'git', 'git', 'gh'])
     assert.deepEqual(callFor(calls, 'add')?.args, ['add', ...PATHS])
     assert.deepEqual(callFor(calls, 'commit')?.args, ['commit', '-m', 'feat: Add a CSV converter'])
     assert.deepEqual(callFor(calls, 'push')?.args, ['push', '-u', 'origin', 'fl/add-a-csv-tool'])
@@ -344,7 +345,7 @@ describe('degrading instead of failing', () => {
   it('logs every command it ran, so the report can show them', () => {
     const { run } = fakeRun(ghOk())
     const result = ship(opts({ run }))
-    assert.equal(result.log.length, 9)
+    assert.equal(result.log.length, 10)
     assert.deepEqual(result.log.find(l => l.args[0] === 'push')?.args.slice(0, 2), ['push', '-u'])
   })
 })
@@ -420,5 +421,23 @@ describe('prBody', () => {
       prBody({ goal: 'g', reportPath: 'r', unverified: 0, phases: [{ phase: 'ship', outcome: 'passed', costUSD: 0, budgetUSD: 0 }] }),
       /\| ship \| passed \| — \|/,
     )
+  })
+})
+
+describe('a repository with no remote', () => {
+  it('commits, says it is local-only, and neither pushes nor opens a PR', () => {
+    const { run, calls } = fakeRun({ 'git remote': { code: 0, stdout: '' }, 'git rev-parse': { code: 0, stdout: 'abc1234\n' } })
+    const result = ship(opts({ run }))
+    assert.equal(result.outcome, 'committed')
+    assert.equal(result.localOnly, true)
+    assert.equal(result.commitSha, 'abc1234')
+    assert.match(result.detail, /no git remote is configured/)
+    assert.ok(!calls.some(c => c.args[0] === 'push'), 'there is nowhere to push')
+    assert.ok(!calls.some(c => c.command === 'gh'), 'no PR without a remote')
+  })
+
+  it('a failing `git remote` is not mistaken for "no remote"', () => {
+    const { run } = fakeRun({ 'git remote': { code: 128, stderr: 'not a repo' }, 'git push': { code: 128, stderr: 'x' } })
+    assert.equal(ship(opts({ run })).localOnly, undefined)
   })
 })

@@ -70,6 +70,45 @@ export function escalationText(from: string, to: string, why: string): string | 
   ].join('\n')
 }
 
+/** The marker that starts the call preview inside a review reason. */
+export const CALL_PREVIEW_MARKER = 'Call: '
+
+/**
+ * One line (or a short block) saying WHAT a gated call is about to do.
+ *
+ * An approval card that reads "bash: irreversible is always approved by a human"
+ * asks a person to say yes to a command they cannot see. The card has the tool
+ * name and nothing else, so the arguments have to travel with the reason.
+ *
+ * Only the fields a human decides on are shown — the command, the target path,
+ * the URL — and the result is capped, so a large `write` body does not turn a
+ * card into a wall of text.
+ *
+ * @param toolName - the tool about to run.
+ * @param args - the call's parsed arguments.
+ * @returns the preview, or `undefined` when the arguments hold nothing to show.
+ */
+export function callPreview(toolName: string, args: unknown): string | undefined {
+  if (typeof args !== 'object' || args === null) return undefined
+  const record = args as Record<string, unknown>
+  const text = (key: string): string | undefined => {
+    const value = record[key]
+    return typeof value === 'string' && value !== '' ? value : undefined
+  }
+  const limit = 600
+  const cap = (value: string): string => (value.length > limit ? `${value.slice(0, limit)}…` : value)
+  const detail = text('description')
+  const target = text('command') ?? text('file_path') ?? text('path') ?? text('url') ?? text('query')
+  if (target !== undefined) {
+    return `${toolName} ${cap(target)}${detail === undefined ? '' : `\n(${detail})`}`
+  }
+  // A delegation (`subagent`) names no path or command: what a person approves
+  // is the task it was handed, so show its title and the start of its prompt.
+  const prompt = text('prompt')
+  if (detail === undefined && prompt === undefined) return undefined
+  return `${toolName} ${detail ?? ''}${prompt === undefined ? '' : `\n${cap(prompt)}`}`.trimEnd()
+}
+
 /**
  * The review notice: a step the router decided a human should see.
  *

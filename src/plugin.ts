@@ -99,7 +99,8 @@ import { createOnegwClient } from './llm.ts'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join, relative } from 'node:path'
-import { budgetStopText, budgetWarnText, escalationText, reviewText } from './messages.ts'
+import { budgetStopText, budgetWarnText, callPreview, CALL_PREVIEW_MARKER, escalationText, reviewText } from './messages.ts'
+import { readOnlyShell } from './shell-readonly.ts'
 // Type-only: `summarize` reads data, never the disk, so the module ships no
 // fs imports into the plugin's graph (the same stance `metrics.ts` documents
 // for its own `RunRecord` import). The history I/O (`runlog.ts`) is loaded
@@ -359,7 +360,9 @@ function argsKey(args: unknown): string {
  * @param absolute - the path the envelope allowed, as the tool passed it.
  */
 function recordWrite(policy: FeatureLoopPolicy, absolute: string): void {
-  const root = policy.worktreeRoot
+  // Under YOLO the containment root; under `ask` there is none, but the run still
+  // has the directory it works in, and the pipeline's sandbox names it.
+  const root = policy.worktreeRoot ?? policy.pipeline?.worktree?.worktreeRoot
   if (root === undefined || root.length === 0) return
   const rel = relative(root, absolute)
   // A path outside the root never reaches here — the envelope denied it — but a
@@ -367,6 +370,28 @@ function recordWrite(policy: FeatureLoopPolicy, absolute: string): void {
   // spelled out) is exactly the case this must not stage.
   if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return
   if (!policy.writtenPaths.includes(rel)) policy.writtenPaths.push(rel)
+}
+
+/**
+ * Remember a write a supervised run ASKED for, so ship can stage it.
+ *
+ * YOLO records at the moment the envelope allows a write. Under `ask` nothing is
+ * allowed until a human answers, which happens after the tool handler returns,
+ * and there is no post-execute hook to learn the answer — so the request itself
+ * is the record. The envelope still decides what counts (inside the run's
+ * directory, not a secret, not `.git`), and `writtenPathsArg` drops whatever
+ * never reached disk.
+ *
+ * @param policy - the run's policies, mutated in place.
+ * @param toolName - the tool being asked about.
+ * @param args - the call's parsed arguments.
+ */
+export function recordRequestedWrite(policy: FeatureLoopPolicy, toolName: string, args: unknown): void {
+  if (policy.gateMode !== 'ask' || (toolName !== 'write' && toolName !== 'edit')) return
+  const root = policy.pipeline?.worktree?.worktreeRoot
+  if (root === undefined) return
+  const decision = envelope({ tool: toolName, args, worktreeRoot: root })
+  if (decision.kind === 'allow' && decision.wrote !== undefined) recordWrite(policy, decision.wrote)
 }
 
 /**
@@ -381,7 +406,15 @@ function recordWrite(policy: FeatureLoopPolicy, absolute: string): void {
  * @returns `{ paths }` when there is something to stage, `{ stageNothing }` otherwise.
  */
 function writtenPathsArg(policy: FeatureLoopPolicy): { paths?: string[]; stageNothing?: string } {
-  if (policy.writtenPaths.length > 0) return { paths: [...policy.writtenPaths] }
+  // Only paths that exist now. Under `ask` a write is recorded when it is
+  // REQUESTED, before a human answers, so a rejected new file is on the list and
+  // not on disk; `git add` of it would fail the whole stage. Existing and
+  // untouched is harmless — it shows as no diff.
+  const root = policy.worktreeRoot ?? policy.pipeline?.worktree?.worktreeRoot
+  const present = root === undefined
+    ? policy.writtenPaths
+    : policy.writtenPaths.filter(path => existsSync(join(root, path)))
+  if (present.length > 0) return { paths: [...present] }
   return {
     stageNothing: 'the run recorded no write the envelope allowed, so there is nothing '
       + 'this loop may stage. It will not fall back to `git add -A`, which in the '
@@ -888,6 +921,12 @@ export type GateVerdict =
   | { kind: 'ask', reason: string }
   | { kind: 'deny', reason: string }
 
+/** Append what the call is about to do, so the card asks about something visible. */
+function withCallPreview(reason: string, toolName: string, args: unknown): string {
+  const preview = callPreview(toolName, args)
+  return preview === undefined ? reason : `${reason}\n${CALL_PREVIEW_MARKER}${preview}`
+}
+
 /**
  * The YOLO verdict for one tool call, with its arguments in hand.
  *
@@ -911,8 +950,23 @@ export function gateEnforce(
   toolName: string,
   args: unknown,
   stopArmed: boolean,
+  shellRoot?: string,
 ): GateVerdict {
-  if (policy.gateMode !== 'auto') return gateForTool(policy, toolName)
+  if (policy.gateMode !== 'auto') {
+    // A shell command that can only read does not need a human. The class the
+    // gate gives `bash` is `irreversible` — right for the tool, wrong for `pwd
+    // && ls` — and a live run spent half its approvals on exactly that. Only
+    // under `ask`: `deny` means the operator wants no unsupervised shell at all.
+    if (toolName === 'bash' && policy.gateMode === 'ask') {
+      const command = (args as { command?: unknown } | null | undefined)?.command
+      if (typeof command === 'string') {
+        const safe = readOnlyShell(command, policy.worktreeRoot ?? shellRoot, policy.pipeline?.verifyCommand)
+        if (safe !== undefined) return { kind: 'proceed' }
+      }
+    }
+    const verdict = gateForTool(policy, toolName)
+    return verdict.kind === 'ask' ? { kind: 'ask', reason: withCallPreview(verdict.reason, toolName, args) } : verdict
+  }
   if (stopArmed) {
     // Checked at the tool boundary, not only at the step boundary, so a stop
     // lands before the next *call* rather than at the start of the next step —
@@ -985,8 +1039,22 @@ function denyReason(toolName: string, reason: string, policy: FeatureLoopPolicy)
  * @param options - the deployment config, for the gate mode.
  */
 function attachContainment(policy: FeatureLoopPolicy, agent: Agent, options: { gateMode?: GateMode }): void {
-  if (policy.gateMode !== 'auto') return
-  if (policy.worktreeRoot !== undefined) return
+  // Two separate things used to be one early return on `gateMode !== 'auto'`:
+  //
+  //  - the CONTAINMENT root, which only YOLO enforces (a supervised run has a
+  //    human and the harness's own file policy), and
+  //  - the pipeline's SANDBOX descriptor, which every phase gate, the
+  //    "you stopped early" nudge and ship all read.
+  //
+  // Tying the second to the first meant a supervised run could research and then
+  // sit: the model wrote docs/0-research.md, said "phase 1 complete", the turn
+  // ended, and `advanceIfGated` and `continuationNotice` both returned at
+  // `sandbox === undefined`. No error, no stderr line — the run just never left
+  // `research`. Found by driving a live run through the web UI with `gateMode: ask`.
+  const contained = policy.gateMode === 'auto'
+  const needsSandbox = policy.pipeline !== undefined && policy.pipeline.worktree === undefined
+  if (!contained && !needsSandbox) return
+  if (contained && policy.worktreeRoot !== undefined && !needsSandbox) return
   // The session header is the authoritative cwd, and when it carries one this is
   // exact. It does not always: a headless run created before the first turn has
   // no header yet, and the header's shape has moved between harness releases.
@@ -1000,8 +1068,8 @@ function attachContainment(policy: FeatureLoopPolicy, agent: Agent, options: { g
   if (policy.taskGoal === undefined) policy.taskGoal = userGoalOf(agent)
   const root = sessionCwdOf(agent) ?? process.cwd()
   if (root.length === 0) return
-  policy.worktreeRoot = root
-  if (policy.pipeline !== undefined && policy.pipeline.worktree === undefined) {
+  if (contained) policy.worktreeRoot ??= root
+  if (needsSandbox && policy.pipeline !== undefined) {
     // Recorded so the report can name the directory a run was confined to. The
     // branch is empty because none was created here — claiming one would be the
     // same theatre the worktree version was.
@@ -1724,9 +1792,14 @@ interface TurnRecordInput {
  * @param policy - the agent's policy, for the budget verdict when present.
  * @returns the run outcome to record.
  */
-function outcomeOf(reasonKind: string, policy: FeatureLoopPolicy): RunOutcome {
+export function outcomeOf(reasonKind: string, policy: FeatureLoopPolicy): RunOutcome {
   if (reasonKind === 'aborted') return 'aborted'
   if (reasonKind === 'error') return 'error'
+  // A pipeline that reached `done` finished its job, and the harness's `blocked`
+  // is only the pre-step guard refusing the step AFTER it ("this turn is over").
+  // Reading that as the outcome reported every successful run — all five phases
+  // passed, work committed — as `blocked`.
+  if (policy.pipeline?.run.state === 'done' && (reasonKind === 'blocked' || reasonKind === 'completed')) return 'goal-met'
   if (reasonKind === 'blocked') return 'blocked'
   // `completed`, `max-tokens` and `interrupted` all say the transport closed
   // the turn without refusing it. Whether the loop *succeeded* is then a
@@ -2502,7 +2575,7 @@ export function apply(
       // needs the parsed arguments: the command line, the target path. A gate
       // that only sees a tool name cannot tell `git push origin fl/x` from
       // `git push origin main`, and that distinction is the entire boundary.
-      const gate = gateEnforce(policy, toolName, rawArgs, stopArmed(policy))
+      const gate = gateEnforce(policy, toolName, rawArgs, stopArmed(policy), sessionCwdOf(agent) ?? process.cwd())
       if (gate.kind === 'proceed') {
         // Recorded BEFORE dispatch, because the record is evidence the call was
         // permitted, and a call that then failed to execute has still consumed
@@ -2512,6 +2585,13 @@ export function apply(
         if (gate.wrote !== undefined) recordWrite(policy, gate.wrote)
         return next()
       }
+
+      // A supervised run still needs ship to know what it wrote — otherwise the
+      // run passes every gate, "commits", and stages nothing. The write is
+      // recorded when it is REQUESTED (a human answers after this handler
+      // returns, and there is no post-execute hook to learn the outcome), and
+      // `writtenPathsArg` drops whatever is not on disk by ship time.
+      if (gate.kind === 'ask') recordRequestedWrite(policy, toolName, rawArgs)
 
       // The call is blocked either way, and the call is *answered* rather than
       // dropped so the assistant's tool-call block still gets a result and

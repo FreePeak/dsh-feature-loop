@@ -262,10 +262,16 @@ export function runShip(
     ...sandbox.stageNothing === undefined ? {} : { stageNothing: sandbox.stageNothing },
     stopSentinel: sandbox.stopSentinel,
   })
-  if (result.prUrl !== undefined) {
+  // What the ship gate reads. A PR URL when one was opened; for a repository with
+  // no remote, the commit itself — a sha the run verified with `git rev-parse`,
+  // which is evidence, where prose in this file never was.
+  const recorded = result.prUrl ?? (result.localOnly === true && result.commitSha !== undefined
+    ? `local-commit ${result.commitSha} (no git remote configured)`
+    : undefined)
+  if (recorded !== undefined) {
     const dir = join(sandbox.worktreeRoot, '.feature-loop', 'artifacts')
     mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, 'pr-url.txt'), `${result.prUrl}\n`, 'utf8')
+    writeFileSync(join(dir, 'pr-url.txt'), `${recorded}\n`, 'utf8')
   }
   return result
 }

@@ -133,7 +133,10 @@ function BriefView({ ask }: { ask: PendingApproval }): React.ReactElement | null
     return <div className="brief-note">Writing review brief…</div>
   }
   if (ask.briefState === 'failed') {
-    return <div className="brief-note">Review brief unavailable.</div>
+    // No brief is the common case when no explainer model is configured, and a
+    // card that apologises for it on every ask is noise. The reason and the call
+    // are already on the card; say nothing.
+    return null
   }
   return (
     <div className="brief">
@@ -167,6 +170,31 @@ const FeedbackCtx = React.createContext<FeedbackApi>({
 
 function useFeedback(): FeedbackApi {
   return React.useContext(FeedbackCtx)
+}
+
+/**
+ * The human's view of a gate reason.
+ *
+ * The reason is written for the MODEL as much as the person — it ends with
+ * "Do not start work that depends on it; …", an instruction to an assistant that
+ * a reviewer reads as noise. The headline is kept, the instruction is dropped,
+ * and the call the gate is asking about (its `Call:` line) gets its own block so
+ * the person can see the command they are approving.
+ */
+function ReasonView({ prompt }: { prompt: string }): React.ReactElement {
+  const lines = prompt.split('\n')
+  const callIndex = lines.findIndex(line => line.startsWith('Call: '))
+  const call = callIndex < 0 ? undefined : [lines[callIndex]!.slice('Call: '.length), ...lines.slice(callIndex + 1)].join('\n')
+  const head = (callIndex < 0 ? lines : lines.slice(0, callIndex))
+    .filter(line => !line.startsWith('A human should review this before'))
+    .join('\n')
+    .trim()
+  return (
+    <>
+      {call !== undefined && <pre className="call">{call}</pre>}
+      {head !== '' && <div className="reason">{head}</div>}
+    </>
+  )
 }
 
 /** One decision plate: eyebrow, tool, meta, reason, brief, actions. */
@@ -211,7 +239,7 @@ function ApprovalCard(props: ToolCallMessagePartProps): React.ReactElement {
           )}
         </div>
       )}
-      {gate?.prompt !== undefined && <div className="reason">{gate.prompt}</div>}
+      {gate?.prompt !== undefined && <ReasonView prompt={gate.prompt} />}
       {ask !== undefined && <BriefView ask={ask} />}
       {gate?.resolution !== undefined && (
         <div className="brief-note settled">

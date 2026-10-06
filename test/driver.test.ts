@@ -18,6 +18,7 @@ import { changedFiles, observe, readArtifact, runVerify } from '../src/observati
 import type { ObserverContext } from '../src/observation.ts'
 import type { CommandRunner } from '../src/sandbox.ts'
 import { PhaseAllocator } from '../src/phase-budget.ts'
+import { evaluateGate, pipelinePhaseOf } from '../src/phases.ts'
 import { startPipeline } from '../src/pipeline.ts'
 import { advancePhase, gateCurrentPhase, observeCurrentPhase, runShip } from '../src/driver.ts'
 import type { DriverOptions } from '../src/driver.ts'
@@ -42,7 +43,9 @@ function fakeRun(over: Record<string, { code: number; stdout?: string; stderr?: 
     run: (command, args) => {
       calls.push({ command, args: [...args] })
       const key = command === 'git' ? `git ${args[0] ?? ''}` : command
-      const answer = over[key] ?? over[command]
+      // A repository that has a remote, unless a test says otherwise: an empty
+      // `git remote` is the local-only case, and has tests of its own.
+      const answer = over[key] ?? over[command] ?? (key === 'git remote' ? { code: 0, stdout: 'origin\n' } : undefined)
       return { code: answer?.code ?? 0, stdout: answer?.stdout ?? '', stderr: answer?.stderr ?? '' }
     },
   }
@@ -315,6 +318,33 @@ describe('runShip', () => {
       readArtifact(root, '.feature-loop/artifacts/pr-url.txt')?.trim(),
       'https://github.com/o/r/pull/9',
     )
+  })
+
+  it('records the commit for a repository with no remote, and the gate accepts it', () => {
+    const root = scratch()
+    const { run } = fakeRun({ 'git diff': { code: 1 }, 'git rev-parse': { code: 0, stdout: 'abc1234def\n' }, 'git remote': { code: 0, stdout: '' } })
+    const opts = driver({ runner: run, repoRoot: root })
+    const result = runShip(opts, { ...SANDBOX, worktreeRoot: root }, [], 0)
+    assert.equal(result.localOnly, true)
+    const text = readArtifact(root, '.feature-loop/artifacts/pr-url.txt')?.trim()
+    assert.equal(text, 'local-commit abc1234def (no git remote configured)')
+    const gate = pipelinePhaseOf('ship').gate
+    assert.equal(gate.kind, 'artifact')
+    assert.equal(evaluateGate(gate, { phase: 'ship', written: [], changed: [], attempts: 0, artifacts: { [gate.kind === 'artifact' ? gate.path : '']: text } }).pass, true)
+  })
+
+  it('does not treat prose or a failed push to a configured remote as local-only', () => {
+    const gate = pipelinePhaseOf('ship').gate
+    assert.equal(gate.kind, 'artifact')
+    const path = gate.kind === 'artifact' ? gate.path : ''
+    for (const text of ['local-commit not-a-sha', 'we committed locally, honest', 'abc1234']) {
+      assert.equal(evaluateGate(gate, { phase: 'ship', written: [], changed: [], attempts: 0, artifacts: { [path]: text } }).pass, false, text)
+    }
+    const root = scratch()
+    const { run } = fakeRun({ 'git diff': { code: 1 }, 'git rev-parse': { code: 0, stdout: 'abc1234\n' }, 'git push': { code: 128, stderr: 'rejected' } })
+    const result = runShip(driver({ runner: run, repoRoot: root }), { ...SANDBOX, worktreeRoot: root }, [], 0)
+    assert.equal(result.localOnly, undefined)
+    assert.equal(readArtifact(root, '.feature-loop/artifacts/pr-url.txt'), undefined, 'a rejected push still blocks')
   })
 
   it('writes no file when the PR could not be opened, so the gate stays shut', () => {
