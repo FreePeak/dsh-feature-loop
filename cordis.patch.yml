@@ -250,6 +250,28 @@
           phaseTimeoutMs: 900000     # 15min per phase
           timeoutMs: 5400000         # 90min for the whole run
 
+        # ────────────────────────────────────────────────────────────────────
+        # Workers: dsh orchestrates, coding CLIs do the work.
+        #
+        # With `enabled: true` the loop gains one tool, `dispatch_worker`. The
+        # orchestrator (this session) hands a bounded brief to `xdev`, `claude`
+        # or `opencode`, which runs in a dsh terminal session for the implement,
+        # test or validate role. The worker's result comes back as the tool
+        # result in THIS session's thread. Off by default; needs the profile to
+        # carry the dsh terminal plugins. Design and safety model:
+        # docs/WORKERS.md.
+        #
+        # Every dispatch is an `irreversible` call, so under `gateMode: ask` a
+        # human approves it. No CLI is started with a permission-bypass flag.
+        workers:
+          enabled: false
+          # allow: [xdev, claude, opencode]   # narrow to the CLIs you trust
+          # backendType: shell                # terminal backend type to open
+          # timeoutSec: 900                   # default per-worker deadline (max 3600)
+          # maxOutputChars: 12000             # cap on the report returned to the thread
+          # testCommand: npm test             # what a `test` worker runs
+          # models: { claude: sonnet }        # optional per-CLI model
+
         # YOLO is the other half of the 0→1 story, and is OFF here.
         #
         #   ask   the Web UI prompts you (default — supervised)

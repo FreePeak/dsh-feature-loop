@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Workers: dsh as the orchestrator, coding CLIs as the workers.** A new
+  `dispatch_worker` tool (`workers:` config, off by default) runs `xdev`,
+  `claude` or `opencode` in a dsh terminal session for the `implement`, `test`
+  or `validate` role and returns the result to the main session thread as a
+  `[worker report]`. Gated like any irreversible tool; YOLO requires an
+  allow-listed CLI and a `cwd` inside the worktree. No permission-bypass flags,
+  output redacted and clipped, evidence kept outside the worktree, deadlines and
+  cancellation interrupt the worker, the terminal is always closed. Verified
+  unit-side with a fake terminal and against the real dsh harness with real PTY
+  sessions (`test/integration/workers-in-dsh.spec.ts`); `FL_REAL_WORKERS=1` runs
+  the real CLIs. See `docs/WORKERS.md`.
+
 - **The 0→1 product loop.** `pipeline:` turns a bounded turn into a five-phase
   run — research → PRD → implement → test → ship — driven by one sentence of user
   intent. Ships **disabled**; flip `pipeline.enabled` in the patch row. Each

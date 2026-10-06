@@ -18,6 +18,8 @@ import type { CreatePolicyOptions, FeatureLoopPolicy } from './plugin.ts'
 import type { DashboardConfig } from './dashboard.ts'
 import { parseOptimizeConfig, parsePipelineConfig } from './spec.ts'
 import type { OptimizeConfig, PipelineConfig } from './spec.ts'
+import { parseWorkersConfig } from './workers.ts'
+import type { WorkersConfig } from './workers.ts'
 
 export {
   apply as applyListeners,
@@ -132,6 +134,12 @@ export interface Config {
    * it fails closed rather than guessing which runner your project uses.
    */
   pipeline?: PipelineConfig
+  /**
+   * Workers: run external coding CLIs (`xdev`, `claude`, `opencode`) as the
+   * loop's hands, each in a dsh terminal session, and report back to the main
+   * thread. Off unless `enabled: true`. See `docs/WORKERS.md`.
+   */
+  workers?: Partial<WorkersConfig>
 }
 
 /**
@@ -154,6 +162,7 @@ export const Config: z<Config> = z.object({
   dashboard: z.any(),
   optimize: z.any(),
   pipeline: z.any(),
+  workers: z.any(),
   judge: z.string(),
   judgeBaseURL: z.string(),
   systemOneModel: z.string(),
@@ -189,6 +198,9 @@ export function apply(ctx: Context, config: Config = {}): (() => void) | void {
       + 'pipeline.enabled: false.',
     )
   }
+  // Workers get the same load-time treatment: a typo'd `alow:` must stop the
+  // plugin from loading, not widen the allow-list to every CLI.
+  const workers = config.workers === undefined ? undefined : parseWorkersConfig(config.workers)
   // Same rule for the judge: a `chat` judge with no key is a loud load-time
   // error, not a judge that quietly never runs. `laya` and `none` never throw.
   const { judge } = resolveJudge({
@@ -211,6 +223,7 @@ export function apply(ctx: Context, config: Config = {}): (() => void) | void {
     dashboard: config.dashboard,
     optimize,
     pipeline,
+    workers,
     router: {
       ...(config.reviewBudget === undefined ? {} : { reviewBudget: config.reviewBudget }),
       ...(config.judgeThreshold === undefined ? {} : { judgeThreshold: config.judgeThreshold }),

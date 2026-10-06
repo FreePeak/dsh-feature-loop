@@ -101,7 +101,8 @@ jobs:
           test/policy.test.ts test/refine.test.ts test/runlog.test.ts \
           test/runner.test.ts test/sandbox.test.ts test/ship.test.ts test/tools.test.ts \
           test/driver.test.ts \
-          test/yolo.test.ts
+          test/yolo.test.ts \
+          test/workers.test.ts test/worker-dispatch.test.ts
 
   typecheck:
     name: typecheck (harness-free src/ modules)
@@ -163,4 +164,5 @@ jobs:
             src/questioner.ts src/refine.ts \
             src/review.ts src/routing.ts src/runlog.ts src/runner.ts src/signals.ts src/spec.ts \
             src/sandbox.ts src/ship.ts src/tools.ts src/yolo.ts \
-            src/observation.ts src/driver.ts
+            src/observation.ts src/driver.ts \
+            src/workers.ts src/worker-dispatch.ts src/phase-notice.ts
