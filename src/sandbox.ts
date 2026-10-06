@@ -34,6 +34,20 @@ export interface Sandbox {
   branch: string
   /** Where the sentinel the kill switch watches lives. */
   stopSentinel: string
+  /**
+   * Files this run may stage, relative to `worktreeRoot`.
+   *
+   * Absent means the run recorded no write, and `ship()` must then stage
+   * NOTHING rather than fall back to `git add -A` — which in the operator's own
+   * checkout commits every other session's in-flight work onto the run's branch
+   * and opens a pull request for it. Reproduced 2026-10-05 in a scratch repo.
+   */
+  paths?: string[]
+  /**
+   * Why nothing may be staged, when nothing may. Named rather than implied, so
+   * the refusal an operator reads says *why* and not only that it stopped.
+   */
+  stageNothing?: string
 }
 
 /** Where worktrees go, relative to the repository root. */

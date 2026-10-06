@@ -94,7 +94,7 @@ import { normalizeBrief } from './brief.ts'
 import { createOnegwClient } from './llm.ts'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join, relative } from 'node:path'
 import { budgetStopText, budgetWarnText, escalationText, reviewText } from './messages.ts'
 // Type-only: `summarize` reads data, never the disk, so the module ships no
 // fs imports into the plugin's graph (the same stance `metrics.ts` documents
@@ -245,6 +245,18 @@ export interface FeatureLoopPolicy {
    */
   worktreeRoot?: string
   /**
+   * Every path the envelope ALLOWED a write to, relative to `worktreeRoot`.
+   *
+   * This is the entire set `ship()` may stage. It exists because `git add -A`
+   * in the operator's checkout commits every other session's in-flight work onto
+   * the run's branch and opens a pull request for it — reproduced 2026-10-05 in
+   * a scratch repo, and the exact opposite of `SHIP_PHASE`'s own rule ("commit
+   * only the changes this run made"). A shell command that writes is not in
+   * here; `ship()` refuses to stage at all when a run used one, because the
+   * envelope cannot know what a `bash` line touched.
+   */
+  writtenPaths: string[]
+  /**
    * What the user asked for, read once from the session's first user message.
    *
    * Kept on the policy because it is needed by two callers that are far apart —
@@ -316,6 +328,52 @@ function argsKey(args: unknown): string {
     return JSON.stringify(sorted)
   } catch {
     return ''
+  }
+}
+
+/**
+ * Record one path the envelope allowed a write to, relative to the run's root.
+ *
+ * Storing it relative is what makes `ship()`'s `git add` safe: the command runs
+ * with the worktree as its cwd, so a relative path can only ever name something
+ * inside the run's own directory. An absolute path would be `git add`-ed the same
+ * way and would read as though it were contained when it is not.
+ *
+ * Deduplicated and insertion-ordered: a run that rewrites one file forty times
+ * stages it once, and the order the run wrote them in is the order the commit's
+ * `git add` sees, which is the order a reader expects.
+ *
+ * @param policy - the run's policies, mutated in place.
+ * @param absolute - the path the envelope allowed, as the tool passed it.
+ */
+function recordWrite(policy: FeatureLoopPolicy, absolute: string): void {
+  const root = policy.worktreeRoot
+  if (root === undefined || root.length === 0) return
+  const rel = relative(root, absolute)
+  // A path outside the root never reaches here — the envelope denied it — but a
+  // path that resolves outside after `relative` (a symlink, a `..` the tool
+  // spelled out) is exactly the case this must not stage.
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return
+  if (!policy.writtenPaths.includes(rel)) policy.writtenPaths.push(rel)
+}
+
+/**
+ * The `paths` a ship may stage, or the reason it may stage nothing.
+ *
+ * `paths` is deliberately ABSENT when a run recorded no write: `ship()` defaults
+ * an absent `paths` to `git add -A`, which is the bug this whole thing exists to
+ * close. So the empty case has to say so in a form `ship()` can refuse, and the
+ * only such form is a sentinel it checks before staging anything.
+ *
+ * @param policy - the run's policies.
+ * @returns `{ paths }` when there is something to stage, `{ stageNothing }` otherwise.
+ */
+function writtenPathsArg(policy: FeatureLoopPolicy): { paths?: string[]; stageNothing?: string } {
+  if (policy.writtenPaths.length > 0) return { paths: [...policy.writtenPaths] }
+  return {
+    stageNothing: 'the run recorded no write the envelope allowed, so there is nothing '
+      + 'this loop may stage. It will not fall back to `git add -A`, which in the '
+      + "operator's checkout would commit every other session's in-flight work.",
   }
 }
 
@@ -521,6 +579,9 @@ export function createPolicy(options: CreatePolicyOptions): FeatureLoopPolicy {
     explainer: options.explainer ?? NO_EXPLAINER,
     history: [],
     pending: undefined,
+    // The fail-closed starting point: a run with no write ever allowed stages
+    // nothing, and `ship()` reports that rather than reaching for `-A`.
+    writtenPaths: [],
     lastConfidence: undefined,
     pipeline,
     // Published at the top level as well as on the runtime, because the
@@ -795,7 +856,8 @@ export const STOP_SENTINEL = '.feature-loop/STOP'
  * `deny` refuses without prompting.
  */
 export type GateVerdict =
-  | { kind: 'proceed' }
+  /** Dispatch. `wrote` is the path an allowed file write touched, if any. */
+  | { kind: 'proceed'; wrote?: string }
   | { kind: 'ask', reason: string }
   | { kind: 'deny', reason: string }
 
@@ -839,7 +901,7 @@ export function gateEnforce(
   })
   return decision.kind === 'deny'
     ? { kind: 'deny', reason: denyReason(toolName, decision.reason, policy) }
-    : { kind: 'proceed' }
+    : { kind: 'proceed', ...decision.wrote === undefined ? {} : { wrote: decision.wrote } }
 }
 
 /**
@@ -959,7 +1021,7 @@ function runPipelineShip(policy: FeatureLoopPolicy, agent: Agent): string | unde
   // one branch while the work landed on another. A report that names the wrong
   // ref is worse than no report: it reads as a fact.
   const branch = branchFor(goal, String(policy.taskGoal ?? 'run').slice(0, 8))
-  const shipping = { ...sandbox, branch }
+  const shipping = { ...sandbox, branch, ...writtenPathsArg(policy) }
   try {
     const result = runShip({
       repoRoot: '',
@@ -2408,7 +2470,15 @@ export function apply(
       // that only sees a tool name cannot tell `git push origin fl/x` from
       // `git push origin main`, and that distinction is the entire boundary.
       const gate = gateEnforce(policy, toolName, rawArgs, stopArmed(policy))
-      if (gate.kind === 'proceed') return next()
+      if (gate.kind === 'proceed') {
+        // Recorded BEFORE dispatch, because the record is evidence the call was
+        // permitted, and a call that then failed to execute has still consumed
+        // its right to that path. Staging it is harmless — an untouched path
+        // shows as no diff — while missing one that did land ships a commit that
+        // silently omits the run's own work.
+        if (gate.wrote !== undefined) recordWrite(policy, gate.wrote)
+        return next()
+      }
 
       // The call is blocked either way, and the call is *answered* rather than
       // dropped so the assistant's tool-call block still gets a result and

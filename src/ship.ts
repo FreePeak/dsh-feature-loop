@@ -64,8 +64,25 @@ export interface ShipOptions {
   body: string
   /** The command runner. Injected so no test needs git or a network. */
   run: CommandRunner
-  /** Files to stage. Defaults to everything in the worktree. */
+  /**
+   * Files to stage, relative to `worktreeRoot`.
+   *
+   * An empty array stages NOTHING; an absent one used to mean `git add -A`,
+   * which in the operator's checkout commits every other session's in-flight
+   * work onto this run's branch and opens a pull request for it — reproduced
+   * 2026-10-05. The default is now the safe one; a caller that genuinely wants
+   * everything must say `['.']`.
+   */
   paths?: string[]
+  /**
+   * Refuse to stage anything and say this, when the run recorded no write.
+   *
+   * Separate from an empty `paths` because the two are different failures: an
+   * empty list is a run that wrote nothing, and this is a run that *cannot*
+   * prove what it wrote. Only the second deserves to stop the phase before it
+   * has run a single git command.
+   */
+  stageNothing?: string
   /** A stop sentinel's path; when it appears, the phase halts before committing. */
   stopSentinel?: string
   /** Whether the sentinel is currently set. Injected so the check is testable. */
@@ -145,6 +162,13 @@ export function ship(options: ShipOptions): ShipResult {
     }
   }
 
+  // Before ANY git command, because the refusal has to leave the checkout
+  // exactly as it found it. Checking after `checkout -b` would still leave a
+  // branch behind in the operator's repository, which is its own mess.
+  if (options.stageNothing !== undefined) {
+    return { branch, outcome: 'committed', log, detail: options.stageNothing }
+  }
+
   // The branch has to EXIST before it can be pushed to. A live run produced
   // `error: src refspec fl/… does not match any` because the run's branch name
   // was assumed rather than created — the work was committed on whatever branch
@@ -169,7 +193,10 @@ export function ship(options: ShipOptions): ShipResult {
     invoke('git', ['checkout', options.branch])
   }
 
-  invoke('git', ['add', ...(options.paths ?? ['-A'])])
+  // Scoped, never `-A`. The paths are the run's own writes; anything else in
+  // this directory belongs to someone else, and a pull request that carries it
+  // is a data-loss event wearing a success message.
+  invoke('git', ['add', ...(options.paths ?? [])])
 
   const staged = invoke('git', ['diff', '--cached', '--quiet'])
   if (staged.code === 0) {

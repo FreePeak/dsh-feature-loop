@@ -114,6 +114,16 @@ describe('containment', () => {
     assert.equal(write('./src/./index.ts').kind, 'allow')
   })
 
+  it('names the path an allowed write may stage, and names none for a read', () => {
+    // `wrote` is what the plugin records as the run's own writes, and it is the
+    // ONLY thing `ship()` is allowed to stage. A read carries nothing, so it can
+    // never widen the set — the asymmetry is the point.
+    assert.equal(write(`${ROOT}/src/index.ts`).wrote, `${ROOT}/src/index.ts`)
+    const read = envelope({ tool: 'read', args: { path: `${ROOT}/src/index.ts` }, worktreeRoot: ROOT })
+    assert.equal(read.kind, 'allow')
+    assert.equal('wrote' in read, false, 'a read must not report a write')
+  })
+
   it('denies a write that escapes the worktree', () => {
     for (const path of ['../outside.ts', '../../etc/passwd', '/etc/passwd', '/Users/someone/else/x.ts']) {
       assert.equal(write(path).kind, 'deny', `should have denied: ${path}`)

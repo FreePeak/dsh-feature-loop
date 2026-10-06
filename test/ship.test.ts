@@ -66,6 +66,9 @@ function ghOk(url = 'https://github.com/o/r/pull/42'): Record<string, { code: nu
   }
 }
 
+/** The files a run recorded, so a test asserting staging has to name them. */
+const PATHS = ['src/csv.ts', 'test/csv.test.ts']
+
 function opts(over: Partial<ShipOptions> = {}): ShipOptions {
   return {
     worktreeRoot: WT,
@@ -73,6 +76,11 @@ function opts(over: Partial<ShipOptions> = {}): ShipOptions {
     goal: 'Add a CSV converter',
     body: '## What this is\n\nAdd a CSV converter',
     run: fakeRun().run,
+    // `paths` is NOT defaulted by `ship()`, so this fixture supplies it for the
+    // ordinary case and leaves it out only where a test is specifically about
+    // the absent one. An absent `paths` means "not told what it may stage",
+    // which must never become `git add -A`.
+    ...(over.paths === undefined && over.stageNothing === undefined ? { paths: PATHS } : {}),
     ...over,
   }
 }
@@ -90,7 +98,7 @@ describe('the happy path', () => {
     // run pushed `fl/…` and got `src refspec does not match any` because the name
     // was assumed rather than made.
     assert.deepEqual(calls.map(c => c.command), ['git', 'git', 'git', 'git', 'git', 'git', 'git', 'git', 'gh'])
-    assert.deepEqual(callFor(calls, 'add')?.args, ['add', '-A'])
+    assert.deepEqual(callFor(calls, 'add')?.args, ['add', ...PATHS])
     assert.deepEqual(callFor(calls, 'commit')?.args, ['commit', '-m', 'feat: Add a CSV converter'])
     assert.deepEqual(callFor(calls, 'push')?.args, ['push', '-u', 'origin', 'fl/add-a-csv-tool'])
     assert.ok(calls.some(c => c.args[0] === 'checkout' || c.args[0] === 'switch'),
@@ -110,6 +118,30 @@ describe('the happy path', () => {
     const { run, calls } = fakeRun(ghOk())
     ship(opts({ run, paths: ['src', 'docs'] }))
     assert.deepEqual(callFor(calls, 'add')?.args, ['add', 'src', 'docs'])
+  })
+
+  it('never stages everything, even with no paths at all', () => {
+    // The bug this pins, reproduced 2026-10-05 in a scratch repo: `git add -A`
+    // in the operator's checkout committed another session's unrelated file
+    // onto the run's branch and would have opened a PR for it. `-A` is the one
+    // spelling that must not survive here, so the absence of `paths` is itself
+    // the assertion — no `paths` is the worst case, not a convenience default.
+    const { run, calls } = fakeRun(ghOk())
+    ship({ ...opts({ run }), paths: undefined })
+    assert.ok(!callFor(calls, 'add')?.args.includes('-A'), 'git add must never be given -A')
+  })
+
+  it('refuses to stage anything when the run recorded no write, and runs no git command', () => {
+    // The empty case is different from the scoped case: a run that cannot prove
+    // what it wrote must not create a branch in the operator's repository on the
+    // way to discovering that. `detail` is the whole output, and it has to say
+    // WHY — a bare "nothing staged" reads as a bug.
+    const { run, calls } = fakeRun(ghOk())
+    const result = ship(opts({ run, paths: undefined, stageNothing: 'the run recorded no write' }))
+    assert.deepEqual(calls, [], 'no git and no gh command may run on the refusal path')
+    assert.equal(result.outcome, 'committed')
+    assert.match(result.detail, /recorded no write/)
+    assert.equal(result.prUrl, undefined, 'a refused ship opens no pull request')
   })
 
   it('records the commit sha from rev-parse, and reads it from that call alone', () => {
