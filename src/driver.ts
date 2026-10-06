@@ -255,6 +255,11 @@ export function runShip(
       unverified,
     }),
     run: options.runner,
+    // Scoped to what the run recorded. `paths` is deliberately NOT defaulted
+    // here: absent must reach `ship()` as absent, because its own default is
+    // `git add -A`.
+    ...sandbox.paths === undefined ? {} : { paths: sandbox.paths },
+    ...sandbox.stageNothing === undefined ? {} : { stageNothing: sandbox.stageNothing },
     stopSentinel: sandbox.stopSentinel,
   })
   if (result.prUrl !== undefined) {

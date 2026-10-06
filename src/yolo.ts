@@ -41,7 +41,7 @@ import type { WorkerKind } from './workers.ts'
 
 /** How an unattended run may use one tool call. Two outcomes. There is no third. */
 export type EnvelopeDecision =
-  | { kind: 'allow'; reason: string }
+  | { kind: 'allow'; reason: string; wrote?: string }
   | { kind: 'deny'; reason: string }
 
 /** The shape the policy is asked about. Everything it needs, and nothing it could be talked into. */
@@ -252,12 +252,17 @@ export function isForbiddenPath(candidate: string): string | undefined {
 /**
  * Judge one tool call against the envelope.
  *
+ * An allowed file write carries `wrote`: the path it was allowed to touch. That
+ * is the whole of what an unattended run may stage, and the plugin records it
+ * so `ship()` never falls back to `git add -A` in the operator's checkout.
+ *
  * Every branch denies rather than asks. The function is pure and total: any
  * request it cannot confidently classify is denied, because "I did not
  * understand this" and "this is fine" must never produce the same answer.
  *
  * @param request - the tool, its arguments and the run's worktree root.
- * @returns allow or deny, with a one-line reason either way.
+ * @returns allow or deny, with a one-line reason either way; an allowed file
+ *   write also carries the path, which is what the plugin stages at ship.
  */
 export function envelope(request: EnvelopeRequest): EnvelopeDecision {
   const { tool, args } = request
@@ -276,7 +281,7 @@ export function envelope(request: EnvelopeRequest): EnvelopeDecision {
     }
     const forbidden = isForbiddenPath(path)
     if (forbidden !== undefined) return { kind: 'deny', reason: `${path}: ${forbidden}` }
-    return { kind: 'allow', reason: `${tool} inside the worktree` }
+    return { kind: 'allow', reason: `${tool} inside the worktree`, wrote: path }
   }
 
   // ── reads ──────────────────────────────────────────────────────────────────
