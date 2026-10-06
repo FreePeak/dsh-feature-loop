@@ -36,6 +36,9 @@
  * @module dsh-feature-loop/yolo
  */
 
+import { WORKER_TOOL_NAME, checkDispatch } from './workers.ts'
+import type { WorkerKind } from './workers.ts'
+
 /** How an unattended run may use one tool call. Two outcomes. There is no third. */
 export type EnvelopeDecision =
   | { kind: 'allow'; reason: string }
@@ -56,6 +59,8 @@ export interface EnvelopeRequest {
   worktreeRoot?: string
   /** The project's test command, for the shell allow-list's one escape hatch. */
   verifyCommand?: string
+  /** Which worker CLIs `dispatch_worker` may start. Omitted means every known one. */
+  workerKinds?: readonly WorkerKind[]
 }
 
 /**
@@ -294,6 +299,23 @@ export function envelope(request: EnvelopeRequest): EnvelopeDecision {
       return { kind: 'deny', reason: 'shell call with no readable command — the envelope denies what it cannot read' }
     }
     return envelopeCommand(command, { worktreeRoot: request.worktreeRoot, verifyCommand: request.verifyCommand })
+  }
+
+  // ── workers ────────────────────────────────────────────────────────────────
+  // A dispatched worker is another agent with its own tools, so the envelope
+  // cannot see what it will do — it can only decide where it starts and whether
+  // it may start. Both are decided here: a listed CLI, a task within bounds, and
+  // a working directory inside the worktree (`requireRoot`: with no root there is
+  // nothing to contain it against, so it is denied rather than defaulted).
+  if (tool === WORKER_TOOL_NAME) {
+    const checked = checkDispatch(args, {
+      requireRoot: true,
+      ...request.worktreeRoot === undefined ? {} : { worktreeRoot: request.worktreeRoot },
+      ...request.workerKinds === undefined ? {} : { allow: request.workerKinds },
+    })
+    return checked.ok
+      ? { kind: 'allow', reason: `${checked.request.worker} ${checked.request.role} worker inside the worktree` }
+      : { kind: 'deny', reason: checked.reason }
   }
 
   // An unrecognised tool is ALLOWED, and named on stderr.

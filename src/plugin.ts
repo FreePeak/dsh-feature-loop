@@ -52,6 +52,8 @@ declare module '@deepseek-ai/dsh-llm' {
 }
 import type { PreToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
 import { LoopBudget } from './budget.ts'
+import { WORKER_TOOL_NAME, parseWorkersConfig } from './workers.ts'
+import type { WorkersConfig } from './workers.ts'
 import type { BudgetSnapshot, UsageReading } from './budget.ts'
 import { PhaseAllocator } from './phase-budget.ts'
 import { PIPELINE_PHASE_NAMES } from './spec.ts'
@@ -244,6 +246,14 @@ export interface FeatureLoopPolicy {
    * deployment that has a YOLO gate and no phase machine yet.
    */
   worktreeRoot?: string
+  /**
+   * The validated `workers:` block, when the deployment configured one.
+   *
+   * On the policy rather than only in `apply` because three callers far apart
+   * read it: the envelope (which CLIs may start), the phase notices (whether to
+   * tell the model it has workers) and the tool registration.
+   */
+  workers?: WorkersConfig
   /**
    * What the user asked for, read once from the session's first user message.
    *
@@ -462,6 +472,13 @@ export interface CreatePolicyOptions {
    */
   pipeline?: PipelineConfig & { enabled?: boolean }
   /**
+   * The `workers:` block: external coding CLIs (`xdev`, `claude`, `opencode`)
+   * run in dsh terminals as the loop's hands. Ignored unless `enabled`.
+   * Validated by `index.ts` at load; accepted raw here and re-validated, so a
+   * caller that builds a policy directly gets the same checks.
+   */
+  workers?: Partial<WorkersConfig>
+  /**
    * The sandbox a YOLO run is confined to.
    *
    * Supplied by the caller — a CLI, a command, or the dashboard's Start button —
@@ -527,7 +544,15 @@ export function createPolicy(options: CreatePolicyOptions): FeatureLoopPolicy {
     // envelope is asked about tool calls — which can happen on a deployment
     // that has a YOLO gate and no phase machine yet.
     worktreeRoot: options.worktree?.worktreeRoot,
+    ...workersOf(options),
   }
+}
+
+/** The policy's `workers` field, present only for an enabled block. */
+function workersOf(options: CreatePolicyOptions): { workers?: WorkersConfig } {
+  if (options.workers === undefined) return {}
+  const parsed = parseWorkersConfig(options.workers)
+  return parsed.enabled ? { workers: parsed } : {}
 }
 
 /**
@@ -836,6 +861,7 @@ export function gateEnforce(
     args,
     worktreeRoot: policy.worktreeRoot,
     ...(policy.pipeline?.verifyCommand === undefined ? {} : { verifyCommand: policy.pipeline.verifyCommand }),
+    ...(policy.workers === undefined ? {} : { workerKinds: policy.workers.allow }),
   })
   return decision.kind === 'deny'
     ? { kind: 'deny', reason: denyReason(toolName, decision.reason, policy) }
@@ -1084,7 +1110,7 @@ function continuationNotice(policy: FeatureLoopPolicy, phase: PipelinePhase): st
     '',
     'Finish that first, then continue. Do not summarise the run as done until the gate passes.',
     '',
-    phaseNotice(phase) ?? '',
+    phaseNotice(phase, workerKindsOf(policy)) ?? '',
   ].join('\n')
 }
 
@@ -1278,10 +1304,15 @@ function phaseJustEntered(policy: FeatureLoopPolicy, turn: number, step: number,
   const changed = policy.noticedPhase !== state
   if (!changed) return undefined
   policy.noticedPhase = state
-  if (!first) return phaseNotice(state as PipelinePhase)
+  if (!first) return phaseNotice(state as PipelinePhase, workerKindsOf(policy))
   return turn === 1
-    ? `${goalNotice(goal ?? policy.spec?.goal ?? 'the stated goal')}\n\n${phaseNotice(state as PipelinePhase) ?? ''}`
-    : phaseNotice(state as PipelinePhase)
+    ? `${goalNotice(goal ?? policy.spec?.goal ?? 'the stated goal')}\n\n${phaseNotice(state as PipelinePhase, workerKindsOf(policy)) ?? ''}`
+    : phaseNotice(state as PipelinePhase, workerKindsOf(policy))
+}
+
+/** The worker CLIs the model should be told about: none unless the block is enabled. */
+function workerKindsOf(policy: FeatureLoopPolicy): WorkersConfig['allow'] | undefined {
+  return policy.workers?.enabled === true ? policy.workers.allow : undefined
 }
 
 /**
@@ -1347,7 +1378,7 @@ function advanceIfGated(policy: FeatureLoopPolicy, agent: Agent): { notice: stri
   if (next === 'ship') runPipelineShip(policy, agent)
   return {
     notice: (PHASE_ORDER as readonly string[]).includes(next)
-      ? `${moved.note}\n\n${phaseNotice(next as PipelinePhase) ?? ''}`
+      ? `${moved.note}\n\n${phaseNotice(next as PipelinePhase, workerKindsOf(policy)) ?? ''}`
       : moved.note,
   }
 }
@@ -2446,6 +2477,33 @@ export function apply(
         : { kind: 'ask', reason: gate.reason }
     },
   )
+
+  // Workers: the orchestrator's hands. Registered inside `ctx.inject` so a
+  // deployment without the terminal service or the tool registry loads this
+  // plugin exactly as before — the tool appears when `tools` and `terminals`
+  // do, and goes when either does. The dynamic import keeps the tool's module
+  // (and so `@deepseek-ai/dsh-tools`) out of this file's static graph.
+  const workersConfig = options.workers === undefined ? undefined : parseWorkersConfig(options.workers)
+  if (workersConfig?.enabled === true && typeof (ctx as { inject?: unknown }).inject === 'function') {
+    void ctx.inject(['tools', 'terminals'], async inner => {
+      const { registerWorkerTool } = await import('./worker-tool.ts')
+      await registerWorkerTool(inner as unknown as Parameters<typeof registerWorkerTool>[0], {
+        config: workersConfig,
+        worktreeRootFor: agent => policyFor(agent as Agent | undefined).worktreeRoot,
+        cwdFor: agent => sessionCwdOf(agent as Agent | undefined),
+        onEvent: (agent, event) => {
+          const runId = recordAgentMeta(state, agent as Agent | undefined)
+          state.note(
+            'note',
+            event.kind === 'start'
+              ? `worker ${event.worker} (${event.role}) started in terminal ${event.session} [${event.id}]`
+              : `worker ${event.worker} (${event.role}) ${event.status}${event.exitCode === undefined ? '' : ` exit ${String(event.exitCode)}`} [${event.id}]`,
+            runId,
+          )
+        },
+      })
+    })
+  }
 
   return () => {
     disposeStep()

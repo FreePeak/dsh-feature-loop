@@ -135,6 +135,15 @@ of failures that live in intermediate steps.
 
 ---
 
+## Workers — dsh orchestrates, coding CLIs build
+
+Turn on `workers.enabled` and the session becomes an orchestrator: it hands the
+implement, test and validate work to `xdev`, `claude` or `opencode`, each run in
+a dsh terminal session, and receives the result as a `dispatch_worker` tool
+result in its own thread. Every dispatch passes the same human gate (or the YOLO
+envelope: allow-listed CLI, `cwd` inside the worktree). Off by default. Design,
+safety model and verification: [`docs/WORKERS.md`](docs/WORKERS.md).
+
 ## HITL ops dashboard
 
 The approval surface is a **page inside the DSH web UI** — the *Feature Loop*

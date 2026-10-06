@@ -23,6 +23,8 @@
 import { PHASE_ORDER, pipelinePhaseOf, renderRules } from './phases.ts'
 import { PIPELINE_PHASE_NAMES } from './spec.ts'
 import type { PipelinePhase, PipelineState } from './phases.ts'
+import { WORKER_TOOL_NAME } from './workers.ts'
+import type { WorkerKind } from './workers.ts'
 
 /** One line naming where the run is, so the notice reads as progress and not as noise. */
 function header(phase: PipelinePhase, index: number, of: number): string {
@@ -40,7 +42,7 @@ function header(phase: PipelinePhase, index: number, of: number): string {
  * @param phase - the phase just entered.
  * @returns the notice text, or `undefined` for a state that is not a phase.
  */
-export function phaseNotice(phase: PipelinePhase): string | undefined {
+export function phaseNotice(phase: PipelinePhase, workers?: readonly WorkerKind[]): string | undefined {
   const index = PHASE_ORDER.indexOf(phase)
   if (index < 0) return undefined
   const def = pipelinePhaseOf(phase)
@@ -55,9 +57,43 @@ export function phaseNotice(phase: PipelinePhase): string | undefined {
     def.rules.map((rule, i) => `${String(i + 1)}. ${rule}`).join('\n'),
     '',
     done,
+    ...workerBlock(phase, workers),
     'Do not start the next phase — the loop checks the gate and moves you on.',
     'If the phase ceiling or its wall clock stops you, report what you completed and what remains rather than continuing.',
   ].join('\n')
+}
+
+/**
+ * How this phase may use workers, when the deployment has them.
+ *
+ * Only the implement and test phases delegate: research and PRD are thinking the
+ * orchestrator should do itself, and ship is the one phase that touches git, which
+ * no worker may do. The block states the division of labour in one place — you
+ * decide, the worker does, the gate judges — because a model told only "you have a
+ * worker tool" will either never use it or hand it the whole goal.
+ *
+ * @param phase - the phase being entered.
+ * @param workers - the CLIs the deployment allows, or `undefined` when workers are off.
+ * @returns lines to splice into the notice; empty when the phase does not delegate.
+ */
+function workerBlock(phase: PipelinePhase, workers: readonly WorkerKind[] | undefined): string[] {
+  if (workers === undefined || workers.length === 0) return []
+  const list = workers.join(', ')
+  if (phase === 'implement') {
+    return [
+      `WORKERS — you are the orchestrator. Delegate the code change with \`${WORKER_TOOL_NAME}\` (worker: one of ${list}; role: implement). Give it a complete brief: the goal, the files that matter, how success is checked.`,
+      'Then read the diff yourself. A worker\'s report is its own account, not evidence. Dispatch another worker, or edit directly, if the diff is not what you asked for.',
+      '',
+    ]
+  }
+  if (phase === 'test') {
+    return [
+      `WORKERS — run the suite yourself first. If it fails, delegate the fix with \`${WORKER_TOOL_NAME}\` (role: test), and when it passes ask a second, different worker (role: validate, one of ${list}) to review the diff independently.`,
+      'A validator\'s PASS is a second opinion. The gate is the project\'s test command exiting 0, and you run it.',
+      '',
+    ]
+  }
+  return []
 }
 
 /**

@@ -24,6 +24,7 @@ import { parse } from 'yaml'
 
 import { PHASE_ORDER } from '../src/phases.ts'
 import { parsePipelineConfig } from '../src/spec.ts'
+import { parseWorkersConfig } from '../src/workers.ts'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -82,6 +83,13 @@ describe('the shipped patch row', () => {
     // The test phase's exit gate is this command's exit code. Shipping a guess
     // would report a passing test phase for a project whose tests never ran.
     assert.equal((shippedConfig().pipeline as { testCommand?: string }).testCommand, undefined)
+  })
+
+  it('ships a workers block the loader accepts, DISABLED', () => {
+    const workers = shippedConfig().workers
+    assert.notEqual(workers, undefined, 'the workers block should ship, documented and disabled')
+    const parsed = parseWorkersConfig(workers as Parameters<typeof parseWorkersConfig>[0])
+    assert.equal(parsed.enabled, false)
   })
 
   it('leaves YOLO off by default', () => {

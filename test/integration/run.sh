@@ -22,25 +22,31 @@ if [ ! -d "$HARNESS" ]; then
   exit 1
 fi
 
-STAGED="$HARNESS/packages/core/tools/tests/zz-feature-loop-gate.spec.ts"
-# The spec imports the plugin by absolute path so it resolves from anywhere.
-cleanup() { rm -f "$STAGED"; }
+# Every spec in this directory is staged, run and removed. The staged names are
+# prefixed so a leftover is recognisable and `cleanup` can sweep all of them.
+SPECS=(plugin-in-dsh workers-in-dsh)
+STAGED_DIR="$HARNESS/packages/core/tools/tests"
+staged_path() { echo "$STAGED_DIR/zz-feature-loop-$1.spec.ts"; }
+cleanup() { for spec in "${SPECS[@]}"; do rm -f "$(staged_path "$spec")"; done; rm -f "$STAGED_DIR/zz-feature-loop-gate.spec.ts"; }
 trap cleanup EXIT
 
-sed \
-  -e "s#from '\.\./\.\./src/plugin\.ts'#from '$HERE/../../src/plugin.ts'#" \
-  -e "s#from '\.\./\.\./src/spec\.ts'#from '$HERE/../../src/spec.ts'#" \
-  "$HERE/plugin-in-dsh.spec.ts" > "$STAGED"
-
 echo "harness: $HARNESS"
-echo "staged:  $STAGED"
+for spec in "${SPECS[@]}"; do
+  # The specs import the plugin by absolute path so they resolve from anywhere.
+  sed \
+    -e "s#from '\.\./\.\./src/\([a-z-]*\)\.ts'#from '$HERE/../../src/\1.ts'#" \
+    "$HERE/$spec.spec.ts" > "$(staged_path "$spec")"
+  echo "staged:  $(staged_path "$spec")"
+done
 echo
 
 cd "$HARNESS"
 # NOT `exec`: exec replaces this shell, so the EXIT trap never fires and the
-# staged spec is left behind in the harness checkout. Run it as a child and
+# staged specs are left behind in the harness checkout. Run it as a child and
 # propagate its status instead.
 set +e
-npx vitest run packages/core/tools/tests/zz-feature-loop-gate.spec.ts
+files=()
+for spec in "${SPECS[@]}"; do files+=("packages/core/tools/tests/zz-feature-loop-$spec.spec.ts"); done
+npx vitest run "${files[@]}"
 status=$?
 exit "$status"
