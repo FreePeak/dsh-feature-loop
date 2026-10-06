@@ -23,6 +23,8 @@
  * @module dsh-feature-loop/approval-bridge
  */
 
+import { runGrantable } from './run-grants.ts'
+
 /** One ask awaiting a human, as this dashboard tracks it. */
 export interface BridgeAsk {
   id: string
@@ -37,13 +39,25 @@ export interface BridgeAsk {
 export type BridgeOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
 
 /**
- * A decision an operator can take, in assistant-ui's `ToolApprovalOptionKind`
- * vocabulary. Only the two the dashboard already enforces are offered:
- * `allow-always` and `reject-always` would persist a policy this plugin's
- * gate owns (`gatePolicies` / `actuator`), and offering them here would let a
- * browser click widen the gate behind the deployment's back.
+ * What a human can decide. `allowed-run` is the harness-invisible one: it
+ * settles the ask as `allowed-once` and also records a run-scoped grant
+ * (see `run-grants.ts`), so the harness only ever sees the four outcomes above.
  */
-export type ApprovalOptionKind = 'allow-once' | 'reject-once'
+export type ApprovalDecision = 'allowed-once' | 'allowed-run' | 'rejected'
+
+/**
+ * A decision an operator can take, in assistant-ui's `ToolApprovalOptionKind`
+ * vocabulary. `allow-always` and `reject-always` as assistant-ui means them
+ * would persist a policy this plugin's gate owns (`gatePolicies` /
+ * `actuator`), and offering that would let a browser click widen the gate
+ * behind the deployment's back, so neither is offered.
+ *
+ * The one use of `allow-always` here is the `allow-run` option, which borrows
+ * the kind only so assistant-ui's types accept it. It persists nothing: it is
+ * scoped to one run, one tool, and process memory (see `run-grants.ts`), and
+ * it is selected by its **id**, never by its kind.
+ */
+export type ApprovalOptionKind = 'allow-once' | 'allow-always' | 'reject-once'
 
 /** One selectable decision. */
 export interface ApprovalOption {
@@ -80,6 +94,18 @@ export const APPROVAL_OPTIONS: readonly ApprovalOption[] = [
 ]
 
 /**
+ * The run-scoped option. Offered only on an ask `runGrantable` accepts, never
+ * in `APPROVAL_OPTIONS`, so a card for `bash` or for a non-policy ask cannot
+ * carry it. Placed between the other two: the cheapest "yes" first, the
+ * widest "yes" next to it, the "no" last.
+ */
+export const RUN_APPROVAL_OPTION: ApprovalOption = {
+  id: 'allow-run',
+  kind: 'allow-always',
+  label: 'Allow for this run',
+}
+
+/**
  * Build the gate assistant-ui renders for one pending ask.
  *
  * The prompt is the gate's own `reason` — the same string the composer panel
@@ -99,8 +125,19 @@ export function toApprovalGate(ask: BridgeAsk): ApprovalGate {
     id: ask.id,
     prompt,
     display: 'decision',
-    options: APPROVAL_OPTIONS.map(option => ({ ...option })),
+    options: optionsFor(ask).map(option => ({ ...option })),
   }
+}
+
+/**
+ * The options one ask is offered: allow, reject, and — only where the rules in
+ * `run-grants.ts` permit — allow for the rest of the run.
+ */
+function optionsFor(ask: BridgeAsk): ApprovalOption[] {
+  const [allow, reject] = APPROVAL_OPTIONS as readonly [ApprovalOption, ApprovalOption]
+  return runGrantable(ask.toolName, ask.reason)
+    ? [allow, RUN_APPROVAL_OPTION, reject]
+    : [allow, reject]
 }
 
 /**
@@ -120,15 +157,19 @@ export function toApprovalGate(ask: BridgeAsk): ApprovalGate {
 export function outcomeForResponse(response: {
   approved?: boolean
   optionId?: string
-}): Extract<BridgeOutcome, 'allowed-once' | 'rejected'> {
+}): ApprovalDecision {
   if (response.optionId !== undefined) {
-    const known = APPROVAL_OPTIONS.find(option => option.id === response.optionId)
+    const offered = [...APPROVAL_OPTIONS, RUN_APPROVAL_OPTION]
+    const known = offered.find(option => option.id === response.optionId)
     if (known === undefined) {
       throw new Error(
         `unknown approval option ${JSON.stringify(response.optionId)} — `
-        + `this dashboard offers ${APPROVAL_OPTIONS.map(o => o.id).join(', ')}`,
+        + `this dashboard offers ${offered.map(o => o.id).join(', ')}`,
       )
     }
+    // By id, not kind: `allow-run` carries kind `allow-always` and must not be
+    // read as one — nor must any other id that happens to share that kind.
+    if (known.id === RUN_APPROVAL_OPTION.id) return 'allowed-run'
     return known.kind === 'allow-once' ? 'allowed-once' : 'rejected'
   }
   if (response.approved === undefined) {

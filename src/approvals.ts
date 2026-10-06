@@ -19,6 +19,8 @@
 import { randomUUID } from 'node:crypto'
 import type { ApprovalOutcome, ApprovalQuestion, BriefNode, PendingApproval } from './dashboard.ts'
 import type { DashboardState } from './dashboard.ts'
+import type { ApprovalDecision } from './approval-bridge.ts'
+import { RunGrants, runGrantable } from './run-grants.ts'
 
 /** First line of free text, capped — the feed never takes a whole paste. */
 function firstLine(text: string, max = 200): string {
@@ -61,8 +63,17 @@ export interface ApprovalRegistry {
   answer(question: ApprovalQuestion, next: () => Promise<ApprovalOutcome>): Promise<ApprovalOutcome>
   /** Current pending entries, settle closures stripped. */
   pendingSnapshot(): PendingApproval[]
-  /** Settle one ask by id. False when it is already gone. */
-  settleApproval(id: string, outcome: 'allowed-once' | 'rejected', feedback?: string): boolean
+  /**
+   * Settle one ask by id. False when it is already gone.
+   *
+   * `allowed-run` also grants the tool for the rest of the run and releases any
+   * other pending ask for the same tool in the same run. It is refused (false,
+   * nothing settled) for an ask `runGrantable` rejects, so a forged request
+   * cannot widen a `bash` ask or a non-policy ask.
+   */
+  settleApproval(id: string, outcome: ApprovalDecision, feedback?: string): boolean
+  /** The run-scoped grants this registry holds. */
+  readonly grants: RunGrants
   /** The brief recorder, driven by the plugin's explainer. */
   readonly briefs: {
     markBriefPending(id: string): void
@@ -110,12 +121,38 @@ export function clearWatcher(): void {
 export function createApprovalRegistry(options: ApprovalRegistryOptions): ApprovalRegistry {
   const { state, answers, answerTimeoutMs, hasWatcher } = options
   const pending = new Map<string, PendingEntry>()
+  const grants = new RunGrants()
   let stopped = false
 
   const settleEntry = (id: string, outcome: ApprovalOutcome, feedText?: string): boolean => {
     const entry = pending.get(id)
     if (entry === undefined) return false
     entry.settle(outcome, feedText)
+    return true
+  }
+
+  /**
+   * Allow one ask and every other pending ask for the same tool in the same
+   * run, and remember the grant for the asks still to come.
+   *
+   * The siblings matter: a model that issues several `write` calls in one step
+   * raises several asks at once, and granting only the clicked one would leave
+   * the rest on screen demanding the click the operator just said they did not
+   * want to repeat.
+   */
+  const grantForRun = (id: string, feedback?: string): boolean => {
+    const entry = pending.get(id)
+    if (entry === undefined) return false
+    if (!runGrantable(entry.toolName, entry.reason)) return false
+    const runId = entry.runId ?? 'agentless'
+    grants.grant(runId, entry.toolName)
+    const note = feedback === undefined || feedback.trim() === '' ? '' : ` — ${feedback.trim()}`
+    for (const other of [...pending.values()]) {
+      if (other.id === id || (other.runId ?? 'agentless') !== runId || other.toolName !== entry.toolName) continue
+      if (!runGrantable(other.toolName, other.reason)) continue
+      other.settle('allowed-once', `allowed for this run: ${other.toolName} (queued ask released)`)
+    }
+    entry.settle('allowed-once', `allowed for this run: ${entry.toolName}${note}`)
     return true
   }
 
@@ -142,12 +179,24 @@ export function createApprovalRegistry(options: ApprovalRegistryOptions): Approv
     // page polls rather than holding a socket open, so "someone is watching"
     // is a heartbeat the front end reports, and an unwatched ask still falls
     // through to the composer panel exactly as it always did.
-    if (stopped || !answers || !hasWatcher()) return next()
+    if (stopped || !answers) return next()
 
     const rawId = question.agent?.id
     const runId = typeof rawId === 'string' && rawId !== '' ? rawId : 'agentless'
-    const id = randomUUID()
     const toolName = question.toolName
+
+    // A human already said "allow for this run" to this tool. Honoured before
+    // the watcher check on purpose: the grant came from a click, and closing
+    // the tab afterwards must not turn the rest of the run back into prompts.
+    // `covers` re-checks the ask against the grant rules, so only an ask of the
+    // same kind the human saw can be waved through.
+    if (grants.covers(runId, toolName, question.reason)) {
+      state.note('approval', `allowed for this run: ${toolName} (no prompt)`, runId)
+      return 'allowed-once'
+    }
+    if (!hasWatcher()) return next()
+
+    const id = randomUUID()
 
     return new Promise<ApprovalOutcome>(resolve => {
       let settled = false
@@ -191,8 +240,10 @@ export function createApprovalRegistry(options: ApprovalRegistryOptions): Approv
   return {
     answer,
     briefs,
+    grants,
     pendingSnapshot: () => [...pending.values()].map(({ settle: _settle, ...rest }) => ({ ...rest })),
     settleApproval: (id, outcome, feedback) => {
+      if (outcome === 'allowed-run') return grantForRun(id, feedback)
       const text = feedback === undefined || feedback.trim() === ''
         ? undefined
         : `${OUTCOME_LABEL[outcome]}: ${feedback.trim()}`

@@ -153,7 +153,24 @@ export function resolveReversibility(
   toolName: string,
   actuator: Readonly<Record<string, Reversibility>> | undefined,
 ): Reversibility {
-  return actuator?.[toolName] ?? 'irreversible'
+  return actuator?.[toolName] ?? BUILTIN_REVERSIBILITY[toolName] ?? 'irreversible'
+}
+
+/**
+ * Harness tools that change nothing a human would want to veto.
+ *
+ * A live run asked for a click on every `todo_write`, `web_search` and
+ * `web_fetch` — twelve of twenty-four approvals in the first three minutes of
+ * research — because an unlisted tool is `irreversible`. That default is right
+ * for a tool nobody has heard of and wrong for these three: the first edits the
+ * model's own checklist, the other two fetch a page. They stay a `read`; the
+ * spec's `actuator` still overrides them, and every other unlisted tool stays
+ * fail-closed.
+ */
+export const BUILTIN_REVERSIBILITY: Readonly<Record<string, Reversibility>> = {
+  todo_write: 'read',
+  web_search: 'read',
+  web_fetch: 'read',
 }
 
 /**

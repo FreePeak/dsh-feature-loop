@@ -260,6 +260,26 @@ describe('command gates', () => {
     const result = evaluateGate(gate, obs({ phase: 'test', verify: { command: 'npm test', exitCode: 0, output: 'ok' } }))
     assert.equal(result.pass, true)
   })
+
+  it('does not pass an exit 0 whose runner says no test ran', () => {
+    // A live run "passed" the test phase on `[no test files]` and wrote its
+    // suite only after ship had committed without it.
+    for (const output of [
+      '?   \tgithub.com/x/cookies-api/cmd/cookies-api\t[no test files]\n',
+      '# tests 0\n# pass 0\n',
+      'no tests ran in 0.01s',
+    ]) {
+      const result = evaluateGate(gate, obs({ phase: 'test', verify: { command: 'x', exitCode: 0, output } }))
+      assert.equal(result.pass, false, output)
+      assert.match(result.detail, /no test ran/)
+    }
+  })
+
+  it('still passes when some package ran tests and another has none', () => {
+    const output = 'ok  \tgithub.com/x/api\t0.4s\n?   \tgithub.com/x/cmd\t[no test files]\n'
+    const result = evaluateGate(gate, obs({ phase: 'test', verify: { command: 'x', exitCode: 0, output } }))
+    assert.equal(result.pass, true)
+  })
 })
 
 describe('the phase rail', () => {

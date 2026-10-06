@@ -37,6 +37,12 @@ export interface ShipResult {
   commitSha?: string
   /** The pull request's URL, when one was opened. */
   prUrl?: string
+  /**
+   * True when the repository has no remote at all, so there was nowhere to push
+   * and nothing to open a pull request against. Distinct from a push that FAILED:
+   * that is a problem to report, this is a choice the operator made.
+   */
+  localOnly?: boolean
   /** The branch the work is on, always. */
   branch: string
   /**
@@ -219,6 +225,24 @@ export function ship(options: ShipOptions): ShipResult {
     }
   }
   const commitSha = invoke('git', ['rev-parse', 'HEAD']).stdout.trim() || undefined
+
+  // A repository with no remote is a local project, not a failed push. A live run
+  // in a fresh `git init` directory finished all four phases, committed, and was
+  // then reported `blocked` because the ship gate waits for a pull-request URL
+  // that cannot exist. Only the COMPLETE absence of a remote counts: a configured
+  // remote that rejects the push is still a failure and still blocks.
+  const remotes = invoke('git', ['remote'])
+  if (remotes.code === 0 && remotes.stdout.trim() === '' && commitSha !== undefined) {
+    return {
+      commitSha,
+      branch,
+      outcome: 'committed',
+      localOnly: true,
+      log,
+      detail: `no git remote is configured, so there is nothing to push or open a pull request against. `
+        + `The work is committed at ${commitSha} on ${branch}.`,
+    }
+  }
 
   const push = invoke('git', ['push', '-u', 'origin', branch])
   if (push.code !== 0) {

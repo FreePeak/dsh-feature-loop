@@ -486,6 +486,51 @@ approval channel — it is strictly more capable without being less safe. Set
     gateMode: ask          # or: deny (CI / unattended)
 ```
 
+### Allow for this run — fewer clicks, same gate
+
+A run that writes a dozen files would otherwise ask a dozen times. On an ask for
+`write` or `edit` that came from a `gatePolicies` rule, the Feature Loop page
+offers a third button, **Allow for this run**, between **Allow once** and
+**Reject**. One click releases that ask, any other pending ask for the same tool
+in the same run, and the later asks for it.
+
+It is deliberately narrower than "always allow":
+
+| Limit | Why |
+|---|---|
+| **One run.** Keyed by the agent id; a new session starts with none. | A decision about this task is not a decision about the next one. |
+| **One tool.** Granting `write` says nothing about `edit`. | Each tool class is its own risk. |
+| **Memory only.** Never written to the config; a restart drops it. | A click must not widen the gate behind the deployment's back. |
+| **Policy asks only.** A critical-signal ask, or any ask without the `REVIEW REQUESTED (policy)` marker, still reaches a human. | The grant waives a rule you configured, not a safety signal. |
+| **Never `bash`.** The button is not offered, and a forged request is refused (400). | One approved command says nothing about the next. For no prompts on shell, use `gateMode: auto`, where the envelope is enforced. |
+
+Each use is a line in the feed (`allowed for this run: write (no prompt)`), so the
+log still shows every call the grant covered.
+
+### Approvals that were a toll, not a gate
+
+A live run in the web UI asked for 24 clicks in its first three minutes of
+research — `pwd && ls -la`, every `todo_write`, every `web_fetch`. Under
+`gateMode: ask` these no longer ask, and everything that could do damage still does:
+
+| Call | Under `ask` | Why |
+|---|---|---|
+| `todo_write`, `web_search`, `web_fetch` | runs | Built-in class `read`. The spec's `actuator` still overrides it; any other unlisted tool stays `irreversible`. |
+| `bash` that can only read (`pwd`, `ls`, `cat`, `grep`, `go vet`, `go doc`, `git status/log/diff`, …) | runs | Every segment of the command must be provably read-only (`src/shell-readonly.ts`). |
+| `bash` with a redirect, `$(…)`, `` ` ``, a variable, `~`, `..`, an absolute path outside the run's directory, a secret file, `find -exec`, `sort -o`, `git -c`, … | asks | Not provable, so left to a human. |
+| The configured `pipeline.testCommand` (each `&&` piece in full, optionally piped to a reader) | runs | The operator chose it. An extended variant is a different command and asks. |
+| `bash` anything else, `write`, `edit`, `subagent` | asks | The card now shows the call: `Call: bash …` / `Call: write docs/PRD.md`. |
+
+Under `gateMode: deny` a read-only shell is **not** waved through — `deny` means
+no unsupervised shell at all.
+
+A supervised run also advances now. The pipeline's sandbox descriptor was only
+attached under YOLO, so with `gateMode: ask` every phase gate and the "you
+stopped early" nudge returned at "no sandbox": the model wrote its research note,
+said "phase 1 complete", and the run sat in `research` forever with nothing in
+the log. Ship likewise records the files a supervised run asked to write, so a
+run that passes every gate no longer commits nothing.
+
 ### The approval dashboard
 
 Besides the composer prompt, the plugin can host its own **loopback web page**

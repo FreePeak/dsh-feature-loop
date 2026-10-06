@@ -33,7 +33,7 @@ import { dirname, join } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { GATE_POLICY_CLASSES, GATE_POLICY_VALUES } from './approval-bridge.ts'
-import type { GatePolicyClass, GatePolicyValue, GatePolicyMap } from './approval-bridge.ts'
+import type { ApprovalDecision, GatePolicyClass, GatePolicyValue, GatePolicyMap } from './approval-bridge.ts'
 import { noteWatcher } from './approvals.ts'
 import type { DashboardSnapshot } from './dashboard.ts'
 
@@ -359,13 +359,13 @@ export async function probeJudge(
 export function answerLive(
   source: LiveSource | undefined,
   id: string,
-  outcome: 'allowed-once' | 'rejected',
+  outcome: ApprovalDecision,
   feedback?: string,
 ): boolean {
   if (source === undefined) return false
   if (!('settleApproval' in source) || typeof source.settleApproval !== 'function') return false
   return (source as {
-    settleApproval(id: string, outcome: 'allowed-once' | 'rejected', feedback?: string): boolean
+    settleApproval(id: string, outcome: ApprovalDecision, feedback?: string): boolean
   }).settleApproval(id, outcome, feedback)
 }
 
@@ -520,7 +520,7 @@ export class FeatureLoopRemote extends TypertRemoteService {
    * registry the plugin already owns, so the composer prompt clears and the
    * tool is released or refused identically to the standalone page.
    */
-  answer(id: string, outcome: 'allowed-once' | 'rejected', feedback?: string): Promise<{ settled: boolean }> {
+  answer(id: string, outcome: ApprovalDecision, feedback?: string): Promise<{ settled: boolean }> {
     noteWatcher()
     return Promise.resolve({ settled: answerLive(liveState, id, outcome, feedback) })
   }
