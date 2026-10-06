@@ -273,3 +273,21 @@ test('a pipeline that reached done is goal-met, not blocked by the guard that cl
   policy.pipeline.run.state = 'blocked'
   assert.equal(outcomeOf('blocked', policy), 'blocked', 'a genuinely blocked pipeline still is')
 })
+
+test('a file write after ship is refused: it can be neither committed nor verified', async () => {
+  const { writeAfterShipDenial } = await import('../src/plugin.ts')
+  const policy = createPolicy({ spec: SPEC, gateMode: 'ask', pipeline: { enabled: true } })
+  assert.ok(policy.pipeline !== undefined)
+  for (const state of ['research', 'prd', 'implement', 'test'] as const) {
+    policy.pipeline.run.state = state
+    assert.equal(writeAfterShipDenial(policy, 'write'), undefined, state)
+  }
+  for (const state of ['ship', 'done'] as const) {
+    policy.pipeline.run.state = state
+    assert.match(writeAfterShipDenial(policy, 'write') ?? '', /already shipped/)
+    assert.match(writeAfterShipDenial(policy, 'edit') ?? '', /already shipped/)
+    assert.equal(writeAfterShipDenial(policy, 'bash'), undefined, 'reads and shell are not this rule')
+    assert.equal(writeAfterShipDenial(policy, 'read'), undefined)
+  }
+  assert.equal(writeAfterShipDenial(createPolicy({ spec: SPEC, gateMode: 'ask' }), 'write'), undefined, 'no pipeline, no rule')
+})
