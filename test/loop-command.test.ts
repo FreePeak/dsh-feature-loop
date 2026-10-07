@@ -1,14 +1,25 @@
 /**
- * The check for the `/loop` host command.
+ * The check for the `/loop` and `/product` host commands.
  *
  * Run: `node --experimental-strip-types --test test/loop-command.test.ts`
  *
- * The handler is pure: it validates the task text and returns it for the
- * composer to submit. No cordis, no agent, no network.
+ * The ARGUMENT GRAMMAR is pure and is what this file exercises: the
+ * `execute*Command` functions validate the text and build the task, with no
+ * cordis, no agent and no network.
+ *
+ * The HANDOFF is not pure — `src/command.ts`'s wrapper calls
+ * `agent.followup(...)` — so it is not reachable from here (this file imports
+ * `src/plugin.ts`, whose `@deepseek-ai/dsh-*` peers no install can fetch). The
+ * part that must not regress is pinned structurally instead, below: the
+ * registered handler must submit a turn rather than only returning text, which
+ * is the bug this file was written one step short of catching.
  */
 
 import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 import { executeLoopCommand, executeProductCommand } from '../src/plugin.ts'
 
@@ -117,4 +128,48 @@ test('the goal still skips the runtime-context scaffolding', async () => {
   ]
   const agent = { session: { snapshotEvents: () => events } }
   assert.equal(userGoalOf(agent as never), 'build the thing')
+})
+
+// ── the handoff: a command must START A TURN, not just return text ───────────
+// Measured on harness 0.2.0-rc.2 (2026-10-07): the composer's claimed-command
+// path renders a `success` result's `text` as an inline notice and stops.
+// `command/run` + `command/done`, no `turn/start`. A live `/product` produced a
+// command row and nothing else, so the 0→1 pipeline never started — and the
+// whole unit suite passed, because every assertion here checked the argument
+// grammar and none checked that a turn begins.
+//
+// The wrapper is unreachable from here (it needs a real Agent), so this pins
+// the shape of the source. Comments are stripped first: an assertion that reads
+// prose is an assertion about the prose — the first version of this test failed
+// on the word `whenIdle()` inside a comment explaining why it is NOT called.
+const commandSource = (): string => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const raw = readFileSync(join(here, '..', 'src', 'command.ts'), 'utf8')
+  return raw
+    .replace(/\/\*[\s\S]*?\*\//g, '') // block comments
+    .replace(/(^|[^:])\/\/.*$/gm, '$1')  // line comments, sparing `https://`
+}
+
+test('the registered handler submits the task as a turn, not as result text', () => {
+  const source = commandSource()
+
+  assert.match(source, /invocation\.agent\.followup\(/,
+    'the command handler must call `agent.followup(...)` — a handler that only '
+    + 'returns `{kind: "success", text: task}` renders a notice and starts no turn')
+
+  // And it must NOT await the turn: a five-phase pipeline runs for minutes, and
+  // the composer's submit transaction would hold the input bar locked for all of it.
+  assert.ok(!/whenIdle\(\)/.test(source),
+    'the handler must not await `whenIdle()` — the handoff is queue-and-return, '
+    + 'or the composer stays in its submitting phase for the whole run')
+
+  // The task must be a real user message carrying the built task, not a bare string.
+  assert.match(source, /createUserMessage\(/, 'the task must be wrapped as a user message')
+  assert.match(source, /text: outcome\.task/, 'the message must carry the built task text')
+})
+
+test('a command that cannot start the turn reports an error, so the draft survives', () => {
+  assert.match(commandSource(), /kind: 'error'/,
+    'a refused handoff must be an error result: the composer keeps the draft on '
+    + 'an error and clears it on success, so returning success would lose the line')
 })
