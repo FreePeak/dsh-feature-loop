@@ -43,6 +43,9 @@ import type { ReviewSignal } from './signals.ts'
 // in-UI page does this from `remote.ts`'s `live()`; this is the same fact for
 // the loopback server.
 import { clearWatcher, noteWatcher } from './approvals.ts'
+// The keep-alive lives beside the watcher TTL it must stay under: an SSE
+// stream's ping is the only proof of life that keeps the tab a watcher.
+import { SSE_KEEPALIVE_MS } from './watcher-ttl.ts'
 import type { ApprovalRegistry } from './approvals.ts'
 import type { ApprovalDecision } from './approval-bridge.ts'
 import { RunGrants, runGrantable } from './run-grants.ts'
@@ -345,8 +348,6 @@ const FEED_LIMIT = 200
 const RUN_LIMIT = 50
 /** Largest approval POST body we will read. */
 const MAX_BODY = 8 * 1024
-/** SSE keep-alive interval, under typical proxy idle timeouts. */
-const KEEPALIVE_MS = 25_000
 
 /** Human labels for the feed, keyed by outcome. */
 const OUTCOME_LABEL: Record<ApprovalOutcome, string> = {
@@ -915,7 +916,16 @@ export function startDashboard(
     // answer times out. Guarded by `cfg.answers` so `answers: false` really
     // does mean observe-only.
     if (cfg.answers) noteWatcher()
-    const keepalive = setInterval(() => res.write(': ping\n\n'), KEEPALIVE_MS)
+    // The ping IS this tab's heartbeat, so it refreshes the watcher as well as
+    // keeping the socket warm. Without that, "watching" was measured against
+    // the ping interval instead of against the stream being open: at a 25s
+    // ping against a 15s TTL the tab was a watcher 60% of the time, and an ask
+    // raised in the gap went to the composer panel — which on a headless run
+    // does not exist, so the turn hung instead of being claimable here.
+    const keepalive = setInterval(() => {
+      res.write(': ping\n\n')
+      if (cfg.answers) noteWatcher()
+    }, SSE_KEEPALIVE_MS)
     keepalive.unref()
     req.on('close', () => {
       clearInterval(keepalive)

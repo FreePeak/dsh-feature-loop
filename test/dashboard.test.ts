@@ -31,7 +31,7 @@ import {
   workspaceLabelOf,
 } from '../src/dashboard.ts'
 import type { DashboardHandle, DashboardSnapshot } from '../src/dashboard.ts'
-import { clearWatcher, watcherActive } from '../src/approvals.ts'
+import { clearWatcher, noteWatcher, watcherActive } from '../src/approvals.ts'
 // Type-only, so these are erased at runtime: the measurement modules are
 // authored concurrently, and this file must pin their shapes without
 // loading their code.
@@ -1015,4 +1015,53 @@ test('the in-UI page polls well inside the watcher TTL', () => {
       'WATCHER_POLL_MS must be derived from the shared TTL so the two cannot drift')
     assert.ok(Math.round(ttl / 3) < ttl, 'the derived poll must clear the TTL')
   }
+})
+
+// ── the SSE ping must refresh the watcher, not just keep the socket warm ────
+// The regression this pins, measured on a real headless run (2026-10-07): the
+// TTL was 15s and the ping 25s, so an open dashboard tab was a watcher only
+// 60% of the time. An ask raised in the 10s gap was delegated to the composer
+// panel; with no UI tab attached there is no panel, so the turn hung and the
+// run stalled at its first gated tool call. The test drives the ping through
+// its own interval rather than waiting 25 real seconds.
+test('the SSE ping refreshes the watcher, so an open tab never falls out of the TTL', async (t) => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const source = readFileSync(join(here, '..', 'src', 'dashboard.ts'), 'utf8')
+  const keepaliveText = /SSE_KEEPALIVE_MS\s*=\s*([\d_]+)/.exec(
+    readFileSync(join(here, '..', 'src', 'watcher-ttl.ts'), 'utf8'),
+  )?.[1]
+  const ttlText = /WATCHER_TTL_MS\s*=\s*([\d_]+)/.exec(
+    readFileSync(join(here, '..', 'src', 'watcher-ttl.ts'), 'utf8'),
+  )?.[1]
+  assert.ok(keepaliveText !== undefined, 'the keep-alive must be a literal this test can read')
+  assert.ok(ttlText !== undefined, 'the watcher TTL must be a literal this test can read')
+  const keepalive = Number(keepaliveText.replace(/_/g, ''))
+  const ttl = Number(ttlText.replace(/_/g, ''))
+
+  // The interval must clear the TTL with room to spare — this is the arithmetic
+  // that was wrong, and it is the half a source-shape assertion cannot see.
+  assert.ok(keepalive * 2 <= ttl,
+    `the SSE ping every ${keepalive}ms cannot keep a ${ttl}ms watcher TTL alive — `
+    + 'an ask raised between pings escapes to the composer panel')
+
+  // And the ping must actually call `noteWatcher`, or the interval is only a
+  // socket warmer and the arithmetic above is meaningless.
+  const handler = /const keepalive = setInterval\(\(\) => \{([\s\S]*?)\}, SSE_KEEPALIVE_MS\)/.exec(source)?.[1]
+  assert.ok(handler !== undefined, 'the keep-alive must be a handler block this test can read')
+  assert.match(handler, /noteWatcher\(\)/,
+    'the SSE ping must refresh the watcher — a ping that only writes bytes '
+    + 'leaves an open tab outside its own TTL')
+
+  // Behaviourally: with a tab open, the watcher stays active across more than
+  // one TTL of wall clock once the ping refreshes it.
+  clearWatcher()
+  t.after(clearWatcher)
+  const { dash } = await started(t, { host: '127.0.0.1', answers: true })
+  const disconnect = await connectSse(dash)
+  t.after(disconnect)
+  assert.equal(watcherActive(), true, 'an open tab claims asks')
+  noteWatcher(Date.now() - (ttl - 1_000))
+  assert.equal(watcherActive(), true, 'a heartbeat inside the TTL keeps the claim')
+  noteWatcher(Date.now() - (ttl + 1_000))
+  assert.equal(watcherActive(), false, 'a heartbeat older than the TTL loses it')
 })
