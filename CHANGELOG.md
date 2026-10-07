@@ -128,6 +128,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the interval cannot drift outside the window it refreshes. The new test
   fails on the old code and on a 25s TTL.
 
+- **Every subagent the model spawned ran its own 0→1 phase machine, so the run
+  blocked in `research`.** `createPolicy` builds one policy per agent, and a
+  policy with a pipeline gets a fresh `startPipeline()`. That is right for the
+  session that owns the goal and wrong for every helper the model delegates to.
+  Measured on a real headless run (2026-10-07): the model spawned four research
+  subagents; each was told "you are in phase 1 of 5: RESEARCH", ran the research
+  phase's full 24-step ceiling, and was then rejected by
+  `pipelinePreCallGuard` — so all four ended `stopReason: 'refusal'`, the parent
+  was told "declined the task. It left no closing message", and the run blocked
+  with no research note written at 2% of its budget. A subagent session
+  (`origin: 'subagent'` or a non-zero `delegationDepth`) now runs under the same
+  spec, budget, ladder and review gate, with only the phase machine cleared —
+  the gate stays on, because a subagent's writes are exactly as irreversible as
+  the parent's. The predicate lives in `src/subagent.ts`; its test fails with the
+  `policyFor` branch reverted.
+
 
 ### Changed
 
