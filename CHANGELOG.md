@@ -115,6 +115,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same way the GET routes do; the header still works, and `sameOrigin`
   still blocks cross-origin browsers. Closes KNOWN-ISSUES §5.
 
+- **An open dashboard tab was a watcher only 60% of the time, so a headless
+  run hung at its first gated tool call.** The standalone server registered a
+  watcher when an SSE client connected and then pinged every 25s — but the ping
+  never refreshed the flag, against a 15s TTL. An ask raised in the 10s gap was
+  delegated to the composer panel; with no UI tab attached there is no panel, so
+  the turn hung until the answer timeout and the run never left `research`.
+  Measured on a real headless run (2026-10-07): the ask sat unclaimed for 10+
+  minutes while an SSE connection was demonstrably open, and `GET /api/state`
+  reported `pending: []` the whole time. The ping now refreshes the watcher, the
+  TTL is 60s against a 25s ping, and both constants live in `src/watcher-ttl.ts`
+  so the interval cannot drift outside the window it refreshes. The new test
+  fails on the old code and on a 25s TTL.
+
 
 ### Changed
 
