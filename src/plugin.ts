@@ -62,6 +62,8 @@ import type { PipelineConfig } from './spec.ts'
 import { isTerminal, startPipeline } from './pipeline.ts'
 import type { PipelineRun } from './pipeline.ts'
 import { PHASE_ORDER } from './phases.ts'
+import { isSubagentSession } from './subagent.ts'
+import type { SessionHeaderSlice as SubagentHeaderSlice } from './subagent.ts'
 import type { GateResult, PipelinePhase } from './phases.ts'
 import { goalNotice, phaseNotice, terminalNotice } from './phase-notice.ts'
 import { advancePhase, gateCurrentPhase, runShip } from './driver.ts'
@@ -473,15 +475,31 @@ function dashboardURLOnceBound(dashboard: DashboardHandle): Record<string, unkno
   return url === '' ? {} : { dashboardURL: `${url}?token=${dashboard.token}` }
 }
 
+/** The session header, structurally: the cwd plus the two subagent signals. */
+interface SessionHeaderSlice extends SubagentHeaderSlice {
+  readonly cwd?: unknown
+}
+
+/**
+ * The session header, structurally.
+ *
+ * `Agent` type only guarantees `id`; ReactLoopAgent also carries
+ * `session.header`. Read structurally for the same reason `SettledSession` is:
+ * the plugin must typecheck against the harness this checkout has and tolerate
+ * test agents that carry only an `id`.
+ */
+function sessionHeaderOf(agent: Agent | undefined): SessionHeaderSlice | undefined {
+  if (agent === undefined) return undefined
+  const session = (agent as { readonly session?: { readonly header?: SessionHeaderSlice } }).session
+  return session?.header
+}
+
 /**
  * Absolute workspace cwd from a live agent session header.
- * Structural read: `Agent` type only guarantees `id`; ReactLoopAgent also
- * carries `session.header.cwd`. Tests/fakes without a session stay ungrouped.
+ * Tests/fakes without a session stay ungrouped.
  */
 function sessionCwdOf(agent: Agent | undefined): string | undefined {
-  if (agent === undefined) return undefined
-  const session = (agent as { readonly session?: { readonly header?: { readonly cwd?: unknown } } }).session
-  const cwd = session?.header?.cwd
+  const cwd = sessionHeaderOf(agent)?.cwd
   if (typeof cwd !== 'string' || cwd === '') return undefined
   // Absolute POSIX or Windows drive path — reject relative junk.
   if (cwd.startsWith('/') || /^[A-Za-z]:[\\/]/.test(cwd)) return cwd
@@ -2220,6 +2238,23 @@ export function apply(
     if (policy === undefined) {
       policy = fresh()
       policies.set(agent, policy)
+      // A SUBAGENT is not the run. Its session is a delegated child — the model
+      // spawning helpers to research or review — and the phase machine belongs
+      // to the run that owns the goal, not to each of its hands.
+      //
+      // Measured 2026-10-07 on a live headless run: the model spawned four
+      // research subagents, and each got its own `createPolicy` with a fresh
+      // `startPipeline()`. Every one of them therefore ran the research phase's
+      // full step ceiling (24 steps), was told "you are in phase 1 of 5:
+      // RESEARCH", and hit `pipelinePreCallGuard`'s reject with `research step
+      // ceiling reached (24 steps)` — so all four ended `stopReason: 'refusal'`,
+      // the parent was told "declined the task. It left no closing message", and
+      // the run blocked in `research` with no research note written.
+      //
+      // The gate stays ON: a subagent's tool calls are exactly as irreversible as
+      // the parent's, and it is the thing that asks a human. Only the phase
+      // machine — the part that is meaningless without a goal — is switched off.
+      if (isSubagentSession(sessionHeaderOf(agent))) policy.pipeline = undefined
       // The sandbox is created HERE, on the run's first contact, rather than at
       // load: a policy is per-agent and an agent only exists once a turn is
       // running, so this is the first moment a run has a cwd and an id to name a
