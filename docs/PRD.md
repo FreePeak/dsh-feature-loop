@@ -2,7 +2,20 @@
 
 **Status:** Phase 1 complete (de-fork executed). Phase 2 not started.
 **Owner:** Linh Doan
-**Last updated:** 2026-10-05 (a run record is no longer written one attempt
+**Last updated:** 2026-10-07 (the 0→1 pipeline ran end to end through the web
+UI, headless, for the first time — `goal-met`, 30 steps, $0.1648, five phases,
+a landing page that builds and whose assistant-ui chat answers. Getting there
+took three fixes, each invisible until the previous one landed: the standalone
+dashboard's SSE ping never refreshed the watcher flag, so an ask raised in the
+gap went to a composer panel a headless run does not have and the turn hung;
+`/product` and `/loop` returned their task as result text, which the harness
+renders as a notice, so no turn ever started; and every subagent got its own
+phase machine, so the model's four research helpers each burned the research
+ceiling and reported "declined the task", blocking the run at 2% of budget. See
+§7.3, §8 and `test/dashboard.test.ts`, `test/loop-command.test.ts`,
+`test/subagent.test.ts`)
+
+Earlier: 2026-10-05 (a run record is no longer written one attempt
 short: the `turn/end` listener now drains settled usage itself, because the
 turn's closing model call is only settled by `agent/request` as that handler
 returns — after this listener ran. Measured in the Desktop app: `steps`
@@ -269,6 +282,60 @@ unseen agent gets the deployment's real policies, not a pass.
 Verified: with no prior `agent/pre-step`, a write-class call with no confidence
 estimate is now **denied** rather than dispatched.
 
+### 7.3 The headless run, and the three bugs it took to get one
+
+On 2026-10-07 the 0→1 pipeline was driven end to end through the **web UI** —
+headless Chrome over CDP, the composer typed into and submitted with real key
+events, the dashboard as the approval channel — for the first time. It reached
+`goal-met`: 30 steps, $0.1648 of $2.00, all five phases passed, and an artifact
+that builds (`next build` → 3/3 static pages) whose embedded assistant-ui chat
+answers.
+
+Three bugs had to be found and fixed first. Each was invisible until the one
+before it landed, and **none was caught by the unit suite**, which passed
+throughout:
+
+1. **The dashboard's SSE ping never refreshed the watcher flag.** `openSse`
+   registered a watcher on connect and then pinged every 25s without calling
+   `noteWatcher` again, against a 15s TTL — so a tab open for minutes counted as
+   a watcher 60% of the time, and an ask raised in the 10s gap was delegated to
+   the composer panel. With no UI tab attached there is no panel, so the turn
+   hung: the session log held `approval/asked`, `lsof` showed the SSE connection
+   ESTABLISHED, and `GET /api/state` reported `pending: []` for 10+ minutes while
+   every settle POST answered 409. Fixed by making the ping the heartbeat it was
+   meant to be, moving `SSE_KEEPALIVE_MS` beside the TTL it must stay under, and
+   raising the TTL to 60s. `test/dashboard.test.ts` fails on the old code and on
+   a 25s TTL.
+
+2. **`/product` and `/loop` never started a turn.** The handler returned the task
+   text as a `success` result on the assumption that "the composer submits the
+   returned text as the turn". Measured on harness 0.2.0-rc.2, it does not: the
+   claimed-command path calls `commands.execute()` and `onSubmitSettled` renders
+   a success result's `text` as an inline notice. A live `/product` produced
+   `command/run` + `command/done` and **no `turn/start` at all**. Fixed by doing
+   what `dsh headless` does — `agent.followup(createUserMessage(...))` — without
+   awaiting `whenIdle()`, because a five-phase pipeline runs for minutes and the
+   composer's submit transaction would hold the input bar for all of it.
+   `test/loop-command.test.ts` fails with the handler reverted.
+
+3. **Every subagent ran its own phase machine.** `createPolicy` builds one policy
+   per agent, so each helper the model spawned got a fresh `startPipeline()`.
+   The model spawned four research subagents; each was told "you are in phase 1
+   of 5: RESEARCH", ran the research phase's full 24-step ceiling, and was
+   rejected by `pipelinePreCallGuard` — all four ended
+   `stopReason: 'refusal'`, the parent was told "declined the task. It left no
+   closing message", and the run blocked in `research` with no research note
+   written, at 2% of its budget. Fixed by clearing only `policy.pipeline` for a
+   session whose header says `origin: 'subagent'` or a non-zero
+   `delegationDepth`; the gate, spec, budget and containment all stay, because a
+   subagent's writes are exactly as irreversible as the parent's.
+   `test/subagent.test.ts` fails with the `policyFor` branch reverted.
+
+The method is the finding: all three were found by **driving the real thing and
+reading what it actually did**, and all three survived a suite of 800+ passing
+tests. §7.1 and §7.2 said the same thing about wiring bugs found by reading; this
+is the same lesson from the other direction.
+
 ---
 
 ## 8. Known limits
@@ -302,6 +369,31 @@ estimate is now **denied** rather than dispatched.
   capability at all, and refuses every explicit effort.
 - **`run_tests` timeouts kill the direct child, not grandchildren** (marked
   `ponytail:` in `tools.ts`; upgrade path is detached spawn + `kill(-pid)`).
+- **"Is a front end watching?" is a heartbeat window, not a connection count.**
+  Both halves are TTLs now — the in-UI page's poll and the standalone server's
+  SSE ping — and both are checked against `WATCHER_TTL_MS` by
+  `test/dashboard.test.ts`, which is what caught the 25s-ping-against-15s-TTL
+  bug in §7.3. It is still an approximation: a tab that is open but wedged
+  reads as watching for up to one TTL. The upgrade path is a streaming remote
+  method that reports attach/detach exactly, which is what
+  [`PLAN-close-open-issues.md`](PLAN-close-open-issues.md) §1 already plans for
+  the dashboard's own state.
+- **`verify.sh` is the model's own gate, and it is weaker than a build.** The
+  `fl-live` workspace's gate asserts that a landing page exists and references
+  assistant-ui. The first run passed that gate with a page that **would not
+  build** — `app/layout.tsx` imported `./globals.css` and no CSS file was ever
+  written. The gate is deployment configuration rather than plugin code, but the
+  lesson generalises: a gate that checks shape rather than a successful build
+  can pass work that does not run. The second run wrote the CSS and builds
+  clean, so this is a known weakness of that gate rather than an open bug.
+- **A run's own `maxSteps` is per phase, and the model cannot see the ceiling
+  it is about to hit.** `maxSteps: 240` gives research 24 steps (a 10% share),
+  and both live runs spent 23–24 of them. The run that succeeded did so by
+  converging in 23; the detector fired `excessive-steps` as a warning at step 21
+  in both. Nothing is wrong here, but a 10% research share on a 240-step budget
+  is tight for a research phase that fetches primary sources, and it is
+  configuration rather than a defect — recorded so the next tuning starts from
+  the measurement rather than from the default.
 - **The price table is an estimate.** `mimo-v2.5` runs on a subscription plan,
   so marginal cost is near zero; the rates in `cli.ts` are illustrative and
   exist so the ceiling has something to measure against.
@@ -317,13 +409,26 @@ estimate is now **denied** rather than dispatched.
    `model-selection` or document why spec-level escalation is distinct.
 3. **Reach `agent/turn-stopping`** so `spec.termination.successCommand` drives
    termination rather than the runner checking it after each step.
-4. **Test the plugin path.** `src/plugin.ts` has no test today; the policy
-   decisions it calls are covered by `agent-policy.test.ts` (27 tests), but the
-   wiring is not. §7.1 and §7.2 are the evidence that this matters: one wiring
-   bug silently disabled every detector, and another left the gate **fail-open**
-   on the irreversible path. Both were found by reading and by manual
-   verification, not by CI. A fake-context harness driving the three hooks would
-   close this, and is the highest-value remaining work.
+4. **Test the plugin path.** `src/plugin.ts` still has no test of its own — it
+   carries runtime `@deepseek-ai/dsh-*` imports that no CI install can fetch, so
+   the hooks themselves are only reachable locally. §7.1 and §7.2 are the
+   evidence that this matters: one wiring bug silently disabled every detector,
+   and another left the gate **fail-open** on the irreversible path.
+
+   Three wirings gained coverage on 2026-10-07 (§7.3) by asserting the *shape of
+   the source* from a pure test file — comments stripped first, since an
+   assertion that reads prose is an assertion about the prose:
+   `test/loop-command.test.ts` (the command handler submits a turn),
+   `test/subagent.test.ts` (a subagent policy drops only the pipeline), and
+   `test/dashboard.test.ts` (the SSE ping refreshes the watcher). That is a
+   weaker instrument than a fake context — it cannot catch a bug in a branch it
+   does not name — and it is what a file with harness imports allows.
+
+   Still open, and still the highest-value remaining work: a **fake-context
+   harness driving the three hooks** (`agent/pre-step`, `agent/request`,
+   `tools/pre-execute`) with a stub Agent carrying a real session header. That
+   would cover the class §7.3 found three times over — wiring that only shows up
+   when the real harness runs it.
 5. **Phase 3 — Laya.** Deploy the `systemone` provider in onegw, switch
    `--judge laya`.
 
