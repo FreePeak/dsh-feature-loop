@@ -75,7 +75,7 @@
     "add-bundle": "node scripts/add-bundle.mjs"
   },
   "dependencies": {
-    "@assistant-ui/react": "^0.15.21",
+    "@assistant-ui/react": "^0.15.26",
     "@assistant-ui/styles": "^0.3.7",
     "@deepseek-ai/schemastery": "^3.18.2",
     "react": "^19.3.0",
