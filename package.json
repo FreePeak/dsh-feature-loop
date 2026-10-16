@@ -91,7 +91,7 @@
   },
   "devDependencies": {
     "@deepseek-ai/dsh-typert-protocol": "0.1.0-rc.6",
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.6.5",
     "esbuild": "^0.28.2",
     "tsdown": "^0.23.0",
     "typescript": "^5.8.0"
