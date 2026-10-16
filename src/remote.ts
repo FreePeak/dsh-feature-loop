@@ -167,13 +167,13 @@ const NUMERIC_KEYS: (keyof FeatureLoopSettings)[] = [
 ]
 
 /**
- * Default System One endpoint — the shared Laya sidecar on this machine.
+ * Default System One endpoint — the shared Laya proxy on this machine.
  *
- * `:8092` is the native macOS service; `:8091` was the retired containerised
- * sidecar. Reported as unreachable when the service is down, so a wrong default
- * here reads in the status page as "judge: down" rather than silently.
+ * `:8093` is `ai.hermes.laya-proxy` (CF Access + bearer to laya.freepeak.dev /
+ * homemac). `:8092` was the retired local sidecar. A wrong default here shows
+ * up on the status page as "judge: down" rather than failing silently.
  */
-const DEFAULT_JUDGE_BASE_URL = 'http://127.0.0.1:8092'
+const DEFAULT_JUDGE_BASE_URL = 'http://127.0.0.1:8093'
 
 /** Default System One model alias. */
 const DEFAULT_SYSTEMONE_MODEL = 'laya'
