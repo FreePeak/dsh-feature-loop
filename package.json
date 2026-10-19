@@ -75,11 +75,11 @@
     "add-bundle": "node scripts/add-bundle.mjs"
   },
   "dependencies": {
-    "@assistant-ui/react": "^0.15.21",
+    "@assistant-ui/react": "^0.15.29",
     "@assistant-ui/styles": "^0.3.7",
     "@deepseek-ai/schemastery": "^3.18.2",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "yaml": "^2.9.1"
   },
   "peerDependencies": {
@@ -93,7 +93,7 @@
     "@deepseek-ai/dsh-typert-protocol": "0.1.0-rc.6",
     "@types/node": "^22.0.0",
     "esbuild": "^0.28.2",
-    "tsdown": "^0.23.0",
+    "tsdown": "^0.23.1",
     "typescript": "^5.8.0"
   },
   "dsh": {
